@@ -1,0 +1,43 @@
+# ADR 0001 — Distribution des artefacts de sandbox (spike C0)
+
+Date : 2026-08-16 · Statut : accepté
+
+## Question
+
+Le plan v3 (badge « Try it » décentralisé, 0 €) prévoyait de servir les
+artefacts de chaque application (disque applicatif, delta d'instantané)
+depuis les **Releases GitHub** du dépôt du mainteneur, chargés par la
+coquille hébergée sur un autre domaine. Cela exige, côté navigateur :
+CORS (la coquille est cross-origin) et des requêtes Range (v86 lit le
+disque par morceaux), le tout sous `COEP: require-corp`.
+
+## Mesures (curl, 2026-08-16)
+
+| Hébergement | CORS (`Access-Control-Allow-Origin`) | Range | OPTIONS |
+|---|---|---|---|
+| Release assets (`release-assets.githubusercontent.com`) | **absent**, même avec `Origin` | 206 OK (hors CORS) | **405** |
+| GitHub Pages (`*.github.io`) | **`*` systématique** | **206 OK, CORS conservé** | 405 |
+
+## Décision
+
+- ❌ **Les Releases GitHub sont inutilisables** comme source d'artefacts
+  pour un chargement navigateur cross-origin. (Elles restent utiles comme
+  archivage/téléchargement humain.)
+- ✔ **Les artefacts par application vivent sur la branche `gh-pages` du
+  dépôt du mainteneur** (GitHub Pages) : CORS `*` et Range y fonctionnent.
+  Contraintes intégrées au design : fichiers ≤ 95 Mo (limite git 100 Mo)
+  → les artefacts sont **découpés en chunks** et réassemblés par la
+  coquille (le disque applicatif post-B2 fait ~100–300 Mo → 2–4 chunks,
+  chargeables en mémoire, v86 accepte un buffer) ; site ≤ 1 Go (large).
+- ✔ Le **rootfs de base mutualisé** (~1 Go, trop gros pour Pages) est servi
+  par l'hébergement de railsbox (Cloudflare Pages/R2 gratuit — scénario 2
+  déjà acté), en cache navigateur partagé entre toutes les sandboxes.
+
+## Points de vigilance
+
+- Le preflight OPTIONS répond 405 partout, mais un `Range: bytes=a-b`
+  simple est **CORS-safelisted** (spec Fetch) : pas de preflight tant que
+  la coquille n'ajoute aucun en-tête non listé sur ces requêtes.
+  À verrouiller par un test E2E navigateur en phase C.
+- Ce choix supprime toute dépendance à un compte de stockage par
+  mainteneur : la chaîne reste « GitHub seulement » côté utilisateur.
