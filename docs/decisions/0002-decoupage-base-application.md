@@ -44,10 +44,15 @@ Deux disques v86 :
   build avec la même version binaire que la base ; chemin de données fixé
   par variable (`PGDATA=/app/var/pg`). L'init de la base ne démarre
   PostgreSQL qu'après montage de hdb.
-- **Instantané et hdb** : v86 doit accepter la restauration d'un état
-  capturé SANS hdb puis l'attachement du disque — à vérifier tôt ; repli :
-  capturer l'état de base AVEC un hdb vide de taille fixe, remplacé par le
-  disque applicatif (même géométrie).
+- **Instantané et hdb** — **tranché par spike (2026-08-16)** : v86 REFUSE de
+  restaurer un état capturé sans hdb quand la configuration en attache un
+  (`set_state` lève pendant `restore_state`, vérifié sur l'instantané
+  jiyufit + hdb ext2 de 8 Mo). Le repli est donc la règle : l'instantané de
+  base est capturé **avec un hdb vide de taille fixe** (ex. 512 Mo sparse) ;
+  au boot d'une app, le fichier hdb est remplacé par le disque applicatif
+  **padded à la même géométrie**. Le contenu du disque n'est pas embarqué
+  dans l'état (comme hda), seule la géométrie doit correspondre — à
+  confirmer par le spike suivant lors de l'implémentation B2.
 - **Compatibilité** : le format `v86-config.json` gagne des champs
   (`baseDisk`, `appDisk`, `baseState`) ; `v86-vm.js` et `vm-harness.mjs`
   suivent. L'ancienne forme mono-disque reste supportée (jiyufit).
