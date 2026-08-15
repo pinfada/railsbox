@@ -1,3 +1,7 @@
 ﻿node_modules/
 public/disks/
 tools/build-v86-image/build.log
+test-results/
+playwright-report/
+blob-report/
+.playwright/
