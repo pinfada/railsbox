@@ -241,15 +241,16 @@ obligatoires) ; `tmp/`, `log/` et `storage/` sont souvent exclus par le
 
 - **ActionCable / WebSockets** : hors périmètre, incompatibles avec un pont
   requête/réponse. Piste : long-polling ou flux dédié multiplexé.
-- **Débit** : le pont est un tuyau étroit et partagé. Suffisant pour du
-  Turbo/HTML, pas pour des rafales d'assets — d'où le `assets:precompile`.
+- **Débit** : le pont est un tuyau étroit et partagé, suffisant pour du
+  Turbo/HTML. Les assets précompilés ne l'empruntent plus : extraits de
+  l'image (`tools/extract-assets.sh`), ils sont servis statiquement par le
+  Service Worker, avec repli VM transparent.
 - **Réseau sortant** (APIs tierces, `bundle install` en ligne) : nécessiterait
   l'option Tailscale, non câblée ici.
 - **Généricité** : le runtime est agnostique, la recette de build ne l'est pas
   encore (voir section 2).
 - **Licence CheerpX** : usage commercial soumis à licence Leaning Technologies.
-- `/favicon.ico` et `/site.webmanifest`, écrits en dur par Rails sans préfixe,
-  produisent des 404 silencieux.
+  (Le moteur v86, BSD-2-Clause, porte seul la promesse du projet.)
 
 ## Arborescence
 

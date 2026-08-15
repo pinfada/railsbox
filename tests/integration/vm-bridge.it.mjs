@@ -110,6 +110,29 @@ test(
       );
     });
 
+    await t.test("un POST concurrent d'un gros téléchargement aboutit", async () => {
+      // Scénario historique : pendant le chargement des assets, un POST de
+      // 4 Ko mettait 105 s (canal semi-duplex). Les assets sont désormais
+      // servis hors canal (A2) ; ce test garde le comportement du canal
+      // lui-même sous contrôle : les deux requêtes doivent aboutir, et le
+      // POST ne doit pas attendre plus d'une grosse réponse complète.
+      const bigGet = vm.request({ method: "GET", path: "/app/" });
+      const postStarted = Date.now();
+      const post = await vm.request(
+        { method: "POST", path: "/app/", headers: [["content-type", "application/octet-stream"]] },
+        new Uint8Array(4 * 1024).fill(99),
+      );
+      const postSeconds = (Date.now() - postStarted) / 1000;
+      const get = await bigGet;
+      assert.ok(isWellFormedStatus(post.status), `statut POST concurrent: ${post.status}`);
+      assert.ok(ANY_HTTP_OK.has(get.status), `statut GET concurrent: ${get.status}`);
+      assert.ok(
+        postSeconds < 30,
+        `le POST concurrent a mis ${postSeconds.toFixed(1)} s (régression de contention)`,
+      );
+      process.stdout.write(`[it] POST concurrent en ${postSeconds.toFixed(1)} s\n`);
+    });
+
     await t.test("la synchronisation d'horloge ne perturbe pas le canal", async () => {
       vm.syncClock();
       const response = await vm.request({ method: "GET", path: "/app/" });
