@@ -29,6 +29,27 @@ export function createEnvironmentDrawer({ registry, onApply, onLog = () => {} })
 
   hydrateFromStorage(registry);
 
+  // Option « session seulement » (voir SECURITY.md) : décochée, les valeurs
+  // restent en mémoire pour la session et l'enregistrement local est purgé.
+  function persistIfAllowed() {
+    if (elements.persistCheckbox.checked) {
+      persist(registry);
+    }
+  }
+  elements.persistCheckbox.addEventListener("change", () => {
+    if (elements.persistCheckbox.checked) {
+      persist(registry);
+      announce("Les valeurs seront conservées sur ce navigateur.", "neutre");
+    } else {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // stockage indisponible : rien à purger
+      }
+      announce("Valeurs en session seulement : rien ne sera conservé.", "neutre");
+    }
+  });
+
   elements.trigger.addEventListener("click", () => toggle(true));
   elements.closeButton.addEventListener("click", () => toggle(false));
   elements.overlay.addEventListener("click", () => toggle(false));
@@ -38,7 +59,7 @@ export function createEnvironmentDrawer({ registry, onApply, onLog = () => {} })
 
   elements.mocksButton.addEventListener("click", () => {
     const filledCount = registry.fillMocks();
-    persist(registry);
+    persistIfAllowed();
     render();
     announce(
       filledCount === 0
@@ -58,7 +79,7 @@ export function createEnvironmentDrawer({ registry, onApply, onLog = () => {} })
     announce("Écriture de l'environnement puis redémarrage de l'application…", "neutre");
     try {
       await onApply(payload);
-      persist(registry);
+      persistIfAllowed();
       announce("Application redémarrée avec les nouvelles variables.", "succes");
       render();
       for (const waiter of repairWaiters.splice(0)) waiter();
@@ -172,7 +193,7 @@ export function createEnvironmentDrawer({ registry, onApply, onLog = () => {} })
       : "identifiant fourni par le service";
     input.addEventListener("input", () => {
       registry.setValue(variable.name, input.value.trim());
-      persist(registry);
+      persistIfAllowed();
     });
     input.addEventListener("change", render);
     inputWrap.append(input);
@@ -184,7 +205,7 @@ export function createEnvironmentDrawer({ registry, onApply, onLog = () => {} })
       generateButton.textContent = "Générer";
       generateButton.addEventListener("click", () => {
         registry.setValue(variable.name, variable.generate());
-        persist(registry);
+        persistIfAllowed();
         render();
       });
       inputWrap.append(generateButton);
@@ -269,6 +290,10 @@ function buildStructure() {
         <button type="button" class="env-action env-action--mocks">Générer les valeurs internes</button>
         <button type="button" class="env-action env-action--primaire">Appliquer et redémarrer</button>
       </div>
+      <label class="env-persistance">
+        <input type="checkbox" checked class="env-conserver" />
+        Conserver les valeurs sur ce navigateur
+      </label>
       <p class="env-etat" data-ton="neutre" role="status"></p>
     </div>`;
 
@@ -282,6 +307,7 @@ function buildStructure() {
     status: /** @type {HTMLElement} */ (panel.querySelector(".env-etat")),
     mocksButton: /** @type {HTMLButtonElement} */ (panel.querySelector(".env-action--mocks")),
     applyButton: /** @type {HTMLButtonElement} */ (panel.querySelector(".env-action--primaire")),
+    persistCheckbox: /** @type {HTMLInputElement} */ (panel.querySelector(".env-conserver")),
     blockingCounter: /** @type {HTMLElement} */ (panel.querySelector(".bloquantes .valeur")),
     optionalCounter: /** @type {HTMLElement} */ (panel.querySelector(".facultatives .valeur")),
     readyCounter: /** @type {HTMLElement} */ (panel.querySelector(".pretes .valeur")),

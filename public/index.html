@@ -3,6 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- CSP de la page hôte. 'wasm-unsafe-eval' : requis par v86/CheerpX
+         (WebAssembly). cxrtnc.leaningtech.com : module CheerpX (démo).
+         wss://disks.webvm.io : image Debian publique du mode démo.
+         blob:/workers : CheerpX instancie ses workers internes ainsi. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self' 'wasm-unsafe-eval' https://cxrtnc.leaningtech.com;
+               style-src 'self' 'unsafe-inline';
+               connect-src 'self' wss://disks.webvm.io https://cxrtnc.leaningtech.com;
+               worker-src 'self' blob:;
+               img-src 'self' data:;
+               frame-src 'self';
+               object-src 'none';
+               base-uri 'self';
+               form-action 'self'"
+    />
     <title>Rails-in-Browser 2.1 — VM x86 + pont Service Worker</title>
     <style>
       :root {
@@ -120,7 +137,15 @@
     </header>
     <main>
       <pre id="boot-log"></pre>
-      <iframe id="app-frame" title="Application Rails" src="about:blank"></iframe>
+      <!-- sandbox : l'application émulée ne doit pas pouvoir naviguer la page
+           hôte ni ouvrir de contexte hors contrôle. allow-same-origin est
+           nécessaire (cookies de session + interception Service Worker). -->
+      <iframe
+        id="app-frame"
+        title="Application Rails"
+        src="about:blank"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
+      ></iframe>
     </main>
     <link rel="stylesheet" href="/env-drawer.css" />
     <script type="module" src="/main.js"></script>

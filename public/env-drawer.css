@@ -313,6 +313,18 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+.env-persistance {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.env-persistance input {
+  accent-color: var(--accent);
+}
 .env-etat {
   font-size: 0.7rem;
   color: var(--muted);
