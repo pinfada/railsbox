@@ -1,97 +1,128 @@
 <!doctype html>
 <html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rails-in-Browser 2.1 — VM x86 + pont Service Worker</title>
-  <style>
-    :root {
-      --bg: #0b0f14;
-      --panel: #11161d;
-      --border: #223041;
-      --text: #d8e1ea;
-      --muted: #8b98a5;
-      --accent: #7ee787;
-      --error: #ff6b6b;
-      --pending: #d4a72c;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-      background: var(--bg);
-      color: var(--text);
-      display: grid;
-      grid-template-rows: auto 1fr;
-      height: 100vh;
-    }
-    header {
-      display: flex;
-      align-items: baseline;
-      gap: 1.5rem;
-      padding: 0.9rem 1.4rem;
-      border-bottom: 1px solid var(--border);
-      background: var(--panel);
-    }
-    header h1 { font-size: 1rem; margin: 0; letter-spacing: 0.04em; }
-    header h1 span { color: var(--accent); }
-    .badges { display: flex; gap: 0.6rem; margin-left: auto; }
-    .badge {
-      font-size: 0.72rem;
-      padding: 0.25rem 0.6rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      color: var(--muted);
-    }
-    .badge.pending::before { content: "◌ "; color: var(--pending); }
-    .badge.ok { border-color: var(--accent); color: var(--accent); }
-    .badge.ok::before { content: "● "; }
-    .badge.error { border-color: var(--error); color: var(--error); }
-    .badge.error::before { content: "✕ "; }
-    main {
-      display: grid;
-      grid-template-columns: minmax(320px, 34%) 1fr;
-      min-height: 0;
-    }
-    #boot-log {
-      margin: 0;
-      padding: 1rem 1.2rem;
-      overflow-y: auto;
-      font-size: 0.78rem;
-      line-height: 1.55;
-      color: var(--muted);
-      border-right: 1px solid var(--border);
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    #app-frame {
-      border: 0;
-      width: 100%;
-      height: 100%;
-      background: var(--panel);
-    }
-    @media (max-width: 900px) {
-      main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
-      #boot-log { border-right: 0; border-bottom: 1px solid var(--border); }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Rails-in-Browser <span>2.1</span> · VM Linux x86 dans le navigateur</h1>
-    <div class="badges">
-      <span id="env-slot"></span>
-      <span class="badge pending" id="badge-sw">Service Worker</span>
-      <span class="badge pending" id="badge-coi">Isolation COI</span>
-      <span class="badge pending" id="badge-vm">VM CheerpX</span>
-      <span class="badge pending" id="badge-http">Serveur HTTP</span>
-    </div>
-  </header>
-  <main>
-    <pre id="boot-log"></pre>
-    <iframe id="app-frame" title="Application Rails" src="about:blank"></iframe>
-  </main>
-  <link rel="stylesheet" href="/env-drawer.css">
-  <script type="module" src="/main.js"></script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rails-in-Browser 2.1 — VM x86 + pont Service Worker</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --panel: #11161d;
+        --border: #223041;
+        --text: #d8e1ea;
+        --muted: #8b98a5;
+        --accent: #7ee787;
+        --error: #ff6b6b;
+        --pending: #d4a72c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+        background: var(--bg);
+        color: var(--text);
+        display: grid;
+        grid-template-rows: auto 1fr;
+        height: 100vh;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 1.5rem;
+        padding: 0.9rem 1.4rem;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      header h1 {
+        font-size: 1rem;
+        margin: 0;
+        letter-spacing: 0.04em;
+      }
+      header h1 span {
+        color: var(--accent);
+      }
+      .badges {
+        display: flex;
+        gap: 0.6rem;
+        margin-left: auto;
+      }
+      .badge {
+        font-size: 0.72rem;
+        padding: 0.25rem 0.6rem;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+      .badge.pending::before {
+        content: "◌ ";
+        color: var(--pending);
+      }
+      .badge.ok {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .badge.ok::before {
+        content: "● ";
+      }
+      .badge.error {
+        border-color: var(--error);
+        color: var(--error);
+      }
+      .badge.error::before {
+        content: "✕ ";
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(320px, 34%) 1fr;
+        min-height: 0;
+      }
+      #boot-log {
+        margin: 0;
+        padding: 1rem 1.2rem;
+        overflow-y: auto;
+        font-size: 0.78rem;
+        line-height: 1.55;
+        color: var(--muted);
+        border-right: 1px solid var(--border);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #app-frame {
+        border: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--panel);
+      }
+      @media (max-width: 900px) {
+        main {
+          grid-template-columns: 1fr;
+          grid-template-rows: 40% 60%;
+        }
+        #boot-log {
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Rails-in-Browser <span>2.1</span> · VM Linux x86 dans le navigateur</h1>
+      <div class="badges">
+        <span id="env-slot"></span>
+        <span class="badge pending" id="badge-sw">Service Worker</span>
+        <span class="badge pending" id="badge-coi">Isolation COI</span>
+        <span class="badge pending" id="badge-vm">VM CheerpX</span>
+        <span class="badge pending" id="badge-http">Serveur HTTP</span>
+      </div>
+    </header>
+    <main>
+      <pre id="boot-log"></pre>
+      <iframe id="app-frame" title="Application Rails" src="about:blank"></iframe>
+    </main>
+    <link rel="stylesheet" href="/env-drawer.css" />
+    <script type="module" src="/main.js"></script>
+  </body>
 </html>

@@ -1,7 +1,11 @@
 // Mesure le coût du chemin chaud du pont série : v86 émet UN événement JS par
 // octet, donc l'assembleur doit rester O(1) sans allocation par octet.
 //   node tools/bench-serial.mjs
-import { bytesToBase64, createLineAssembler, createResponseAssembler } from "../public/shared/serial-codec.js";
+import {
+  bytesToBase64,
+  createLineAssembler,
+  createResponseAssembler,
+} from "../public/shared/serial-codec.js";
 
 const ASSET_BYTES = 270 * 1024; // CSS tailwind compilé de jiyufit
 const CHUNK = 8000; // taille des tranches DAT côté démon

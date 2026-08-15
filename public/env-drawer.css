@@ -23,7 +23,9 @@
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  transition: border-color 120ms ease, color 120ms ease;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
 }
 .env-declencheur:hover,
 .env-declencheur:focus-visible {

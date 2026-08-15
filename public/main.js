@@ -9,19 +9,19 @@ const APP_URL = "/app/";
 const V86_CONFIG_URL = "/disks/v86-config.json";
 // Deuxième chance après réparation : l'application vient d'être relancée
 // avec les nouvelles variables, elle doit rebooter (plusieurs minutes).
-const RETRY_APRES_REPARATION = 2;
+const MAX_REPAIR_RETRIES = 2;
 
-let inspecteur = null;
+let inspector = null;
 const MAX_LOG_LINES = 800;
 const RELOAD_GUARD_KEY = "rib-reloaded";
 
 const logElement = document.getElementById("boot-log");
-const frameElement = document.getElementById("app-frame");
+const frameElement = /** @type {HTMLIFrameElement} */ (document.getElementById("app-frame"));
 
 function logLine(text) {
   // Chaque ligne passe par le détecteur : une variable manquante citée par
   // l'application ouvre l'inspecteur au lieu de se perdre dans le journal.
-  inspecteur?.ingest(text);
+  inspector?.ingest(text);
   const stamp = new Date().toLocaleTimeString();
   logElement.textContent += `[${stamp}] ${text}\n`;
   const lines = logElement.textContent.split("\n");
@@ -60,10 +60,10 @@ async function start() {
   sendBridgePort(vm);
   await vm.startServer();
 
-  installerInspecteur(vm);
+  installInspector(vm);
 
   logLine("Attente du serveur applicatif à l'intérieur de la VM…");
-  await attendreApplication(vm);
+  await waitForApplication(vm);
   setBadge("http", true);
 
   frameElement.src = APP_URL;
@@ -92,53 +92,42 @@ async function start() {
 
 // L'inspecteur n'a de sens que si la VM sait recevoir des variables : le
 // moteur CheerpX n'expose pas cette capacité, on ne l'affiche donc pas.
-function installerInspecteur(vm) {
+function installInspector(vm) {
   if (typeof vm.applyEnvironment !== "function") return;
   const registry = createEnvironmentRegistry();
-  inspecteur = createEnvironmentDrawer({
+  inspector = createEnvironmentDrawer({
     registry,
     onLog: (message) => logLine(message),
     onApply: (variables) => vm.applyEnvironment(variables),
   });
-  document.getElementById("env-slot").append(inspecteur.element);
+  document.getElementById("env-slot").append(inspector.element);
 }
 
 // Attend l'application ; si elle ne démarre pas et que des variables
 // manquantes ont été détectées, laisse une chance à la réparation avant
 // d'abandonner.
-async function attendreApplication(vm, tentativeReparation = 0) {
+async function waitForApplication(vm, repairAttempt = 0) {
   try {
     await vm.waitUntilReady((attempt, error) =>
       logLine(`Sonde HTTP interne n°${attempt}${error ? ` — ${error}` : " — OK"}`),
     );
   } catch (error) {
-    const manquantes = inspecteur ? document.querySelectorAll(".env-variable").length : 0;
-    if (manquantes === 0 || tentativeReparation >= RETRY_APRES_REPARATION) throw error;
+    // Toutes les variables détectées comptent, même déjà remplies : une
+    // valeur erronée saisie au tour précédent mérite une chance de correction.
+    const detectedCount = inspector ? inspector.detectedCount() : 0;
+    if (detectedCount === 0 || repairAttempt >= MAX_REPAIR_RETRIES) throw error;
     logLine("L'application n'a pas démarré : configuration incomplète détectée.");
-    inspecteur.open();
-    inspecteur.annoncer(
+    inspector.open();
+    inspector.announce(
       "L'application n'a pas démarré. Renseignez les variables ci-dessous, puis relancez-la.",
       "erreur",
     );
-    await attendreReparation();
+    // Le panneau signale lui-même la fin d'une réparation réussie : aucun
+    // besoin d'observer son DOM, on attend son événement explicite.
+    await inspector.nextRepair();
     logLine("Nouvelle tentative après réparation de l'environnement…");
-    await attendreApplication(vm, tentativeReparation + 1);
+    await waitForApplication(vm, repairAttempt + 1);
   }
-}
-
-// Rend la main quand l'utilisateur a appliqué une réparation (le panneau
-// signale son succès en passant l'état à « succes »).
-function attendreReparation() {
-  return new Promise((resolve) => {
-    const etat = document.querySelector(".env-etat");
-    const observateur = new MutationObserver(() => {
-      if (etat.dataset.ton === "succes" && etat.textContent.includes("redémarrée")) {
-        observateur.disconnect();
-        resolve();
-      }
-    });
-    observateur.observe(etat, { attributes: true, childList: true, characterData: true, subtree: true });
-  });
 }
 
 async function bootSelectedEngine() {
@@ -148,10 +137,14 @@ async function bootSelectedEngine() {
   badge.textContent = `VM ${engine}`;
   if (engine === "v86") {
     logLine("Boot de la VM Linux i386 (v86, open source)…");
-    logLine("Premier boot à froid : plusieurs minutes. Boots suivants : restaurés depuis l'instantané.");
+    logLine(
+      "Premier boot à froid : plusieurs minutes. Boots suivants : restaurés depuis l'instantané.",
+    );
     const configResponse = await fetch(V86_CONFIG_URL);
     if (!configResponse.ok) {
-      throw new Error("v86-config.json introuvable — lancez tools/build-v86-image/build.sh d'abord");
+      throw new Error(
+        "v86-config.json introuvable — lancez tools/build-v86-image/build.sh d'abord",
+      );
     }
     const { bootVm } = await import("./vm/v86-vm.js");
     return bootVm({

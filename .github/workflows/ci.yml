@@ -1,0 +1,29 @@
+# Intégration continue : chaque push et pull request doit passer le lint,
+# le format, le typecheck et les tests unitaires. Les artefacts VM
+# (public/disks/) ne sont pas dans le dépôt : seuls les modules purs sont
+# vérifiés ici — le harnais d'intégration sur VM réelle arrive en phase A1/B.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint (ESLint)
+        run: npm run lint
+      - name: Format (Prettier)
+        run: npm run format:check
+      - name: Typecheck (tsc --checkJs)
+        run: npm run typecheck
+      - name: Tests unitaires
+        run: npm test

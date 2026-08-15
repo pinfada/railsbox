@@ -28,6 +28,7 @@ const ISOLATION_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
   "Cross-Origin-Resource-Policy": "same-origin",
+  "X-Content-Type-Options": "nosniff",
   "Accept-Ranges": "bytes",
   "Cache-Control": "no-cache",
 };
@@ -88,7 +89,11 @@ function sendFile(response, filePath, fileSize, rangeHeader) {
     createReadStream(filePath, range).pipe(response);
     return;
   }
-  response.writeHead(200, { "Content-Type": mime, "Content-Length": fileSize, ...ISOLATION_HEADERS });
+  response.writeHead(200, {
+    "Content-Type": mime,
+    "Content-Length": fileSize,
+    ...ISOLATION_HEADERS,
+  });
   createReadStream(filePath).pipe(response);
 }
 
@@ -99,7 +104,9 @@ async function handleRequest(request, response) {
   // atteint ce serveur, c'est que la VM n'est pas encore prête.
   if (urlPath === "/app" || urlPath.startsWith("/app/")) {
     response.writeHead(503, { "Content-Type": "text/html; charset=utf-8", ...ISOLATION_HEADERS });
-    response.end("<h1>503</h1><p>La VM n'est pas prête : ouvrez d'abord la page hôte <a href=\"/\">/</a>.</p>");
+    response.end(
+      "<h1>503</h1><p>La VM n'est pas prête : ouvrez d'abord la page hôte <a href=\"/\">/</a>.</p>",
+    );
     return;
   }
 

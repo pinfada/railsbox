@@ -44,6 +44,16 @@ const BRIDGE_ERROR_HINTS = new Map([
 const SNAPSHOT_DB_NAME = "rib-v86-snapshots";
 const SNAPSHOT_STORE = "states";
 
+/**
+ * @param {{
+ *   onConsole?: (line: string) => void,
+ *   config: {
+ *     disk: string, kernel: string, initrd: string, cmdline?: string,
+ *     diskSize?: number, memoryMb?: number, state?: string,
+ *   },
+ *   fresh?: boolean,
+ * }} options
+ */
 export async function bootVm({ onConsole = () => {}, config, fresh = false }) {
   if (!config?.disk || !config?.kernel || !config?.initrd) {
     throw new Error(
@@ -125,7 +135,9 @@ async function resolveSnapshot(snapshotKey, config, onConsole) {
     // Mise en cache AVANT de démarrer l'émulateur : v86 peut prendre
     // possession du buffer, et un put concurrent stockerait un tampon détaché.
     await snapshotPut(snapshotKey, state).catch((error) =>
-      onConsole(`[v86] cache local impossible (${error.message}) — re-téléchargement au prochain lancement`),
+      onConsole(
+        `[v86] cache local impossible (${error.message}) — re-téléchargement au prochain lancement`,
+      ),
     );
     onConsole("[v86] restauration depuis l'instantané pré-calculé…");
     return { state, fromCache: false };
@@ -161,6 +173,10 @@ function settle(state, id, outcome) {
 function createFacade(emulator, state, onConsole, snapshot) {
   // Attend l'acquittement d'une tranche montante : sans ce contrôle de flux,
   // le tampon d'entrée de l'invité déborde et la requête est perdue.
+  /**
+   * @param {string} id
+   * @returns {Promise<void>}
+   */
   function waitForAck(id) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -234,6 +250,7 @@ function createFacade(emulator, state, onConsole, snapshot) {
     state.clockKeeper = null;
   }
 
+  /** @param {(attempt: number, error: string | null) => void} [onAttempt] */
   async function waitUntilReady(onAttempt = () => {}) {
     for (let attempt = 1; attempt <= READY_MAX_ATTEMPTS; attempt += 1) {
       syncGuestClock();
@@ -284,15 +301,15 @@ function createFacade(emulator, state, onConsole, snapshot) {
   // deux trames sont acquittées, donc on sait quand l'invité a réellement
   // pris en compte la demande — pas seulement quand on l'a envoyée.
   async function applyEnvironment(variables) {
-    const idEnv = String(state.nextId++);
-    const attenduEnv = waitForAck(idEnv);
-    emulator.serial0_send(buildEnvironmentFrame(idEnv, variables));
-    await attenduEnv;
+    const envId = String(state.nextId++);
+    const envAck = waitForAck(envId);
+    emulator.serial0_send(buildEnvironmentFrame(envId, variables));
+    await envAck;
 
-    const idRestart = String(state.nextId++);
-    const attenduRestart = waitForAck(idRestart);
-    emulator.serial0_send(buildRestartFrame(idRestart));
-    await attenduRestart;
+    const restartId = String(state.nextId++);
+    const restartAck = waitForAck(restartId);
+    emulator.serial0_send(buildRestartFrame(restartId));
+    await restartAck;
   }
 
   return {
@@ -333,6 +350,11 @@ async function snapshotGet(key) {
   });
 }
 
+/**
+ * @param {string} key
+ * @param {ArrayBuffer} buffer
+ * @returns {Promise<void>}
+ */
 async function snapshotPut(key, buffer) {
   const db = await snapshotOpenDb();
   return new Promise((resolve, reject) => {
@@ -345,6 +367,7 @@ async function snapshotPut(key, buffer) {
   });
 }
 
+/** @returns {Promise<void>} */
 async function snapshotDelete() {
   const db = await snapshotOpenDb();
   return new Promise((resolve, reject) => {
@@ -360,7 +383,8 @@ function loadClassicScript(url) {
     const script = document.createElement("script");
     script.src = url;
     script.onload = resolve;
-    script.onerror = () => reject(new Error(`Chargement impossible: ${url} (npm install effectué ?)`));
+    script.onerror = () =>
+      reject(new Error(`Chargement impossible: ${url} (npm install effectué ?)`));
     document.head.append(script);
   });
 }

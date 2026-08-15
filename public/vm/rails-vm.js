@@ -23,6 +23,9 @@ const READY_INTERVAL_MS = 3_000;
 const CURL_CONNECTION_REFUSED = 7;
 const SECRET_KEY_BYTES = 64;
 
+/**
+ * @param {{ onConsole?: (line: string) => void, diskImageUrl?: string }} [options]
+ */
 export async function bootVm({ onConsole = () => {}, diskImageUrl = DEFAULT_DISK_IMAGE_URL } = {}) {
   const diskDevice = await createDiskDevice(diskImageUrl);
   const rootPersistence = await CheerpX.IDBDevice.create("rails-root");
@@ -56,15 +59,19 @@ function attachConsole(cx, onConsole) {
   if (typeof cx.setCustomConsole !== "function") return;
   const decoder = new TextDecoder();
   let lineBuffer = "";
-  cx.setCustomConsole((chunk) => {
-    const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
-    lineBuffer += text;
-    const lines = lineBuffer.split(/\r?\n/);
-    lineBuffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (line.trim().length > 0) onConsole(line);
-    }
-  }, 200, 50);
+  cx.setCustomConsole(
+    (chunk) => {
+      const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+      lineBuffer += text;
+      const lines = lineBuffer.split(/\r?\n/);
+      lineBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim().length > 0) onConsole(line);
+      }
+    },
+    200,
+    50,
+  );
 }
 
 function buildRunEnvironment() {
@@ -112,7 +119,10 @@ function createVmFacade(cx, devices, onConsole) {
         await devices.dataDevice.writeFile(deviceRelative(files.requestBody, DATA_MOUNT), bytes);
       }
       request = buildBridgeRequest({ ...descriptor, seq });
-      await devices.dataDevice.writeFile(deviceRelative(files.descriptor, DATA_MOUNT), request.descriptorJson);
+      await devices.dataDevice.writeFile(
+        deviceRelative(files.descriptor, DATA_MOUNT),
+        request.descriptorJson,
+      );
     } catch (error) {
       // La boucle VM consomme req-N.cmd dans l'ordre strict : produire un
       // script neutre pour que les requêtes suivantes ne soient pas bloquées.
@@ -122,19 +132,27 @@ function createVmFacade(cx, devices, onConsole) {
       );
       throw error;
     }
-    await devices.dataDevice.writeFile(deviceRelative(files.command, DATA_MOUNT), request.commandScript);
+    await devices.dataDevice.writeFile(
+      deviceRelative(files.command, DATA_MOUNT),
+      request.commandScript,
+    );
     // .done est écrit en dernier par la VM et annonce les tailles attendues :
     // on attend qu'il soit non-vide, puis que head/body atteignent leur taille
     // (le write-back IndexedDB de CheerpX n'a pas d'ordre garanti).
-    const doneBlob = await waitForFile(devices.bridgeDevice, deviceRelative(files.done, BRIDGE_MOUNT), 1);
+    const doneBlob = await waitForFile(
+      devices.bridgeDevice,
+      deviceRelative(files.done, BRIDGE_MOUNT),
+      1,
+    );
     return readBridgeResponse(files, parseDoneMarker(await doneBlob.text()));
   }
 
   async function readBridgeResponse(files, marker) {
     if (marker.curlExit !== 0 || marker.headSize === 0) {
-      const hint = marker.curlExit === CURL_CONNECTION_REFUSED
-        ? "connexion refusée — le serveur applicatif n'écoute pas encore"
-        : `curl a échoué (code ${marker.curlExit})`;
+      const hint =
+        marker.curlExit === CURL_CONNECTION_REFUSED
+          ? "connexion refusée — le serveur applicatif n'écoute pas encore"
+          : `curl a échoué (code ${marker.curlExit})`;
       throw new Error(`Aucune réponse HTTP: ${hint}`);
     }
     const headBlob = await waitForFile(
@@ -160,6 +178,7 @@ function createVmFacade(cx, devices, onConsole) {
     };
   }
 
+  /** @param {(attempt: number, error: string | null) => void} [onAttempt] */
   async function waitUntilReady(onAttempt = () => {}) {
     for (let attempt = 1; attempt <= READY_MAX_ATTEMPTS; attempt += 1) {
       const result = await probe();

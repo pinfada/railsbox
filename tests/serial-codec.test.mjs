@@ -22,7 +22,10 @@ test("buildRequestFrames sépare le descripteur du corps (une seule couche base6
   const { head, bodyChunks, tail } = buildRequestFrames("42", {
     method: "post",
     path: "/app/login",
-    headers: [["Content-Type", "application/x-www-form-urlencoded"], ["Host", "a-jeter"]],
+    headers: [
+      ["Content-Type", "application/x-www-form-urlencoded"],
+      ["Host", "a-jeter"],
+    ],
     forwardHost: "localhost:8080",
     bodyBytes: new TextEncoder().encode("user=x"),
   });
@@ -34,7 +37,10 @@ test("buildRequestFrames sépare le descripteur du corps (une seule couche base6
   assert.equal(descriptor.bodyLength, 6);
   assert.equal(descriptor.body, undefined, "le corps ne doit plus être dans le descripteur");
   assert.equal(bodyChunks.length, 1);
-  assert.equal(new TextDecoder().decode(base64ToBytes(bodyChunks[0].trim().split(" ")[3])), "user=x");
+  assert.equal(
+    new TextDecoder().decode(base64ToBytes(bodyChunks[0].trim().split(" ")[3])),
+    "user=x",
+  );
   assert.equal(tail, "@RIB1 FIN 42\n");
 });
 
@@ -74,7 +80,11 @@ test("parseFrameLine reconnaît les types de trames et rejette le bruit", () => 
   assert.deepEqual(parseFrameLine("@RIB1 RSB 3 120"), { kind: "RSB", id: "3", value: "120" });
   assert.deepEqual(parseFrameLine("@RIB1 END 3"), { kind: "END", id: "3", value: "" });
   assert.deepEqual(parseFrameLine("@RIB1 ERR 3 7"), { kind: "ERR", id: "3", value: "7" });
-  assert.deepEqual(parseFrameLine("@RIB1 LOG pont serie pret"), { kind: "LOG", id: null, value: "pont serie pret" });
+  assert.deepEqual(parseFrameLine("@RIB1 LOG pont serie pret"), {
+    kind: "LOG",
+    id: null,
+    value: "pont serie pret",
+  });
   assert.equal(parseFrameLine("[ 12.3] kernel: bruit de boot"), null);
   assert.equal(parseFrameLine("@RIB1 XYZ 1 a"), null);
 });
@@ -135,7 +145,11 @@ test("createResponseAssembler signale une réponse tronquée au lieu de la livre
 
 test("buildTimeSyncFrame émet une trame TIME entière et refuse l'invalide", () => {
   assert.equal(buildTimeSyncFrame(1786752000.87), "@RIB1 TIME 1786752000\n");
-  assert.deepEqual(parseFrameLine("@RIB1 TIME 1786752000"), null, "TIME est entrant, pas une réponse");
+  assert.deepEqual(
+    parseFrameLine("@RIB1 TIME 1786752000"),
+    null,
+    "TIME est entrant, pas une réponse",
+  );
   for (const invalide of [0, -1, NaN, "hier", undefined]) {
     assert.throws(() => buildTimeSyncFrame(invalide), undefined, `aurait dû refuser: ${invalide}`);
   }

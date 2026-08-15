@@ -9,50 +9,54 @@
 
 // Mots-clés signalant qu'une configuration fait défaut. Le nom de la
 // variable se trouve AVANT (« FOO must be set ») ou APRÈS (« Missing FOO »).
-const MOTS_CLES_APRES_LA_VARIABLE =
+const KEYWORDS_AFTER_VARIABLE =
   /(?:must be (?:set|at least|provided|configured|present|defined)|is missing|is required|not configured|missing or empty|manquantes?|manquants?|absentes?|absents?|requises?|requis|obligatoires?)/gi;
-const MOTS_CLES_AVANT_LA_VARIABLE =
+const KEYWORDS_BEFORE_VARIABLE =
   /(?:key not found:|missing required environment variable:?|missing|manquante?)/gi;
 
 // Fenêtre de recherche autour du mot-clé. Assez large pour « Missing required
 // environment variable: FOO », assez étroite pour ne pas ramasser la moitié
 // d'une ligne de journal.
-const FENETRE = 70;
+const SEARCH_WINDOW = 70;
 
 // Forme d'un nom de variable d'environnement : au moins un souligné. C'est
 // la règle qui écarte FATAL, WARN, DEVISE ou PRODUCTION — des mots en
 // majuscules qui traînent dans les journaux sans être des variables. Les
 // rares variables d'un seul mot (PORT, TZ) ont presque toujours une valeur
 // par défaut, donc ne bloquent pas un démarrage.
-const FORME_VARIABLE = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g;
+const VARIABLE_SHAPE = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g;
+
+// Provenance d'une variable ajoutée à la main (affichée telle quelle, mais
+// aussi testée par l'UI : exportée pour éviter la comparaison de littéraux).
+export const MANUAL_SOURCE = "ajout manuel";
 
 // Familles reconnues : classe la variable et fournit un générateur adapté.
-// « interne » = secret propre au déploiement, factice acceptable.
-// « externe » = identifiant d'un service tiers : aucune valeur inventée ne
+// « internal » = secret propre au déploiement, factice acceptable.
+// « external » = identifiant d'un service tiers : aucune valeur inventée ne
 // peut fonctionner, l'utilisateur doit la fournir (ou laisser la
 // fonctionnalité désactivée).
 const FAMILIES = [
   {
     test: /SECRET_KEY_BASE$/,
-    kind: "interne",
+    kind: "internal",
     label: "Clé de session Rails",
     generate: () => randomHex(64),
   },
   {
     test: /(SIGNING|PSEUDONYMIZATION|ENCRYPTION|DERIVATION|HMAC|EVIDENCE)/,
-    kind: "interne",
+    kind: "internal",
     label: "Clé de chiffrement / signature",
     generate: () => randomHex(32),
   },
   {
     test: /_SALT$/,
-    kind: "interne",
+    kind: "internal",
     label: "Sel de dérivation",
     generate: () => randomHex(32),
   },
   {
     test: /^STRIPE_SECRET_KEY$/,
-    kind: "externe",
+    kind: "external",
     label: "Stripe — clé secrète",
     // Format imposé par les validations Rails habituelles (sk_live_…) ; la
     // valeur reste inerte, aucun appel réel ne peut aboutir.
@@ -61,52 +65,62 @@ const FAMILIES = [
   },
   {
     test: /^STRIPE_PUBLIC_KEY$|^STRIPE_PUBLISHABLE_KEY$/,
-    kind: "externe",
+    kind: "external",
     label: "Stripe — clé publique",
     generate: () => `pk_live_${randomAlphanumeric(24)}`,
     mockable: true,
   },
   {
     test: /_PASSWORD$/,
-    kind: "interne",
+    kind: "internal",
     label: "Mot de passe interne",
     generate: () => randomHex(16),
   },
   {
     test: /_USERNAME$|_USER$/,
-    kind: "interne",
+    kind: "internal",
     label: "Identifiant interne",
     generate: () => "demo",
   },
   {
     test: /_EMAIL$/,
-    kind: "interne",
+    kind: "internal",
     label: "Adresse de contact",
     generate: () => "demo@exemple.local",
   },
   {
     test: /_URL$|_HOST$|_ENDPOINT$/,
-    kind: "externe",
+    kind: "external",
     label: "Adresse de service",
     generate: () => "",
   },
   {
     test: /(API_KEY|ACCESS_KEY|CLIENT_ID|CLIENT_SECRET|TOKEN|WEBHOOK)/,
-    kind: "externe",
+    kind: "external",
     label: "Identifiant de service tiers",
     generate: () => "",
   },
 ];
 
 const FALLBACK_FAMILY = {
-  kind: "interne",
+  kind: "internal",
   label: "Valeur de configuration",
   generate: () => "demo",
 };
 
 // Variables que l'application réclamerait à tort : elles appartiennent à
 // l'infrastructure du bac à sable, pas à l'application.
-const IGNORED = new Set(["PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "PWD", "RAILS_ENV", "RACK_ENV"]);
+const IGNORED = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "SHELL",
+  "TERM",
+  "LANG",
+  "PWD",
+  "RAILS_ENV",
+  "RACK_ENV",
+]);
 
 export function classifyVariable(name) {
   const family = FAMILIES.find((candidate) => candidate.test.test(name)) ?? FALLBACK_FAMILY;
@@ -116,7 +130,7 @@ export function classifyVariable(name) {
     label: family.label,
     // Une variable externe n'est « simulable » que si un format factice
     // satisfait les validations locales (cas de Stripe).
-    mockable: family.kind === "interne" || family.mockable === true,
+    mockable: family.kind === "internal" || family.mockable === true,
     generate: family.generate,
   };
 }
@@ -133,16 +147,16 @@ function stripLogTags(line) {
 function expandSlashPairs(line) {
   return line.replace(
     /\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)_([A-Z0-9]+)\/([A-Z0-9]+)\b/g,
-    (_all, prefixe, premier, second) => `${prefixe}_${premier} ${prefixe}_${second}`,
+    (_all, prefix, first, second) => `${prefix}_${first} ${prefix}_${second}`,
   );
 }
 
-function collecterVariables(fragment, found) {
-  FORME_VARIABLE.lastIndex = 0;
-  let jeton = FORME_VARIABLE.exec(fragment);
-  while (jeton !== null) {
-    if (!IGNORED.has(jeton[0])) found.add(jeton[0]);
-    jeton = FORME_VARIABLE.exec(fragment);
+function collectVariables(fragment, found) {
+  VARIABLE_SHAPE.lastIndex = 0;
+  let token = VARIABLE_SHAPE.exec(fragment);
+  while (token !== null) {
+    if (!IGNORED.has(token[0])) found.add(token[0]);
+    token = VARIABLE_SHAPE.exec(fragment);
   }
 }
 
@@ -159,19 +173,19 @@ export function detectVariablesInLine(rawLine) {
   const line = expandSlashPairs(stripLogTags(rawLine));
   const found = new Set();
 
-  MOTS_CLES_APRES_LA_VARIABLE.lastIndex = 0;
-  let motCle = MOTS_CLES_APRES_LA_VARIABLE.exec(line);
-  while (motCle !== null) {
-    collecterVariables(line.slice(Math.max(0, motCle.index - FENETRE), motCle.index), found);
-    motCle = MOTS_CLES_APRES_LA_VARIABLE.exec(line);
+  KEYWORDS_AFTER_VARIABLE.lastIndex = 0;
+  let keyword = KEYWORDS_AFTER_VARIABLE.exec(line);
+  while (keyword !== null) {
+    collectVariables(line.slice(Math.max(0, keyword.index - SEARCH_WINDOW), keyword.index), found);
+    keyword = KEYWORDS_AFTER_VARIABLE.exec(line);
   }
 
-  MOTS_CLES_AVANT_LA_VARIABLE.lastIndex = 0;
-  motCle = MOTS_CLES_AVANT_LA_VARIABLE.exec(line);
-  while (motCle !== null) {
-    const debut = motCle.index + motCle[0].length;
-    collecterVariables(line.slice(debut, debut + FENETRE), found);
-    motCle = MOTS_CLES_AVANT_LA_VARIABLE.exec(line);
+  KEYWORDS_BEFORE_VARIABLE.lastIndex = 0;
+  keyword = KEYWORDS_BEFORE_VARIABLE.exec(line);
+  while (keyword !== null) {
+    const start = keyword.index + keyword[0].length;
+    collectVariables(line.slice(start, start + SEARCH_WINDOW), found);
+    keyword = KEYWORDS_BEFORE_VARIABLE.exec(line);
   }
 
   return [...found];
@@ -182,11 +196,11 @@ export function detectVariablesInLine(rawLine) {
 // JSON portent leur niveau, autant s'en servir plutôt que de tout traiter
 // comme critique — c'est la différence entre « à corriger » et « à savoir ».
 export function severityOfLine(line) {
-  if (/"severity"\s*:\s*"(WARN|WARNING|INFO|DEBUG)"/i.test(line)) return "avertissement";
-  if (/"severity"\s*:\s*"(ERROR|FATAL)"/i.test(line)) return "critique";
-  if (/\b(FATAL|cannot boot|aborted!|Exiting)\b/i.test(line)) return "critique";
-  if (/\bwarning\b|\bWARN\b/i.test(line)) return "avertissement";
-  return "critique";
+  if (/"severity"\s*:\s*"(WARN|WARNING|INFO|DEBUG)"/i.test(line)) return "warning";
+  if (/"severity"\s*:\s*"(ERROR|FATAL)"/i.test(line)) return "critical";
+  if (/\b(FATAL|cannot boot|aborted!|Exiting)\b/i.test(line)) return "critical";
+  if (/\bwarning\b|\bWARN\b/i.test(line)) return "warning";
+  return "critical";
 }
 
 // Cas particulier fréquent : Rails signale les trois clés de chiffrement
@@ -206,7 +220,7 @@ export function expandKnownGroups(names, line) {
 
 // Registre des variables détectées, alimenté en continu par les logs.
 export function createEnvironmentRegistry() {
-  const variables = new Map(); // nom -> { …classification, value, source }
+  const variables = new Map(); // nom -> { …classification, severity, value, source }
 
   return {
     get size() {
@@ -214,39 +228,39 @@ export function createEnvironmentRegistry() {
     },
     list() {
       return [...variables.values()].sort((a, b) => {
-        if (a.kind !== b.kind) return a.kind === "interne" ? -1 : 1;
+        if (a.kind !== b.kind) return a.kind === "internal" ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
     },
     // Retourne les noms nouvellement découverts (pour signaler à l'UI).
     ingestLogLine(line) {
       const names = expandKnownGroups(detectVariablesInLine(line), line);
-      const gravite = severityOfLine(line);
-      const nouveaux = [];
+      const severity = severityOfLine(line);
+      const added = [];
       for (const name of names) {
         if (variables.has(name)) {
           // Une même variable peut d'abord apparaître en avertissement puis
           // en erreur fatale : on retient toujours le pire des deux.
-          if (gravite === "critique") variables.get(name).gravite = "critique";
+          if (severity === "critical") variables.get(name).severity = "critical";
           continue;
         }
         variables.set(name, {
           ...classifyVariable(name),
-          gravite,
+          severity,
           value: "",
           source: line.slice(0, 200),
         });
-        nouveaux.push(name);
+        added.push(name);
       }
-      return nouveaux;
+      return added;
     },
     add(name) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || variables.has(name)) return false;
       variables.set(name, {
         ...classifyVariable(name),
-        gravite: "critique",
+        severity: "critical",
         value: "",
-        source: "ajout manuel",
+        source: MANUAL_SOURCE,
       });
       return true;
     },
@@ -259,14 +273,14 @@ export function createEnvironmentRegistry() {
     },
     // Remplit toutes les variables simulables encore vides.
     fillMocks() {
-      let remplies = 0;
+      let filledCount = 0;
       for (const entry of variables.values()) {
         if (entry.value === "" && entry.mockable) {
           entry.value = entry.generate();
-          remplies += 1;
+          filledCount += 1;
         }
       }
-      return remplies;
+      return filledCount;
     },
     // Ce qui sera réellement envoyé à la VM (les vides sont ignorés).
     toPayload() {
@@ -281,7 +295,7 @@ export function createEnvironmentRegistry() {
         if (!variables.has(name)) {
           variables.set(name, {
             ...classifyVariable(name),
-            gravite: "critique",
+            severity: "critical",
             value: "",
             source: "session précédente",
           });

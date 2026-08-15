@@ -70,7 +70,10 @@ test("buildBridgeRequest produit un descripteur JSON complet et un cmd statique"
     seq: 7,
     method: "POST",
     path: "/app/posts",
-    headers: [["content-type", "application/json"], ["Host", "a-jeter"]],
+    headers: [
+      ["content-type", "application/json"],
+      ["Host", "a-jeter"],
+    ],
     hasBody: true,
     forwardHost: "localhost:8080",
   });
@@ -84,7 +87,10 @@ test("buildBridgeRequest produit un descripteur JSON complet et un cmd statique"
   assert.equal(descriptor.headFile, "/files/res-7.head");
   assert.equal(descriptor.bodyFile, "/files/res-7.body");
   assert.equal(descriptor.doneFile, "/files/res-7.done");
-  assert.match(commandScript, /^#!\/bin\/sh\npython3 \/data\/bridge-client\.py '\/data\/req-7\.json'\n$/);
+  assert.match(
+    commandScript,
+    /^#!\/bin\/sh\npython3 \/data\/bridge-client\.py '\/data\/req-7\.json'\n$/,
+  );
   assert.ok(!commandScript.includes("\r"), "le script ne doit contenir aucun CRLF");
 });
 

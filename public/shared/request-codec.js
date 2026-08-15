@@ -4,7 +4,7 @@
 // c'est la frontière de validation (injection shell = risque n°1 de ce design).
 
 export const BRIDGE_MOUNT = "/files"; // IDBDevice lisible depuis JS (VM -> page)
-export const DATA_MOUNT = "/data";    // DataDevice écrit depuis JS (page -> VM)
+export const DATA_MOUNT = "/data"; // DataDevice écrit depuis JS (page -> VM)
 
 // Le serveur applicatif écoute sur un socket Unix, pas sur 127.0.0.1 : la
 // pile TCP de CheerpX exige Tailscale, alors que les sockets Unix sont
@@ -22,11 +22,20 @@ const SOCKET_PATH_PATTERN = /^\/[a-zA-Z0-9/._-]+$/;
 
 // En-têtes hop-by-hop, ou recalculés par curl / le constructeur Response.
 const STRIPPED_REQUEST_HEADERS = new Set([
-  "host", "connection", "content-length", "accept-encoding",
-  "upgrade", "keep-alive", "transfer-encoding", "expect",
+  "host",
+  "connection",
+  "content-length",
+  "accept-encoding",
+  "upgrade",
+  "keep-alive",
+  "transfer-encoding",
+  "expect",
 ]);
 const STRIPPED_RESPONSE_HEADERS = new Set([
-  "connection", "transfer-encoding", "keep-alive", "content-length",
+  "connection",
+  "transfer-encoding",
+  "keep-alive",
+  "content-length",
 ]);
 
 export function shellSingleQuote(value) {
@@ -50,6 +59,7 @@ export function sanitizeAppPath(rawPath) {
   }
   // Un pathname+search issu de `new URL()` est déjà percent-encodé : espaces,
   // quotes, backslashes et caractères de contrôle n'ont rien à y faire.
+  // eslint-disable-next-line no-control-regex -- filtrer les caractères de contrôle est le but
   if (/[\s'"\\`$\u0000-\u001f\u007f]/.test(rawPath)) {
     throw new Error("Caractères interdits dans le chemin");
   }
@@ -69,6 +79,7 @@ export function filterRequestHeaders(entries) {
     if (STRIPPED_REQUEST_HEADERS.has(lowerName)) continue;
     if (!HEADER_NAME_PATTERN.test(lowerName)) continue;
     if (stringValue.length > MAX_HEADER_VALUE_LENGTH) continue;
+    // eslint-disable-next-line no-control-regex -- CRLF/NUL dans un en-tête = injection
     if (/[\r\n\u0000]/.test(stringValue)) continue;
     kept.push([lowerName, stringValue]);
     if (kept.length >= MAX_HEADER_COUNT) break;
@@ -108,7 +119,27 @@ export function deviceRelative(vmPath, mount) {
 // SECONDE écriture socket (comportement de curl) déclenche un deadlock dans
 // la couche socket Unix de CheerpX. Le client Python envoie en-têtes + corps
 // en un unique sendall(), et parle HTTP/1.0 pour exclure le chunked.
-export function buildBridgeRequest({ seq, method, path, headers, hasBody, forwardHost, socketPath = APP_SOCKET_PATH }) {
+/**
+ * @param {{
+ *   seq: number | string,
+ *   method: string,
+ *   path: string,
+ *   headers?: Array<[string, string]>,
+ *   hasBody?: boolean,
+ *   forwardHost?: string,
+ *   socketPath?: string,
+ * }} request
+ * @returns {{ descriptorJson: string, commandScript: string }}
+ */
+export function buildBridgeRequest({
+  seq,
+  method,
+  path,
+  headers,
+  hasBody,
+  forwardHost,
+  socketPath = APP_SOCKET_PATH,
+}) {
   const safeMethod = sanitizeMethod(method);
   const safePath = sanitizeAppPath(path);
   if (!SOCKET_PATH_PATTERN.test(socketPath)) {

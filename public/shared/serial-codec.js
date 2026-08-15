@@ -68,6 +68,17 @@ export function decodeBase64Into(base64, target, offset) {
 //    de flux. Chaque tranche est donc acquittée avant l'envoi de la suivante.
 //  - Coût : embarquer le corps en base64 DANS le JSON, lui-même ré-encodé en
 //    base64, gonflait la charge utile de 77 %. Une seule couche désormais.
+/**
+ * @param {string} id
+ * @param {{
+ *   method: string,
+ *   path: string,
+ *   headers: Array<[string, string]>,
+ *   forwardHost?: string,
+ *   bodyBytes?: Uint8Array | null,
+ * }} request
+ * @returns {{ head: string, bodyChunks: string[], tail: string }}
+ */
 export function buildRequestFrames(id, { method, path, headers, forwardHost, bodyBytes }) {
   const finalHeaders = [];
   const safeHost = sanitizeForwardHost(forwardHost);
@@ -109,16 +120,16 @@ export function buildTimeSyncFrame(epochSeconds) {
 // à chaud : c'est ce qui permet de réparer une configuration manquante depuis
 // le navigateur, sans reconstruire l'image disque.
 export function buildEnvironmentFrame(id, variables) {
-  const propre = {};
+  const cleaned = {};
   for (const [name, value] of Object.entries(variables)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) continue;
     if (typeof value !== "string" || value === "") continue;
-    propre[name] = value;
+    cleaned[name] = value;
   }
-  if (Object.keys(propre).length === 0) {
+  if (Object.keys(cleaned).length === 0) {
     throw new Error("Aucune variable exploitable à transmettre");
   }
-  const encoded = bytesToBase64(new TextEncoder().encode(JSON.stringify(propre)));
+  const encoded = bytesToBase64(new TextEncoder().encode(JSON.stringify(cleaned)));
   return `${FRAME_MAGIC} ENV ${id} ${encoded}\n`;
 }
 
@@ -152,6 +163,7 @@ export function parseFrameLine(line) {
 // base64). Le chemin chaud doit donc être strictement O(1) et sans
 // allocation : tampon Uint8Array pré-alloué à croissance géométrique, pas de
 // tableau d'entiers boxés ni de concaténation de chaînes.
+/** @param {(line: string) => void} onLine */
 export function createLineAssembler(onLine) {
   const decoder = new TextDecoder();
   const stats = { bytes: 0, lines: 0, truncated: 0 };
@@ -192,6 +204,15 @@ export function createLineAssembler(onLine) {
 
 // Réassemble les réponses multi-trames par id de requête, et mesure le débit
 // réel du canal série (utile pour arbitrer la taille des tranches).
+/**
+ * @param {{
+ *   onResponse: (id: string, bytes: Uint8Array) => void,
+ *   onError: (id: string, code: number) => void,
+ *   onLog: (line: string) => void,
+ *   onAck?: (id: string) => void,
+ *   now?: () => number,
+ * }} handlers
+ */
 export function createResponseAssembler({
   onResponse,
   onError,
@@ -271,7 +292,12 @@ export function createResponseAssembler({
 // Sépare une réponse HTTP brute en tête texte + corps binaire.
 export function splitHttpResponse(bytes) {
   for (let index = 0; index + 3 < bytes.length; index += 1) {
-    if (bytes[index] === 13 && bytes[index + 1] === 10 && bytes[index + 2] === 13 && bytes[index + 3] === 10) {
+    if (
+      bytes[index] === 13 &&
+      bytes[index + 1] === 10 &&
+      bytes[index + 2] === 13 &&
+      bytes[index + 3] === 10
+    ) {
       return {
         headText: new TextDecoder().decode(bytes.subarray(0, index)),
         bodyBytes: bytes.subarray(index + 4),

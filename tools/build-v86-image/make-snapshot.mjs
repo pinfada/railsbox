@@ -44,7 +44,9 @@ async function loadConfig() {
   try {
     return { path, config: JSON.parse(await readFile(path, "utf8")) };
   } catch (error) {
-    throw new Error(`v86-config.json illisible (${error.message}) — lancez build.sh d'abord`);
+    throw new Error(`v86-config.json illisible (${error.message}) — lancez build.sh d'abord`, {
+      cause: error,
+    });
   }
 }
 
@@ -124,7 +126,11 @@ async function waitForApplication(bridge) {
 }
 
 async function gzipFile(source, destination) {
-  await pipeline(createReadStream(source), createGzip({ level: 9 }), createWriteStream(destination));
+  await pipeline(
+    createReadStream(source),
+    createGzip({ level: 9 }),
+    createWriteStream(destination),
+  );
 }
 
 async function main() {
@@ -167,7 +173,10 @@ async function main() {
   const compressed = await stat(`${statePath}.gz`);
   log(`écrit ${STATE_NAME}.gz (${Math.round(compressed.size / 1048576)} Mo)`);
 
-  await writeFile(configPath, `${JSON.stringify({ ...config, state: `/disks/${STATE_NAME}` }, null, 2)}\n`);
+  await writeFile(
+    configPath,
+    `${JSON.stringify({ ...config, state: `/disks/${STATE_NAME}` }, null, 2)}\n`,
+  );
   log("v86-config.json référence désormais l'instantané pré-calculé");
   process.exit(0);
 }

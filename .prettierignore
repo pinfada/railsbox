@@ -1,0 +1,6 @@
+node_modules/
+public/vendor/
+public/disks/
+tools/build-v86-image/build.log
+*.md
+package-lock.json

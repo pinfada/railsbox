@@ -10,6 +10,13 @@
 // (message "bridge-port-request") au lieu d'échouer en 503.
 import { sanitizeMethod } from "./shared/request-codec.js";
 
+// lib.webworker type `self` en WorkerGlobalScope générique : ce fichier est
+// un Service Worker, on le déclare une fois pour bénéficier des types
+// d'événements (FetchEvent, ExtendableMessageEvent) et de sw.clients.
+const sw = /** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (
+  /** @type {unknown} */ (self)
+);
+
 const APP_PREFIX = "/app";
 // Artefacts de la VM (disque, noyau, instantané de ~650 Mo) : laissés au
 // navigateur. Les faire transiter par le Service Worker n'apporte rien — le
@@ -29,10 +36,10 @@ const state = {
   nextId: 1,
 };
 
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+sw.addEventListener("install", () => sw.skipWaiting());
+sw.addEventListener("activate", (event) => event.waitUntil(sw.clients.claim()));
 
-self.addEventListener("message", (event) => {
+sw.addEventListener("message", (event) => {
   if (event.data?.type !== "bridge-port" || !event.ports[0]) return;
   adoptBridgePort(event.ports[0]);
 });
@@ -64,7 +71,7 @@ function ensureBridgePort() {
 }
 
 async function requestPortFromClients() {
-  const clientList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
   for (const client of clientList) {
     client.postMessage({ type: "bridge-port-request" });
   }
@@ -83,9 +90,9 @@ function resolvePending(data) {
   }
 }
 
-self.addEventListener("fetch", (event) => {
+sw.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin) return;
+  if (url.origin !== sw.location.origin) return;
   if (url.pathname.startsWith(RAW_ASSET_PREFIX)) return;
   if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) {
     event.respondWith(proxyToVm(event.request, url));
@@ -150,7 +157,7 @@ function sendToBridge(bridgePort, descriptor, body) {
 }
 
 function buildResponse(reply) {
-  const body = BODYLESS_STATUS.has(reply.status) ? null : reply.body ?? null;
+  const body = BODYLESS_STATUS.has(reply.status) ? null : (reply.body ?? null);
   const headers = new Headers(reply.headers ?? []);
 
   // Sécurisation des redirections : la cible doit rester un chemin relatif
@@ -163,7 +170,6 @@ function buildResponse(reply) {
   if (location) {
     headers.set("location", rewriteLocation(location));
   }
-
 
   // Sous COEP:require-corp, un document imbriqué (l'iframe applicative) doit
   // lui-même porter ces en-têtes, et ses sous-ressources un CORP explicite.
@@ -179,25 +185,37 @@ function buildResponse(reply) {
 function rewriteLocation(location) {
   let target;
   try {
-    target = new URL(location, self.location.origin);
+    target = new URL(location, sw.location.origin);
   } catch {
     return location; // en-tête inexploitable : laissé intact
   }
   const isSelf =
-    target.host === self.location.host ||
+    target.host === sw.location.host ||
     target.hostname === "localhost" ||
     target.hostname === "127.0.0.1";
   if (!isSelf) return location; // redirection externe : ne pas y toucher
-  const path = target.pathname.startsWith(`${APP_PREFIX}/`) || target.pathname === APP_PREFIX
-    ? target.pathname
-    : `${APP_PREFIX}${target.pathname}`;
+  const path =
+    target.pathname.startsWith(`${APP_PREFIX}/`) || target.pathname === APP_PREFIX
+      ? target.pathname
+      : `${APP_PREFIX}${target.pathname}`;
   return `${path}${target.search}${target.hash}`;
+}
+
+// Le message peut contenir du contenu dérivé des réponses de la VM (donc de
+// l'application, donc potentiellement d'un tiers) : il doit être échappé
+// avant toute interpolation dans du HTML.
+function escapeHtml(text) {
+  return String(text).replace(
+    /[&<>"']/g,
+    (character) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character],
+  );
 }
 
 function errorResponse(status, message) {
   const page = `<!doctype html><meta charset="utf-8">
 <body style="font-family:system-ui;background:#101418;color:#dce3ea;padding:2rem">
-<h1 style="color:#ff6b6b">${status}</h1><p>${message}</p></body>`;
+<h1 style="color:#ff6b6b">${Number(status)}</h1><p>${escapeHtml(message)}</p></body>`;
   return new Response(page, {
     status,
     headers: {
