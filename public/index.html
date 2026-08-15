@@ -80,6 +80,7 @@
   <header>
     <h1>Rails-in-Browser <span>2.1</span> · VM Linux x86 dans le navigateur</h1>
     <div class="badges">
+      <span id="env-slot"></span>
       <span class="badge pending" id="badge-sw">Service Worker</span>
       <span class="badge pending" id="badge-coi">Isolation COI</span>
       <span class="badge pending" id="badge-vm">VM CheerpX</span>
@@ -90,6 +91,7 @@
     <pre id="boot-log"></pre>
     <iframe id="app-frame" title="Application Rails" src="about:blank"></iframe>
   </main>
+  <link rel="stylesheet" href="/env-drawer.css">
   <script type="module" src="/main.js"></script>
 </body>
 </html>

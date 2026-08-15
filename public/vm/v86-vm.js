@@ -4,7 +4,9 @@
 // le démon /opt/rib/serial-bridge.py embarqué dans l'image disque).
 import { parseCurlHeaders } from "../shared/request-codec.js";
 import {
+  buildEnvironmentFrame,
   buildRequestFrames,
+  buildRestartFrame,
   buildTimeSyncFrame,
   createLineAssembler,
   createResponseAssembler,
@@ -278,10 +280,26 @@ function createFacade(emulator, state, onConsole, snapshot) {
     return `[v86] instantané sauvegardé (${megabytes} Mo en ${seconds}s) — prochains boots en quelques secondes`;
   }
 
+  // Écrit les variables dans la VM puis relance le serveur applicatif. Les
+  // deux trames sont acquittées, donc on sait quand l'invité a réellement
+  // pris en compte la demande — pas seulement quand on l'a envoyée.
+  async function applyEnvironment(variables) {
+    const idEnv = String(state.nextId++);
+    const attenduEnv = waitForAck(idEnv);
+    emulator.serial0_send(buildEnvironmentFrame(idEnv, variables));
+    await attenduEnv;
+
+    const idRestart = String(state.nextId++);
+    const attenduRestart = waitForAck(idRestart);
+    emulator.serial0_send(buildRestartFrame(idRestart));
+    await attenduRestart;
+  }
+
   return {
     startServer,
     handleHttpRequest,
     waitUntilReady,
+    applyEnvironment,
     persistSnapshot,
     syncGuestClock,
     stopClockKeeper,

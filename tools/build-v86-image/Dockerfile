@@ -122,6 +122,9 @@ COPY <<'RIB_BRIDGE' /opt/rib/serial-bridge.py
 import base64
 import http.client
 import json
+import os
+import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -132,6 +135,13 @@ CHUNK = 8000  # multiple de 4 : chaque tranche base64 est decodable seule
 HTTP_TIMEOUT = 120
 LOG_FILES = ["/var/log/puma.log", "/var/log/bridge-err.log"]
 LOG_POLL_SECONDS = 1.0
+ENV_OVERRIDE_FILE = "/opt/rib/env.local.sh"
+APP_PID_FILE = "/run/rib-app.pid"
+APP_LOG = "/var/log/puma.log"
+# Seuls des noms de variables d'environnement plausibles sont acceptes : le
+# navigateur pilote l'ecriture d'un fichier source par le shell, la surface
+# doit rester etroite meme si la VM est un bac a sable local.
+ENV_NAME_MAX = 64
 
 write_lock = threading.Lock()
 
@@ -195,9 +205,17 @@ def follow_logs():
         for path in LOG_FILES:
             try:
                 with open(path, "r", errors="replace") as handle:
-                    handle.seek(positions.get(path, 0))
+                    start = positions.get(path, 0)
+                    # Journal tronque (relance de l'application) : on repart
+                    # du debut, sinon plus rien ne remonte au navigateur.
+                    if os.path.getsize(path) < start:
+                        start = 0
+                    handle.seek(start)
                     for line in handle:
-                        line = line.rstrip("\n")
+                        # Defense : un fichier creux ou une ecriture
+                        # concurrente peut produire des octets nuls, qui
+                        # n'ont rien a faire dans le flux de trames.
+                        line = line.rstrip("\n").replace("\x00", "").strip()
                         if line:
                             emit(line)
                     positions[path] = handle.tell()
@@ -282,6 +300,103 @@ def finish_request(line):
                      daemon=True).start()
 
 
+def valid_env_name(name):
+    if not name or len(name) > ENV_NAME_MAX:
+        return False
+    if not (name[0].isalpha() or name[0] == "_"):
+        return False
+    return all(c.isalnum() or c == "_" for c in name)
+
+
+def write_environment(line):
+    """@RIB1 ENV <id> <b64 json> : ecrit les variables fournies par le
+    navigateur dans un fichier source par le lanceur de l'application.
+    Les valeurs sont echappees (shlex.quote) : aucune injection shell."""
+    try:
+        _, _, req_id, b64 = line.split(" ", 3)
+        variables = json.loads(base64.b64decode(b64))
+    except Exception:
+        return
+    retenues = {}
+    for name, value in variables.items():
+        if valid_env_name(name) and isinstance(value, str) and value != "":
+            retenues[name] = value
+    try:
+        with open(ENV_OVERRIDE_FILE, "w") as handle:
+            handle.write("# Genere par l'inspecteur d'environnement du navigateur\n")
+            for name in sorted(retenues):
+                handle.write("export " + name + "=" + shlex.quote(retenues[name]) + "\n")
+        os.chmod(ENV_OVERRIDE_FILE, 0o600)
+        emit(MAGIC + " LOG environnement ecrit (" + str(len(retenues)) + " variables)")
+    except OSError as error:
+        emit(MAGIC + " LOG echec ecriture environnement: " + error.strerror)
+    emit(MAGIC + " ACK " + req_id)
+
+
+def process_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def stop_application():
+    """Arrete l'ancien serveur et ATTEND sa mort : sans cela le nouveau
+    demarre pendant que l'ancien tient encore le port 3000, et echoue."""
+    pid = None
+    try:
+        with open(APP_PID_FILE) as handle:
+            pid = int(handle.read().strip())
+    except (OSError, ValueError):
+        pass
+    if pid is None or not process_alive(pid):
+        subprocess.run(["pkill", "-f", "puma"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+        time.sleep(3)
+        return
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except OSError:
+        os.kill(pid, signal.SIGTERM)
+    for _ in range(30):  # jusqu'a ~15 s d'arret gracieux
+        if not process_alive(pid):
+            break
+        time.sleep(0.5)
+    if process_alive(pid):
+        emit(MAGIC + " LOG arret force de l'ancien serveur")
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except OSError:
+            os.kill(pid, signal.SIGKILL)
+        time.sleep(1)
+
+
+def restart_application(line):
+    """@RIB1 RST <id> : relance le serveur applicatif avec le nouvel
+    environnement, sans reconstruire l'image ni rebooter la VM."""
+    try:
+        req_id = line.split(" ", 2)[2].strip()
+    except IndexError:
+        return
+    stop_application()
+    # Journal ouvert en AJOUT, jamais tronque : l'ancien processus peut encore
+    # ecrire pendant son arret, et une troncature laisserait un fichier creux
+    # rempli d'octets nuls (vu en pratique, le flux serie en etait pollue).
+    handle = open(APP_LOG, "a")
+    handle.write("\n--- redemarrage de l'application ---\n")
+    handle.flush()
+    child = subprocess.Popen(["sh", "/opt/rib/start-app.sh"], stdout=handle,
+                             stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        with open(APP_PID_FILE, "w") as pid_handle:
+            pid_handle.write(str(child.pid))
+    except OSError:
+        pass
+    emit(MAGIC + " LOG application relancee (pid " + str(child.pid) + ")")
+    emit(MAGIC + " ACK " + req_id)
+
+
 def main():
     threading.Thread(target=follow_logs, daemon=True).start()
     emit(MAGIC + " LOG pont serie pret")
@@ -295,6 +410,10 @@ def main():
             append_body(line)
         elif line.startswith(MAGIC + " FIN "):
             finish_request(line)
+        elif line.startswith(MAGIC + " ENV "):
+            write_environment(line)
+        elif line.startswith(MAGIC + " RST "):
+            restart_application(line)
 
 
 main()
@@ -314,6 +433,18 @@ map ENV.fetch("RAILS_RELATIVE_URL_ROOT", "/") do
 end
 Rails.application.load_server
 RIB_RACKUP
+
+# Lanceur de l'application, partagé par l'init et par la relance à chaud
+# demandée depuis le navigateur (inspecteur d'environnement). env.local.sh
+# est écrit par le pont et surcharge les valeurs figées dans l'image.
+COPY <<'RIB_START' /opt/rib/start-app.sh
+#!/bin/sh
+. /opt/rib/env.sh
+[ -f /opt/rib/env.local.sh ] && . /opt/rib/env.local.sh
+cd /app
+mkdir -p tmp/pids tmp/cache log storage
+exec bundle exec puma /opt/rib/config.ru -b tcp://127.0.0.1:3000
+RIB_START
 
 # Init du guest (remplace systemd) : monte les pseudo-fs, active le loopback,
 # démarre PostgreSQL + Redis + Puma, puis attache le pont série à ttyS0.
@@ -356,8 +487,8 @@ echo "[init] demarrage Puma (jiyufit, monte sous \$RAILS_RELATIVE_URL_ROOT)..."
 # .dockerignore de jiyufit exclut tmp/*, log/* et storage/* : ces répertoires
 # n'existent pas dans l'image. Puma exige tmp/pids (pidfile), ActiveStorage
 # exige storage/.
-mkdir -p /app/tmp/pids /app/tmp/cache /app/log /app/storage
-bundle exec puma /opt/rib/config.ru -b tcp://127.0.0.1:3000 >/var/log/puma.log 2>&1 &
+sh /opt/rib/start-app.sh >/var/log/puma.log 2>&1 &
+echo $! > /run/rib-app.pid
 
 # Les logs applicatifs sont relayés vers la console série PAR le démon du
 # pont (un seul écrivain, sous verrou) — jamais par un tail concurrent qui
@@ -425,6 +556,7 @@ export LEGAL_HOST_NAME='Demo'
 export LEGAL_HOST_ADDRESS='Demo'
 ENVFILE
 chmod 600 /opt/rib/env.sh
+chmod +x /opt/rib/start-app.sh
 
 # Préparation de la base pendant le build (schéma + seeds) pour que le
 # premier boot dans le navigateur n'ait pas à migrer. Redis doit tourner :

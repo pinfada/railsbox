@@ -120,6 +120,37 @@ Il écrit `jiyufit-state.bin` + `.gz`, et ajoute `"state"` à `v86-config.json`.
 Le serveur de dev sert automatiquement le `.gz` avec `Content-Encoding: gzip`
 (décompression transparente par le navigateur).
 
+### Inspecteur d'environnement : réparer sans reconstruire
+
+Une application Rails sérieuse refuse de démarrer si sa configuration est
+incomplète — c'est voulu, et c'est le principal obstacle à l'exécuter
+ailleurs que sur son infrastructure d'origine. Le panneau « Environnement »
+transforme cet échec en étape d'installation.
+
+Le point de conception qui rend la chose utilisable : **la réparation agit à
+chaud**. Le pont écrit les variables dans `/opt/rib/env.local.sh` et relance
+le serveur applicatif — pas de reconstruction d'image (10 min), pas de
+redémarrage de la VM. Le démon du pont est un processus distinct de
+l'application : il survit à son plantage, donc le canal reste disponible
+précisément quand on en a besoin.
+
+Le détecteur lit les journaux de démarrage et reconnaît les formulations
+réelles (`key not found: "X"`, `X must be set in production`,
+`X is missing or empty`, équivalents français, triplet de chiffrement Active
+Record signalé globalement). Les faux positifs sont testés : une ligne
+`Completed 200 OK` ne déclenche rien.
+
+Le classement en trois familles reflète ce qui est vraiment simulable :
+
+| Famille | Traitement | Raison |
+|---|---|---|
+| Secrets internes (signature, chiffrement, mots de passe) | générés au format attendu (hex 32 ou 64 octets) | une valeur aléatoire est parfaitement valide |
+| Services tiers (OAuth, API) | champ éditable, **jamais généré** | aucune valeur inventée ne peut fonctionner ; la simuler donnerait une fausse impression de réparation |
+| Stripe | généré **au format** `sk_live_…` | l'initializer valide le format localement, pas la validité auprès de Stripe |
+
+Les valeurs saisies sont conservées en `localStorage` (outil de développement
+local) pour survivre à un rechargement.
+
 ### Montage sous-URI : `RAILS_RELATIVE_URL_ROOT` ne suffit pas
 
 L'application tourne sous le préfixe `/app`, seul périmètre intercepté par le

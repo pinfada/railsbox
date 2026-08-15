@@ -2,8 +2,16 @@
 // cross-origin, boot de la VM (CheerpX ou v86), puis câblage du pont HTTP.
 // Choix du moteur : ?engine=v86 (image jiyufit) ou défaut cheerpx (démo).
 
+import { createEnvironmentRegistry } from "./shared/env-detector.js";
+import { createEnvironmentDrawer } from "./env-drawer.js";
+
 const APP_URL = "/app/";
 const V86_CONFIG_URL = "/disks/v86-config.json";
+// Deuxième chance après réparation : l'application vient d'être relancée
+// avec les nouvelles variables, elle doit rebooter (plusieurs minutes).
+const RETRY_APRES_REPARATION = 2;
+
+let inspecteur = null;
 const MAX_LOG_LINES = 800;
 const RELOAD_GUARD_KEY = "rib-reloaded";
 
@@ -11,6 +19,9 @@ const logElement = document.getElementById("boot-log");
 const frameElement = document.getElementById("app-frame");
 
 function logLine(text) {
+  // Chaque ligne passe par le détecteur : une variable manquante citée par
+  // l'application ouvre l'inspecteur au lieu de se perdre dans le journal.
+  inspecteur?.ingest(text);
   const stamp = new Date().toLocaleTimeString();
   logElement.textContent += `[${stamp}] ${text}\n`;
   const lines = logElement.textContent.split("\n");
@@ -49,10 +60,10 @@ async function start() {
   sendBridgePort(vm);
   await vm.startServer();
 
+  installerInspecteur(vm);
+
   logLine("Attente du serveur applicatif à l'intérieur de la VM…");
-  await vm.waitUntilReady((attempt, error) =>
-    logLine(`Sonde HTTP interne n°${attempt}${error ? ` — ${error}` : " — OK"}`),
-  );
+  await attendreApplication(vm);
   setBadge("http", true);
 
   frameElement.src = APP_URL;
@@ -77,6 +88,57 @@ async function start() {
       .then((message) => logLine(message))
       .catch((error) => logLine(`Instantané non sauvegardé: ${error.message}`));
   }
+}
+
+// L'inspecteur n'a de sens que si la VM sait recevoir des variables : le
+// moteur CheerpX n'expose pas cette capacité, on ne l'affiche donc pas.
+function installerInspecteur(vm) {
+  if (typeof vm.applyEnvironment !== "function") return;
+  const registry = createEnvironmentRegistry();
+  inspecteur = createEnvironmentDrawer({
+    registry,
+    onLog: (message) => logLine(message),
+    onApply: (variables) => vm.applyEnvironment(variables),
+  });
+  document.getElementById("env-slot").append(inspecteur.element);
+}
+
+// Attend l'application ; si elle ne démarre pas et que des variables
+// manquantes ont été détectées, laisse une chance à la réparation avant
+// d'abandonner.
+async function attendreApplication(vm, tentativeReparation = 0) {
+  try {
+    await vm.waitUntilReady((attempt, error) =>
+      logLine(`Sonde HTTP interne n°${attempt}${error ? ` — ${error}` : " — OK"}`),
+    );
+  } catch (error) {
+    const manquantes = inspecteur ? document.querySelectorAll(".env-variable").length : 0;
+    if (manquantes === 0 || tentativeReparation >= RETRY_APRES_REPARATION) throw error;
+    logLine("L'application n'a pas démarré : configuration incomplète détectée.");
+    inspecteur.open();
+    inspecteur.annoncer(
+      "L'application n'a pas démarré. Renseignez les variables ci-dessous, puis relancez-la.",
+      "erreur",
+    );
+    await attendreReparation();
+    logLine("Nouvelle tentative après réparation de l'environnement…");
+    await attendreApplication(vm, tentativeReparation + 1);
+  }
+}
+
+// Rend la main quand l'utilisateur a appliqué une réparation (le panneau
+// signale son succès en passant l'état à « succes »).
+function attendreReparation() {
+  return new Promise((resolve) => {
+    const etat = document.querySelector(".env-etat");
+    const observateur = new MutationObserver(() => {
+      if (etat.dataset.ton === "succes" && etat.textContent.includes("redémarrée")) {
+        observateur.disconnect();
+        resolve();
+      }
+    });
+    observateur.observe(etat, { attributes: true, childList: true, characterData: true, subtree: true });
+  });
 }
 
 async function bootSelectedEngine() {

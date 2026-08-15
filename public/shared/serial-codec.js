@@ -105,6 +105,27 @@ export function buildTimeSyncFrame(epochSeconds) {
   return `${FRAME_MAGIC} TIME ${seconds}\n`;
 }
 
+// Injection de variables d'environnement puis relance du serveur applicatif,
+// à chaud : c'est ce qui permet de réparer une configuration manquante depuis
+// le navigateur, sans reconstruire l'image disque.
+export function buildEnvironmentFrame(id, variables) {
+  const propre = {};
+  for (const [name, value] of Object.entries(variables)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) continue;
+    if (typeof value !== "string" || value === "") continue;
+    propre[name] = value;
+  }
+  if (Object.keys(propre).length === 0) {
+    throw new Error("Aucune variable exploitable à transmettre");
+  }
+  const encoded = bytesToBase64(new TextEncoder().encode(JSON.stringify(propre)));
+  return `${FRAME_MAGIC} ENV ${id} ${encoded}\n`;
+}
+
+export function buildRestartFrame(id) {
+  return `${FRAME_MAGIC} RST ${id}\n`;
+}
+
 export function parseFrameLine(line) {
   if (!line.startsWith(`${FRAME_MAGIC} `)) return null;
   const parts = line.split(" ");
