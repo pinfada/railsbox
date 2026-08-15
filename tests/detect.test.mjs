@@ -1,0 +1,699 @@
+import { after, test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import {
+  detectApp,
+  normalizeRubyVersion,
+  parseDatabaseAdapters,
+  readOptionalFile,
+} from "../tools/detect/detect.mjs";
+import { collectNativeGems, detectServices, parseLockSpecs } from "../tools/detect/gems.mjs";
+import { mergeManifest, parseRailsboxYml } from "../tools/detect/manifest.mjs";
+import { REMEDIES, formatReport, hasBlocking } from "../tools/detect/report.mjs";
+
+/** @typedef {import("../tools/detect/findings.mjs").Finding} Finding */
+
+// --- Fixtures partagées ------------------------------------------------------
+
+const createdDirs = [];
+
+/**
+ * Crée une application factice dans un dossier temporaire.
+ * @param {Record<string, string>} files chemins relatifs vers contenus
+ * @returns {Promise<string>} racine du dossier créé
+ */
+async function createApp(files) {
+  const dir = await mkdtemp(join(tmpdir(), "railsbox-detect-"));
+  createdDirs.push(dir);
+  for (const [relativePath, content] of Object.entries(files)) {
+    const target = join(dir, relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  }
+  return dir;
+}
+
+after(async () => {
+  for (const dir of createdDirs) {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+const LOCK_MINIMAL = `GEM
+  remote: https://rubygems.org/
+  specs:
+    rails (7.1.3.4)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rails
+
+BUNDLED WITH
+   2.5.11
+`;
+
+/**
+ * Construit un Gemfile.lock avec les gems demandées.
+ * @param {string[]} gems noms de gems à inscrire dans la section specs
+ * @param {string} [extra] sections supplémentaires à concaténer
+ * @returns {string} contenu du lock
+ */
+function lockWith(gems, extra = "") {
+  const specs = gems.map((name) => `    ${name} (1.0.0)`).join("\n");
+  return `GEM\n  remote: https://rubygems.org/\n  specs:\n    rails (7.1.3.4)\n${specs}\n\nDEPENDENCIES\n  rails\n${extra}`;
+}
+
+/**
+ * Cherche un diagnostic par code.
+ * @param {readonly Finding[]} findings liste de diagnostics
+ * @param {string} code code recherché
+ * @returns {Finding|undefined} le diagnostic trouvé
+ */
+function findByCode(findings, code) {
+  return findings.find((finding) => finding.code === code);
+}
+
+// --- Version de Ruby ---------------------------------------------------------
+
+test("normalizeRubyVersion accepte les formes ruby-, pessimiste et patch", () => {
+  // Arrange / Act / Assert : les trois écritures rencontrées en vrai
+  assert.equal(normalizeRubyVersion("ruby-3.3.10"), "3.3.10");
+  assert.equal(normalizeRubyVersion("~> 3.3"), "3.3");
+  assert.equal(normalizeRubyVersion("3.3.10p91"), "3.3.10");
+  assert.equal(normalizeRubyVersion("   3.2.2\n"), "3.2.2");
+  assert.equal(normalizeRubyVersion("jruby"), null);
+  assert.equal(normalizeRubyVersion(null), null);
+});
+
+test("la version de Ruby vient de .ruby-version quand il existe", async () => {
+  const dir = await createApp({ ".ruby-version": "ruby-3.3.10\n", "Gemfile.lock": LOCK_MINIMAL });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.ruby, "3.3.10");
+  assert.equal(manifest.rubySource, ".ruby-version");
+});
+
+test("le Gemfile sert de repli, y compris en guillemets simples et pessimiste", async () => {
+  const dir = await createApp({
+    Gemfile: "source 'https://rubygems.org'\nruby '~> 3.2'\ngem 'rails'\n",
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.ruby, "3.2");
+  assert.equal(manifest.rubySource, "Gemfile");
+});
+
+test("la section RUBY VERSION du lock sert de dernier repli", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": `${LOCK_MINIMAL}\nRUBY VERSION\n   ruby 3.3.10p91\n`,
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.ruby, "3.3.10");
+  assert.equal(manifest.rubySource, "Gemfile.lock");
+});
+
+test(".ruby-version a la priorité sur le Gemfile et sur le lock", async () => {
+  const dir = await createApp({
+    ".ruby-version": "3.4.1",
+    Gemfile: 'ruby "3.2.0"\ngem "rails"\n',
+    "Gemfile.lock": `${LOCK_MINIMAL}\nRUBY VERSION\n   ruby 3.1.4p223\n`,
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.ruby, "3.4.1");
+  assert.equal(manifest.rubySource, ".ruby-version");
+});
+
+test("l'absence totale de version Ruby est un avertissement, pas une erreur", async () => {
+  const dir = await createApp({ "Gemfile.lock": LOCK_MINIMAL });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.ruby, null);
+  assert.equal(findByCode(findings, "missing-ruby-version").severity, "warning");
+});
+
+// --- Présence de Rails -------------------------------------------------------
+
+test("la version de Rails est lue dans le Gemfile.lock", async () => {
+  const dir = await createApp({ "Gemfile.lock": LOCK_MINIMAL });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.rails, "7.1.3.4");
+  assert.equal(findByCode(findings, "not-a-rails-app"), undefined);
+});
+
+test("Rails déclaré au seul Gemfile est accepté avec une version inconnue", async () => {
+  const dir = await createApp({ Gemfile: 'gem "rails", "~> 7.1"\n' });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.rails, null);
+  assert.equal(findByCode(findings, "rails-version-unknown").severity, "info");
+  assert.equal(findByCode(findings, "not-a-rails-app"), undefined);
+});
+
+test("un dossier sans Rails produit un diagnostic bloquant", async () => {
+  const dir = await createApp({ Gemfile: 'gem "sinatra"\n' });
+
+  const { findings } = await detectApp(dir);
+
+  assert.equal(findByCode(findings, "not-a-rails-app").severity, "blocking");
+  assert.equal(hasBlocking(findings), true);
+});
+
+test("une gem au nom proche (rails-html-sanitizer) ne vaut pas Rails", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": lockWith([]).replace("rails (7.1.3.4)", "rails-html-sanitizer (1.6.0)"),
+  });
+
+  const { findings } = await detectApp(dir);
+
+  assert.equal(findByCode(findings, "not-a-rails-app").severity, "blocking");
+});
+
+test("le dossier analysé doit être un chemin exploitable", async () => {
+  await assert.rejects(() => detectApp(""), TypeError);
+  await assert.rejects(() => detectApp(null), TypeError);
+});
+
+test("readOptionalFile remonte une erreur de lecture qui n'est pas une absence", async () => {
+  // Un chemin qui n'est pas une chaîne provoque une erreur d'argument : ce n'est
+  // pas une absence de fichier, elle doit sortir au lieu d'être confondue avec elle.
+  await assert.rejects(() => readOptionalFile(/** @type {*} */ (42)));
+  assert.equal(await readOptionalFile(join(tmpdir(), "railsbox-absent-xyz", "Gemfile")), null);
+});
+
+test("un dossier inexistant est analysé sans planter", async () => {
+  const { manifest, findings } = await detectApp(join(tmpdir(), "railsbox-absent-xyz"));
+
+  assert.equal(manifest.ruby, null);
+  assert.equal(hasBlocking(findings), true);
+});
+
+// --- Base de données ---------------------------------------------------------
+
+test("parseDatabaseAdapters ignore les balises ERB", () => {
+  const yml = `default: &default\n  adapter: <%= ENV.fetch("ADAPTER", "postgresql") %>\n  adapter: postgresql\n`;
+
+  assert.deepEqual(parseDatabaseAdapters(yml), ["postgresql"]);
+});
+
+test("database.yml truffé d'ERB donne quand même postgresql", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": `default: &default\n  adapter: postgresql\n  url: <%= ENV["DATABASE_URL"] %>\n\nproduction:\n  <<: *default\n`,
+  });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.database, "postgresql");
+  assert.equal(hasBlocking(findings), false);
+});
+
+test("mysql2 dans database.yml bloque l'analyse avec le bon message", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": "development:\n  adapter: mysql2\n",
+  });
+
+  const { findings } = await detectApp(dir);
+  const blocking = findByCode(findings, "unsupported-database");
+
+  assert.equal(blocking.severity, "blocking");
+  assert.match(blocking.message, /MySQL pas encore supporté par les images de base/);
+});
+
+test("l'adaptateur trilogy est bloqué comme mysql2", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": "development:\n  adapter: trilogy\n",
+  });
+
+  const { findings } = await detectApp(dir);
+
+  assert.equal(findByCode(findings, "unsupported-database").details.adapter, "trilogy");
+});
+
+test("la gem mysql2 seule bloque aussi, sans doublon de diagnostic", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": lockWith(["mysql2"]),
+    "config/database.yml": "development:\n  adapter: mysql2\n",
+  });
+
+  const { findings } = await detectApp(dir);
+  const blocking = findings.filter((finding) => finding.code === "unsupported-database");
+
+  assert.equal(blocking.length, 1);
+});
+
+test("database.yml absent suppose sqlite3 avec un avertissement", async () => {
+  const dir = await createApp({ "Gemfile.lock": LOCK_MINIMAL });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.database, "sqlite3");
+  assert.equal(findByCode(findings, "missing-database-config").severity, "warning");
+});
+
+test("un database.yml sans adapter retombe sur sqlite3", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": "development:\n  database: db/dev.sqlite3\n",
+  });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.database, "sqlite3");
+  assert.equal(findByCode(findings, "missing-database-adapter").severity, "warning");
+});
+
+test("deux adaptateurs supportés retiennent le premier et le signalent", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": "development:\n  adapter: sqlite3\nproduction:\n  adapter: postgresql\n",
+  });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.database, "sqlite3");
+  assert.equal(findByCode(findings, "database-adapter-ambiguous").severity, "info");
+});
+
+test("la gem mysql2 bloque même sans database.yml", async () => {
+  const dir = await createApp({ "Gemfile.lock": lockWith(["mysql2"]) });
+
+  const { findings } = await detectApp(dir);
+  const blocking = findByCode(findings, "unsupported-database");
+
+  assert.equal(blocking.severity, "blocking");
+  assert.match(blocking.message, /Gem « mysql2 »/);
+});
+
+// --- Assets ------------------------------------------------------------------
+
+test("package.json révèle les scripts de build et les outils front", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "package.json": JSON.stringify({
+      scripts: { "build:css": "tailwindcss -i x -o y", "build:js": "esbuild app.js", test: "jest" },
+      dependencies: { esbuild: "^0.20.0" },
+      devDependencies: { tailwindcss: "^3.4.0", chokidar: "^3.6.0" },
+    }),
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.assets.npm, true);
+  assert.deepEqual([...manifest.assets.scripts], ["build:css", "build:js"]);
+  assert.deepEqual([...manifest.assets.tools], ["esbuild", "tailwindcss"]);
+});
+
+test("sans package.json le pipeline est importmap/sprockets", async () => {
+  const dir = await createApp({ "Gemfile.lock": LOCK_MINIMAL });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.assets.npm, false);
+  assert.deepEqual([...manifest.assets.scripts], []);
+  assert.equal(findByCode(findings, "no-npm-assets").severity, "info");
+});
+
+test("un package.json illisible est un avertissement, pas un plantage", async () => {
+  const dir = await createApp({ "Gemfile.lock": LOCK_MINIMAL, "package.json": "{ oops" });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.assets.npm, true);
+  assert.equal(findByCode(findings, "invalid-package-json").severity, "warning");
+});
+
+// --- Gems natives et services ------------------------------------------------
+
+test("parseLockSpecs ne retient que les gems résolues, pas leurs dépendances", () => {
+  const lock =
+    "GEM\n  specs:\n    rails (7.1.3)\n      actionpack (= 7.1.3)\n\nDEPENDENCIES\n  rails\n";
+
+  const specs = parseLockSpecs(lock);
+
+  assert.equal(specs.get("rails"), "7.1.3");
+  assert.equal(specs.has("actionpack"), false);
+});
+
+test("les gems natives connues portent leurs bibliothèques système", () => {
+  const specs = parseLockSpecs(lockWith(["nokogiri", "pg", "ruby-vips", "sassc", "bcrypt"]));
+
+  const { nativeGems } = collectNativeGems(specs);
+  const byName = new Map(nativeGems.map((gem) => [gem.name, gem.systemLibs]));
+
+  assert.deepEqual([...byName.get("nokogiri")], ["libxml2", "libxslt"]);
+  assert.deepEqual([...byName.get("pg")], ["libpq"]);
+  assert.deepEqual([...byName.get("ruby-vips")], ["libvips"]);
+  assert.deepEqual([...byName.get("sassc")], ["libsass"]);
+  assert.deepEqual([...byName.get("bcrypt")], []);
+});
+
+test("grpc déclenche l'avertissement de compilation très longue", async () => {
+  const dir = await createApp({ "Gemfile.lock": lockWith(["grpc"]) });
+
+  const { manifest, findings } = await detectApp(dir);
+  const heavy = findByCode(findings, "heavy-native-gem");
+
+  assert.equal(heavy.severity, "warning");
+  assert.match(heavy.message, /très longue/);
+  assert.ok(manifest.nativeGems.some((gem) => gem.name === "grpc"));
+});
+
+test("sidekiq implique redis même sans la gem redis", () => {
+  const services = detectServices(parseLockSpecs(lockWith(["sidekiq"])));
+
+  assert.deepEqual({ ...services }, { redis: true, sidekiq: true });
+});
+
+test("la gem redis seule n'implique pas sidekiq", async () => {
+  const dir = await createApp({ "Gemfile.lock": lockWith(["redis"]) });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.services.redis, true);
+  assert.equal(manifest.services.sidekiq, false);
+});
+
+test("la version de Bundler est relevée à titre informatif", async () => {
+  const dir = await createApp({ "Gemfile.lock": LOCK_MINIMAL });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.bundler, "2.5.11");
+  assert.equal(findByCode(findings, "bundler-version").severity, "info");
+});
+
+test("l'absence de Gemfile.lock est signalée explicitement", async () => {
+  const dir = await createApp({ Gemfile: 'gem "rails"\n' });
+
+  const { findings } = await detectApp(dir);
+
+  assert.equal(findByCode(findings, "missing-gemfile-lock").severity, "warning");
+});
+
+// --- railsbox.yml ------------------------------------------------------------
+
+test("parseRailsboxYml lit les scalaires, les blocs imbriqués et les commentaires", () => {
+  const yml = `# manifeste railsbox\nruby: "3.3.10"   # version imposée\ndatabase: postgresql\nseed:\n  command: bin/rails db:seed\n  auto_login: admin@example.com\nenv:\n  STRIPE_SECRET_KEY: "sk_test_123"\n  RAILS_ENV: production\n`;
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+
+  assert.equal(manifest.ruby, "3.3.10");
+  assert.equal(manifest.database, "postgresql");
+  assert.equal(manifest.seed.command, "bin/rails db:seed");
+  assert.equal(manifest.seed.autoLogin, "admin@example.com");
+  assert.deepEqual(
+    { ...manifest.env },
+    { STRIPE_SECRET_KEY: "sk_test_123", RAILS_ENV: "production" },
+  );
+  assert.deepEqual([...findings], []);
+});
+
+test("parseRailsboxYml supporte les tableaux en style flow", () => {
+  const yml = 'assets:\n  scripts: [build:css, "build:js"]\n';
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+
+  assert.deepEqual([...manifest.assets.scripts], ["build:css", "build:js"]);
+  assert.deepEqual([...findings], []);
+});
+
+test("une clé inconnue est un avertissement et n'interrompt pas l'analyse", () => {
+  const yml = "ruby: 3.3.10\nmagie: true\nseed:\n  inconnue: x\ndatabase: sqlite3\n";
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+  const unknown = findings.filter((finding) => finding.code === "unknown-manifest-key");
+
+  assert.equal(manifest.ruby, "3.3.10");
+  assert.equal(manifest.database, "sqlite3");
+  assert.deepEqual(
+    unknown.map((finding) => finding.details.key),
+    ["magie", "seed.inconnue"],
+  );
+});
+
+test("le contenu d'un bloc inconnu est ignoré sans avalanche de diagnostics", () => {
+  const yml = "inconnu:\n  a: 1\n  b: 2\nruby: 3.3.10\n";
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+
+  assert.equal(manifest.ruby, "3.3.10");
+  assert.equal(findings.length, 1);
+});
+
+test("un nom de variable d'environnement invalide est signalé, pas fatal", () => {
+  const yml = "env:\n  1INVALIDE: x\n  bad-name: y\n  VALIDE: ok\n";
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+  const invalid = findings.filter((finding) => finding.code === "invalid-env-name");
+
+  assert.deepEqual({ ...manifest.env }, { VALIDE: "ok" });
+  assert.deepEqual(
+    invalid.map((finding) => finding.details.key),
+    ["1INVALIDE", "bad-name"],
+  );
+});
+
+test("une ligne malformée porte son numéro de ligne", () => {
+  const yml = "ruby: 3.3.10\nceci n'est pas du yaml\n";
+
+  const { findings } = parseRailsboxYml(yml);
+  const malformed = findByCode(findings, "malformed-manifest-line");
+
+  assert.equal(malformed.details.line, 2);
+  assert.match(malformed.message, /ligne 2/);
+});
+
+test("une indentation inattendue est signalée sans casser le reste", () => {
+  const yml = "   ruby: 3.3.10\ndatabase: sqlite3\n";
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+
+  assert.equal(manifest.ruby, undefined);
+  assert.equal(manifest.database, "sqlite3");
+  assert.equal(findByCode(findings, "malformed-manifest-line").details.line, 1);
+});
+
+test("une valeur hors schéma produit invalid-manifest-value", () => {
+  const yml = "database: oracle\nruby: true\n";
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+  const invalid = findings.filter((finding) => finding.code === "invalid-manifest-value");
+
+  assert.deepEqual({ ...manifest }, {});
+  assert.deepEqual(
+    invalid.map((finding) => finding.details.key),
+    ["database", "ruby"],
+  );
+});
+
+test("un bloc déclaré avec une valeur scalaire est rejeté, contenu compris", () => {
+  const yml = "seed: bin/rails db:seed\n  command: x\ndatabase: sqlite3\n";
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+
+  assert.equal(manifest.seed, undefined);
+  assert.equal(manifest.database, "sqlite3");
+  assert.equal(findByCode(findings, "invalid-manifest-value").details.key, "seed");
+  assert.equal(findings.length, 1);
+});
+
+test("une ligne indentée sans bloc parent est malformée", () => {
+  const yml = "  command: bin/seed\n";
+
+  const { findings } = parseRailsboxYml(yml);
+
+  assert.match(findByCode(findings, "malformed-manifest-line").message, /sans bloc parent/);
+});
+
+test("un tableau là où un texte est attendu reste un avertissement", () => {
+  const yml = "seed:\n  command: [a, b]\nenv:\n  API: [x]\n";
+
+  const { manifest, findings } = parseRailsboxYml(yml);
+  const invalid = findings.filter((finding) => finding.code === "invalid-manifest-value");
+
+  assert.equal(manifest.seed, undefined);
+  assert.equal(manifest.env, undefined);
+  assert.deepEqual(
+    invalid.map((finding) => finding.details.key),
+    ["seed.command", "env.API"],
+  );
+});
+
+test("un script d'assets scalaire vaut une liste d'un élément", () => {
+  const { manifest } = parseRailsboxYml("assets:\n  scripts: build\n");
+
+  assert.deepEqual([...manifest.assets.scripts], ["build"]);
+});
+
+test("parseRailsboxYml refuse une entrée qui n'est pas du texte", () => {
+  assert.throws(() => parseRailsboxYml(null), TypeError);
+});
+
+// --- Fusion ------------------------------------------------------------------
+
+test("mergeManifest laisse le déclaré l'emporter et trace les remplacements", () => {
+  const detected = Object.freeze({ ruby: "3.2.0", rubySource: "Gemfile", database: "sqlite3" });
+  const declared = Object.freeze({ ruby: "3.3.10", database: "postgresql" });
+
+  const { manifest, findings } = mergeManifest(detected, declared);
+
+  assert.equal(manifest.ruby, "3.3.10");
+  assert.equal(manifest.rubySource, "railsbox.yml");
+  assert.equal(manifest.database, "postgresql");
+  assert.deepEqual(
+    findings.map((finding) => finding.details.key),
+    ["ruby", "database"],
+  );
+  assert.ok(findings.every((finding) => finding.severity === "info"));
+  assert.match(findings[0].message, /« ruby »/);
+});
+
+test("mergeManifest conserve le détecté quand rien n'est déclaré", () => {
+  const detected = Object.freeze({ ruby: "3.3.10", database: "sqlite3" });
+
+  const { manifest, findings } = mergeManifest(detected, {});
+
+  assert.equal(manifest.ruby, "3.3.10");
+  assert.deepEqual([...findings], []);
+});
+
+test("mergeManifest ajoute seed, env et scripts sans les signaler comme remplacements", () => {
+  const detected = Object.freeze({
+    assets: Object.freeze({ npm: true, scripts: Object.freeze([]) }),
+  });
+  const declared = {
+    seed: { command: "bin/seed" },
+    env: { API: "x" },
+    assets: { scripts: ["build"] },
+  };
+
+  const { manifest, findings } = mergeManifest(detected, declared);
+
+  assert.equal(manifest.seed.command, "bin/seed");
+  assert.equal(manifest.env.API, "x");
+  assert.deepEqual([...manifest.assets.scripts], ["build"]);
+  assert.equal(manifest.assets.npm, true);
+  assert.deepEqual([...findings], []);
+});
+
+test("mergeManifest rend le manifeste fusionné immuable en profondeur", () => {
+  const { manifest } = mergeManifest(
+    { assets: { scripts: [] } },
+    { seed: { command: "bin/seed" } },
+  );
+
+  assert.equal(Object.isFrozen(manifest), true);
+  assert.equal(Object.isFrozen(manifest.seed), true);
+  assert.throws(() => {
+    manifest.ruby = "3.0.0";
+  }, TypeError);
+});
+
+test("mergeManifest refuse des arguments qui ne sont pas des objets", () => {
+  // Les casts documentent l'intention : on éprouve la validation d'entrée.
+  assert.throws(() => mergeManifest(null, {}), TypeError);
+  assert.throws(() => mergeManifest({}, /** @type {*} */ ("ruby: 3.3.10")), TypeError);
+});
+
+// --- Rapport -----------------------------------------------------------------
+
+test("formatReport résume la détection en français", async () => {
+  const dir = await createApp({
+    ".ruby-version": "3.3.10",
+    "Gemfile.lock": lockWith(["pg", "sidekiq"], "\nBUNDLED WITH\n   2.5.11\n"),
+    "config/database.yml": "development:\n  adapter: postgresql\n",
+    "package.json": JSON.stringify({ scripts: { build: "node build.mjs" } }),
+  });
+
+  const report = formatReport(await detectApp(dir));
+
+  assert.match(report, /Ruby {14}: 3\.3\.10 \(source : \.ruby-version\)/);
+  assert.match(report, /Base de données {3}: postgresql/);
+  assert.match(report, /Gems natives {6}: pg \(libpq\)/);
+  assert.match(report, /Services {10}: redis, sidekiq/);
+  assert.match(report, /Assets {12}: npm — scripts : build/);
+});
+
+test("formatReport groupe les diagnostics par sévérité et propose un remède", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "sinatra"\n',
+    "config/database.yml": "development:\n  adapter: mysql2\n",
+  });
+
+  const report = formatReport(await detectApp(dir));
+
+  assert.match(report, /--- Bloquant \(2\) ---/);
+  assert.match(report, /--- Avertissement \(2\) ---/);
+  assert.match(
+    report,
+    /Remède : Utilisez PostgreSQL ou SQLite, ou déclarez database: dans railsbox\.yml/,
+  );
+  assert.ok(
+    report.indexOf("Bloquant") < report.indexOf("Avertissement"),
+    "bloquant affiché en premier",
+  );
+});
+
+test("tout diagnostic bloquant ou d'avertissement émis dispose d'un remède", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "sinatra"\n',
+    "package.json": "{ oops",
+    "config/database.yml": "development:\n  adapter: mysql2\n",
+  });
+
+  const detected = await detectApp(dir);
+  const declared = parseRailsboxYml(
+    "magie: oui\nceci n'est pas du yaml\nenv:\n  1BAD: x\ndatabase: oracle\n",
+  );
+  const findings = [...detected.findings, ...declared.findings];
+  const actionable = findings.filter((finding) => finding.severity !== "info");
+
+  assert.ok(actionable.length >= 6, `attendu plusieurs diagnostics, obtenu ${actionable.length}`);
+  for (const finding of actionable) {
+    assert.ok(REMEDIES[finding.code], `code sans remède : ${finding.code}`);
+  }
+});
+
+test("formatReport signale l'absence de diagnostic", () => {
+  const report = formatReport({ manifest: { ruby: "3.3.10" }, findings: [] });
+
+  assert.match(report, /Aucun diagnostic/);
+});
+
+test("formatReport affiche seed et variables d'environnement quand ils existent", () => {
+  const manifest = { seed: { command: "bin/seed", autoLogin: "a@b.c" }, env: { API: "x" } };
+
+  const report = formatReport({ manifest, findings: [] });
+
+  assert.match(report, /Commande de seed {2}: bin\/seed/);
+  assert.match(report, /Auto-login {8}: a@b\.c/);
+  assert.match(report, /Variables d'env {3}: API/);
+});
+
+test("formatReport exige un résultat de détection bien formé", () => {
+  assert.throws(() => formatReport(null), TypeError);
+  assert.throws(() => formatReport(/** @type {*} */ ({ findings: [] })), TypeError);
+});
+
+test("hasBlocking distingue les diagnostics bloquants des autres", () => {
+  assert.equal(hasBlocking([{ severity: "warning" }, { severity: "blocking" }]), true);
+  assert.equal(hasBlocking([{ severity: "warning" }, { severity: "info" }]), false);
+  assert.equal(hasBlocking([]), false);
+  assert.equal(hasBlocking(undefined), false);
+});
