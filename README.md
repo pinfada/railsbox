@@ -38,8 +38,19 @@ d'accueil stylée en 1,1 s, formulaires, redirections.
 
 ```bash
 npm install
-npm start        # http://localhost:8080 — COOP/COEP, Range et gzip inclus
-npm test         # 37 tests unitaires, zéro dépendance (node --test)
+npm start                 # http://localhost:8080 — COOP/COEP, Range et gzip inclus
+npm test                  # tests unitaires (node --test, sans réseau ni artefacts)
+npm run check             # lint + format + typecheck + tests — la porte de la CI
+npm run test:integration  # protocole complet contre une VRAIE VM v86 sous Node
+                          # (exige public/disks/ ; ~1 min grâce à l'instantané)
+```
+
+Après un build d'image, extrayez les assets précompilés pour qu'ils soient
+servis statiquement au lieu de traverser le pont série (levier de
+performance n°1) :
+
+```bash
+wsl -e sh tools/extract-assets.sh   # → public/disks/assets/ + appstatic/
 ```
 
 Sans image applicative, le moteur par défaut (CheerpX) boote une image Debian

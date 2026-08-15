@@ -8,7 +8,18 @@
 // Résilience : le navigateur tue et redémarre les SW à volonté, ce qui perd
 // l'état en mémoire. Quand le port manque, le SW le redemande à la page hôte
 // (message "bridge-port-request") au lieu d'échouer en 503.
+//
+// La logique pure (réécriture des Location, en-têtes d'isolation, pages
+// d'erreur) vit dans shared/proxy-logic.js, testée unitairement.
 import { sanitizeMethod } from "./shared/request-codec.js";
+import {
+  APP_PREFIX,
+  errorPage,
+  prepareProxyHeaders,
+  responseBodyFor,
+  rootStaticPath,
+  staticAssetPath,
+} from "./shared/proxy-logic.js";
 
 // lib.webworker type `self` en WorkerGlobalScope générique : ce fichier est
 // un Service Worker, on le déclare une fois pour bénéficier des types
@@ -17,7 +28,6 @@ const sw = /** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (
   /** @type {unknown} */ (self)
 );
 
-const APP_PREFIX = "/app";
 // Artefacts de la VM (disque, noyau, instantané de ~650 Mo) : laissés au
 // navigateur. Les faire transiter par le Service Worker n'apporte rien — le
 // serveur pose déjà CORP — et forcerait un flux de plusieurs centaines de Mo
@@ -26,8 +36,6 @@ const APP_PREFIX = "/app";
 const RAW_ASSET_PREFIX = "/disks/";
 const REQUEST_TIMEOUT_MS = 120_000;
 const PORT_RECOVERY_TIMEOUT_MS = 10_000;
-// Codes pour lesquels le constructeur Response interdit un corps.
-const BODYLESS_STATUS = new Set([101, 204, 205, 304]);
 
 const state = {
   bridgePort: null,
@@ -44,6 +52,7 @@ sw.addEventListener("message", (event) => {
   adoptBridgePort(event.ports[0]);
 });
 
+/** @param {MessagePort} port */
 function adoptBridgePort(port) {
   state.bridgePort = port;
   port.onmessage = (event) => resolvePending(event.data);
@@ -94,6 +103,13 @@ sw.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== sw.location.origin) return;
   if (url.pathname.startsWith(RAW_ASSET_PREFIX)) return;
+  // /favicon.ico, /site.webmanifest… : écrits en dur par Rails sans préfixe,
+  // ils échappaient au proxy et finissaient en 404 silencieux.
+  const staticUrl = staticAssetPath(url.pathname) ?? rootStaticPath(url.pathname);
+  if (event.request.method === "GET" && staticUrl !== null) {
+    event.respondWith(serveStaticFirst(event.request, url, staticUrl));
+    return;
+  }
   if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) {
     event.respondWith(proxyToVm(event.request, url));
     return;
@@ -103,6 +119,35 @@ sw.addEventListener("fetch", (event) => {
   }
 });
 
+/**
+ * Sert un fichier depuis les extractions statiques de l'image
+ * (tools/extract-assets.sh) au lieu du pont série. Repli transparent si le
+ * fichier n'a pas été extrait (image plus récente, extraction non faite) :
+ * vers la VM pour les chemins /app/*, vers le réseau sinon — le comportement
+ * d'origine reste garanti.
+ * @param {Request} request
+ * @param {URL} url
+ * @param {string} staticUrl
+ */
+async function serveStaticFirst(request, url, staticUrl) {
+  try {
+    const response = await fetch(staticUrl);
+    if (response.ok) {
+      const headers = new Headers(response.headers);
+      headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+      headers.set("Cross-Origin-Resource-Policy", "same-origin");
+      return new Response(response.body, { status: 200, headers });
+    }
+  } catch {
+    // serveur statique indisponible : le repli ci-dessous décide
+  }
+  if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) {
+    return proxyToVm(request, url);
+  }
+  return withIsolationHeaders(request);
+}
+
+/** @param {Request} request */
 async function withIsolationHeaders(request) {
   const response = await fetch(request);
   if (response.status === 0 || response.type === "opaque") return response;
@@ -116,6 +161,10 @@ async function withIsolationHeaders(request) {
   });
 }
 
+/**
+ * @param {Request} request
+ * @param {URL} url
+ */
 async function proxyToVm(request, url) {
   try {
     const bridgePort = await ensureBridgePort();
@@ -157,66 +206,19 @@ function sendToBridge(bridgePort, descriptor, body) {
 }
 
 function buildResponse(reply) {
-  const body = BODYLESS_STATUS.has(reply.status) ? null : (reply.body ?? null);
-  const headers = new Headers(reply.headers ?? []);
-
-  // Sécurisation des redirections : la cible doit rester un chemin relatif
-  // sous /app, donc réintercepté par ce proxy. Deux cas à ramener :
-  //  - chemin absolu sans préfixe (« /users/sign_in ») ;
-  //  - URL absolue « https://localhost:8080/… » que Rails génère à cause du
-  //    X-Forwarded-Proto ; la suivre telle quelle ferait tenter au navigateur
-  //    une connexion TLS vers un port qui n'écoute qu'en clair.
-  const location = headers.get("location");
-  if (location) {
-    headers.set("location", rewriteLocation(location));
-  }
-
-  // Sous COEP:require-corp, un document imbriqué (l'iframe applicative) doit
-  // lui-même porter ces en-têtes, et ses sous-ressources un CORP explicite.
-  headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-  headers.set("Cross-Origin-Resource-Policy", "same-origin");
-  return new Response(body, {
+  return new Response(responseBodyFor(reply.status, reply.body), {
     status: reply.status,
     statusText: reply.statusText ?? "",
-    headers,
+    headers: prepareProxyHeaders(reply.headers, sw.location),
   });
 }
 
-function rewriteLocation(location) {
-  let target;
-  try {
-    target = new URL(location, sw.location.origin);
-  } catch {
-    return location; // en-tête inexploitable : laissé intact
-  }
-  const isSelf =
-    target.host === sw.location.host ||
-    target.hostname === "localhost" ||
-    target.hostname === "127.0.0.1";
-  if (!isSelf) return location; // redirection externe : ne pas y toucher
-  const path =
-    target.pathname.startsWith(`${APP_PREFIX}/`) || target.pathname === APP_PREFIX
-      ? target.pathname
-      : `${APP_PREFIX}${target.pathname}`;
-  return `${path}${target.search}${target.hash}`;
-}
-
-// Le message peut contenir du contenu dérivé des réponses de la VM (donc de
-// l'application, donc potentiellement d'un tiers) : il doit être échappé
-// avant toute interpolation dans du HTML.
-function escapeHtml(text) {
-  return String(text).replace(
-    /[&<>"']/g,
-    (character) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character],
-  );
-}
-
+/**
+ * @param {number} status
+ * @param {string} message
+ */
 function errorResponse(status, message) {
-  const page = `<!doctype html><meta charset="utf-8">
-<body style="font-family:system-ui;background:#101418;color:#dce3ea;padding:2rem">
-<h1 style="color:#ff6b6b">${Number(status)}</h1><p>${escapeHtml(message)}</p></body>`;
-  return new Response(page, {
+  return new Response(errorPage(status, message), {
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",

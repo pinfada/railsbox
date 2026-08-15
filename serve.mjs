@@ -6,8 +6,9 @@
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { extname, join, normalize, resolve, sep } from "node:path";
+import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseRange, resolveSafePath } from "./tools/serve-logic.mjs";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const PUBLIC_DIR = resolve(fileURLToPath(new URL("./public/", import.meta.url)));
@@ -22,6 +23,21 @@ const MIME_TYPES = new Map([
   [".wasm", "application/wasm"],
   [".svg", "image/svg+xml"],
   [".ico", "image/x-icon"],
+  // Assets extraits de l'image (tools/extract-assets.sh) : polices, images
+  // et source maps servis statiquement au lieu de traverser le pont série.
+  [".woff2", "font/woff2"],
+  [".woff", "font/woff"],
+  [".ttf", "font/ttf"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".avif", "image/avif"],
+  [".map", "application/json; charset=utf-8"],
+  [".txt", "text/plain; charset=utf-8"],
+  [".webmanifest", "application/manifest+json"],
+  [".xml", "application/xml; charset=utf-8"],
 ]);
 
 const ISOLATION_HEADERS = {
@@ -32,25 +48,6 @@ const ISOLATION_HEADERS = {
   "Accept-Ranges": "bytes",
   "Cache-Control": "no-cache",
 };
-
-function resolveSafePath(urlPath) {
-  const cleaned = decodeURIComponent(urlPath.split("?")[0]);
-  const relative = cleaned.endsWith("/") ? `${cleaned}index.html` : cleaned;
-  const absolute = normalize(join(PUBLIC_DIR, relative));
-  if (absolute !== PUBLIC_DIR && !absolute.startsWith(PUBLIC_DIR + sep)) {
-    return null; // tentative de traversée de répertoire
-  }
-  return absolute;
-}
-
-function parseRange(rangeHeader, fileSize) {
-  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader ?? "");
-  if (!match || (match[1] === "" && match[2] === "")) return null;
-  const start = match[1] === "" ? Math.max(0, fileSize - Number(match[2])) : Number(match[1]);
-  const end = match[1] !== "" && match[2] !== "" ? Number(match[2]) : fileSize - 1;
-  if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= fileSize) return null;
-  return { start, end: Math.min(end, fileSize - 1) };
-}
 
 // Sert un fichier pré-compressé (X.gz) à la place de X quand il existe : le
 // navigateur décompresse de façon transparente. Décisif pour l'instantané
@@ -65,18 +62,27 @@ async function resolvePrecompressed(filePath, acceptEncoding) {
   }
 }
 
-function sendPrecompressed(response, logicalPath, compressed) {
+// Les assets extraits de l'image sont fingerprintés : immuables par
+// construction, ils méritent un cache long — le reste reste en no-cache.
+function cacheHeadersFor(urlPath) {
+  return urlPath.startsWith("/disks/assets/")
+    ? { "Cache-Control": "public, max-age=31536000, immutable" }
+    : {};
+}
+
+function sendPrecompressed(response, logicalPath, compressed, urlPath) {
   response.writeHead(200, {
     "Content-Type": MIME_TYPES.get(extname(logicalPath)) ?? "application/octet-stream",
     "Content-Length": compressed.size,
     "Content-Encoding": "gzip",
     Vary: "Accept-Encoding",
     ...ISOLATION_HEADERS,
+    ...cacheHeadersFor(urlPath),
   });
   createReadStream(compressed.path).pipe(response);
 }
 
-function sendFile(response, filePath, fileSize, rangeHeader) {
+function sendFile(response, filePath, fileSize, rangeHeader, urlPath) {
   const mime = MIME_TYPES.get(extname(filePath)) ?? "application/octet-stream";
   const range = parseRange(rangeHeader, fileSize);
   if (range) {
@@ -85,6 +91,7 @@ function sendFile(response, filePath, fileSize, rangeHeader) {
       "Content-Length": range.end - range.start + 1,
       "Content-Range": `bytes ${range.start}-${range.end}/${fileSize}`,
       ...ISOLATION_HEADERS,
+      ...cacheHeadersFor(urlPath),
     });
     createReadStream(filePath, range).pipe(response);
     return;
@@ -93,6 +100,7 @@ function sendFile(response, filePath, fileSize, rangeHeader) {
     "Content-Type": mime,
     "Content-Length": fileSize,
     ...ISOLATION_HEADERS,
+    ...cacheHeadersFor(urlPath),
   });
   createReadStream(filePath).pipe(response);
 }
@@ -110,7 +118,7 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const filePath = resolveSafePath(urlPath);
+  const filePath = resolveSafePath(urlPath, PUBLIC_DIR);
   if (filePath === null) {
     response.writeHead(400, ISOLATION_HEADERS);
     response.end("Chemin invalide");
@@ -124,12 +132,12 @@ async function handleRequest(request, response) {
       ? null
       : await resolvePrecompressed(filePath, request.headers["accept-encoding"]);
     if (compressed) {
-      sendPrecompressed(response, filePath, compressed);
+      sendPrecompressed(response, filePath, compressed, urlPath);
       return;
     }
     const fileInfo = await stat(filePath);
     if (!fileInfo.isFile()) throw new Error("pas un fichier");
-    sendFile(response, filePath, fileInfo.size, request.headers.range);
+    sendFile(response, filePath, fileInfo.size, request.headers.range, urlPath);
   } catch {
     response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...ISOLATION_HEADERS });
     response.end(`Introuvable: ${urlPath}`);
