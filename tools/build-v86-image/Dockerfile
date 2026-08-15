@@ -300,6 +300,21 @@ def main():
 main()
 RIB_BRIDGE
 
+# Montage sous-URI : le config.ru de l'application la lance à la RACINE, donc
+# ses helpers de routes génèrent « /gymhouses » — des liens qui échappent au
+# périmètre /app du Service Worker et tombent sur le serveur statique.
+# RAILS_RELATIVE_URL_ROOT ne suffit pas : il ne préfixe que les assets, car
+# les helpers de routes s'appuient sur le SCRIPT_NAME Rack. On monte donc
+# l'application via Rack::URLMap, sans toucher au code applicatif.
+COPY <<'RIB_RACKUP' /opt/rib/config.ru
+require "/app/config/environment"
+
+map ENV.fetch("RAILS_RELATIVE_URL_ROOT", "/") do
+  run Rails.application
+end
+Rails.application.load_server
+RIB_RACKUP
+
 # Init du guest (remplace systemd) : monte les pseudo-fs, active le loopback,
 # démarre PostgreSQL + Redis + Puma, puis attache le pont série à ttyS0.
 COPY <<'RIB_INIT' /opt/rib/guest-init.sh
@@ -337,12 +352,12 @@ redis-server --daemonize yes --port 6379 --save '' --appendonly no
 . /opt/rib/env.sh
 cd /app
 
-echo "[init] demarrage Puma (jiyufit)..."
+echo "[init] demarrage Puma (jiyufit, monte sous \$RAILS_RELATIVE_URL_ROOT)..."
 # .dockerignore de jiyufit exclut tmp/*, log/* et storage/* : ces répertoires
 # n'existent pas dans l'image. Puma exige tmp/pids (pidfile), ActiveStorage
 # exige storage/.
 mkdir -p /app/tmp/pids /app/tmp/cache /app/log /app/storage
-bundle exec puma -b tcp://127.0.0.1:3000 >/var/log/puma.log 2>&1 &
+bundle exec puma /opt/rib/config.ru -b tcp://127.0.0.1:3000 >/var/log/puma.log 2>&1 &
 
 # Les logs applicatifs sont relayés vers la console série PAR le démon du
 # pont (un seul écrivain, sous verrou) — jamais par un tail concurrent qui

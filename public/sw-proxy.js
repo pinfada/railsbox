@@ -115,15 +115,14 @@ async function proxyToVm(request, url) {
     const method = sanitizeMethod(request.method);
     const hasBody = method !== "GET" && method !== "HEAD";
     const body = hasBody ? await request.arrayBuffer() : null;
-    // Rôle de reverse-proxy sous-chemin : on retire le préfixe /app avant la
-    // VM (la reconnaissance des routes Rails l'exige), tandis que
-    // RAILS_RELATIVE_URL_ROOT=/app fait que Rails GÉNÈRE des URLs préfixées
-    // — les liens et redirections restent donc sous /app, interceptés ici.
-    const innerPath = url.pathname.replace(/^\/app(?=\/|$)/, "") || "/";
+    // Le préfixe est conservé de bout en bout : l'application est montée sous
+    // /app par Rack::URLMap dans la VM (voir tools/build-v86-image). Elle
+    // reçoit donc SCRIPT_NAME=/app et génère des liens déjà préfixés, qui
+    // repassent naturellement par ce proxy.
     const descriptor = {
       id: state.nextId++,
       method,
-      path: innerPath + url.search,
+      path: url.pathname + url.search,
       // X-Forwarded-Proto https : les apps en `force_ssl` (jiyufit) verraient
       // sinon une requête http et boucleraient en redirection. Chrome accepte
       // les cookies Secure sur localhost, donc les sessions fonctionnent.

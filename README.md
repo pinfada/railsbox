@@ -120,6 +120,27 @@ Il écrit `jiyufit-state.bin` + `.gz`, et ajoute `"state"` à `v86-config.json`.
 Le serveur de dev sert automatiquement le `.gz` avec `Content-Encoding: gzip`
 (décompression transparente par le navigateur).
 
+### Montage sous-URI : `RAILS_RELATIVE_URL_ROOT` ne suffit pas
+
+L'application tourne sous le préfixe `/app`, seul périmètre intercepté par le
+Service Worker. Piège vérifié sur le HTML réellement servi : la variable
+`RAILS_RELATIVE_URL_ROOT` **ne préfixe que les assets**.
+
+| Helper | URL générée | Sans montage Rack |
+|---|---|---|
+| `stylesheet_link_tag` | `/app/assets/tailwind-…` | ✅ intercepté |
+| `link_to`, `form_with` | `/gymhouses`, `/locale` | ❌ échappe au proxy → 404 du serveur statique |
+
+Les helpers de routes s'appuient sur le `SCRIPT_NAME` de Rack, vide quand
+Puma sert l'application à la racine. La correction est le déploiement
+sous-URI standard : un `config.ru` fourni par l'image (jamais une
+modification du code applicatif) monte l'application via `Rack::URLMap`.
+Le préfixe est alors conservé de bout en bout — le Service Worker ne le
+retire plus avant la VM.
+
+Reste cosmétique : `/favicon.ico` et `/site.webmanifest`, que Rails écrit en
+dur sans préfixe, produisent des 404 silencieux.
+
 ### Protocole du pont série (v2) et limite mesurée du canal montant
 
 Le canal **descendant** (invité → navigateur) encaisse tout : v86 délivre les

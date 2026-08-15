@@ -109,7 +109,9 @@ async function waitForApplication(bridge) {
   for (let attempt = 1; attempt <= READY_MAX_ATTEMPTS; attempt += 1) {
     bridge.syncClock();
     try {
-      const raw = await bridge.request("/");
+      // Chemin réel de l'application (montée sous /app via Rack::URLMap) :
+      // sonder « / » ne testerait que le routeur Rack.
+      const raw = await bridge.request("/app/");
       const { headText } = splitHttpResponse(raw);
       log(`prêt à la sonde n°${attempt} — ${headText.split(/\r?\n/)[0]}`);
       return;

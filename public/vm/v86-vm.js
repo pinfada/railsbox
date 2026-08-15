@@ -251,8 +251,10 @@ function createFacade(emulator, state, onConsole, snapshot) {
 
   async function probe() {
     try {
+      // L'application est montée sous /app dans la VM : sonder la racine
+      // ne testerait que Rack::URLMap, pas l'application elle-même.
       const response = await handleHttpRequest(
-        { method: "GET", path: "/", headers: [], hasBody: false, forwardHost: "localhost" },
+        { method: "GET", path: "/app/", headers: [], hasBody: false, forwardHost: "localhost" },
         null,
         PROBE_TIMEOUT_MS,
       );
