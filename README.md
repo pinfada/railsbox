@@ -1,321 +1,263 @@
-# Rails-in-Browser 2.1
+# railsbox
 
-Faire tourner une application **Rails complète et non modifiée** (Puma, gems C
-natives, PostgreSQL/SQLite) entièrement dans le navigateur, avec **deux
-moteurs interchangeables** derrière la même façade :
+**Une application Rails complète, non modifiée, qui tourne entièrement dans le
+navigateur.** Pas de serveur applicatif, pas de conteneur distant : Puma,
+PostgreSQL, Redis et les gems C natives s'exécutent dans une VM Linux x86
+émulée en WebAssembly, à l'intérieur de l'onglet.
 
-| Moteur | URL | Licence | Points forts |
-|---|---|---|---|
-| **CheerpX** (défaut) | `/` | propriétaire (gratuit perso) | JIT le plus rapide ; pont fichiers validé |
-| **v86** | `/?engine=v86` | BSD-2-Clause | vrai noyau Linux (TCP loopback natif), pont série, snapshots RAM |
+Validé sur une vraie application de production — [jiyufit](https://github.com/pinfada)
+(Rails 7.2.3, Ruby 3.3.10, PostgreSQL 15, Redis, Sidekiq, Devise, Stripe,
+70 initializers) — qui rend ses pages, suit ses liens et traite ses POST.
 
-**État : fonctionnel de bout en bout** — GET et POST (avec corps) validés dans
-Chrome, de l'iframe jusqu'à un serveur HTTP tournant dans la VM, en ~2–3 s par
-requête (VM émulée). Sans image Rails custom, une mini-app de démonstration
-prouve la chaîne ; avec l'image produite par `tools/build-rails-image`, c'est
-Puma qui répond.
+## 1. Démo
 
-## Démarrage rapide
+> **État : pas encore déployée publiquement.** Les artefacts pèsent 4,2 Go
+> (image disque) plus 173 Mo (instantané mémoire compressé), et le dépôt est
+> privé. Il n'y a donc pas de lien à cliquer aujourd'hui — le dire clairement
+> vaut mieux qu'un lien mort.
 
-```bash
-npm start        # sert public/ avec COOP/COEP + Range sur http://localhost:8080
-npm test         # tests unitaires du codec HTTP (node --test, zéro dépendance)
-```
+Ce qu'un hébergement statique doit fournir pour que le « 1 clic » fonctionne :
 
-Ouvrir http://localhost:8080 dans **Chrome/Edge** (SharedArrayBuffer requis).
-Premier boot : ~25–40 s (streaming du disque Debian, ensuite mis en cache
-IndexedDB). Nota : le navigateur intégré de certains environnements (webviews)
-bloque les Service Workers — utiliser un vrai Chrome.
+| Exigence | Pourquoi |
+|---|---|
+| En-têtes `Cross-Origin-Opener-Policy: same-origin` et `Cross-Origin-Embedder-Policy: require-corp` | `SharedArrayBuffer`, sans quoi aucun moteur ne démarre |
+| Requêtes `Range` sur le `.ext2` | le disque de 4 Go est lu par morceaux, jamais téléchargé en entier |
+| `Content-Encoding: gzip` sur l'instantané | 653 Mo bruts → 173 Mo transférés |
+| Chrome ou Edge | validé ; les webviews qui bloquent les Service Workers ne peuvent pas fonctionner |
 
-## Ce qui a été corrigé par rapport au schéma « 2.0 »
+À défaut d'hébergeur posant ces en-têtes, le Service Worker les réinjecte
+lui-même — mais le tout premier chargement doit déjà être isolé.
 
-Chaque point ci-dessous a été vérifié expérimentalement pendant le développement.
+**Ce que verrait le visiteur** : l'application disponible en **26 secondes**
+(instantané téléchargé puis restauré), puis une navigation normale — page
+d'accueil stylée en 1,1 s, formulaires, redirections.
 
-| Affirmation du schéma 2.0 | Réalité vérifiée | Solution retenue |
-|---|---|---|
-| « Linux Userland **x86_64** » | CheerpX exécute du x86 **32 bits** (i386) | Dockerfile basé `i386/debian` |
-| « Puma sur loopback `127.0.0.1:3000`, zéro patch » | **Le loopback TCP ne fonctionne pas sans Tailscale** : `bind()` échoue (EADDRINUSE fantôme), toute la pile TCP de CheerpX passe par Tailscale | Le serveur écoute sur un **socket Unix** (`unix:///tmp/app.sock`) — purement interne au noyau émulé, fonctionne nativement ; Puma le supporte via `-b unix://…` |
-| « Interception fetch → proxy stream direct vers la VM » | Aucune API publique CheerpX pour ouvrir un flux vers un socket de la VM depuis JS | Pont fichier-based : SW → page hôte → `DataDevice` (JS→VM) → client HTTP dans la VM → `IDBDevice`/`readFileAsBlob` (VM→JS) → SW |
-| Pont via curl dans la VM | **Deadlock CheerpX** : la 2ᵉ écriture socket de curl (le corps d'un POST) bloque définitivement — même `--max-time` ne se déclenche plus | **Client HTTP Python** embarqué (`bridge-client.py`) : requête complète envoyée en **un seul `sendall()`**, HTTP/1.0 + `Connection: close` (pas de chunked). Bonus sécurité : les données de requête ne traversent plus aucun shell |
-| Lecture directe des fichiers produits par la VM | Le write-back IndexedDB de CheerpX est **asynchrone et non ordonné** entre fichiers : lire dès l'apparition d'un marqueur donne des fichiers vides/partiels | Protocole de synchronisation : `.done` écrit **en dernier**, contient `code taille_head taille_body` ; le JS re-lit head/body jusqu'à atteindre ces tailles |
-| « COI Service Worker » séparé du proxy | **Un seul SW par scope** : deux SW se désenregistrent mutuellement ; et le navigateur tue les SW inactifs (perte de l'état en mémoire) | SW unique (proxy + en-têtes COI) ; quand il redémarre, il **redemande le MessagePort** à la page hôte au lieu de répondre 503 |
-| « Web Worker : noyau d'exécution » | L'API CheerpX s'initialise sur le thread principal ; le moteur gère ses propres workers internes | Module VM isolé sur le thread principal de la page hôte, iframe applicative séparée |
-| « GCC + `bundle install` dans le navigateur » | Possible mais très lent, et **exige un réseau sortant** donc Tailscale | Les gems natives compilent hors ligne dans le Dockerfile (chemin nominal) |
-| « Heap Cloner, boot < 120 ms » | Aucune API publique de snapshot mémoire dans CheerpX 1.2.8 | Premier boot en dizaines de secondes ; boots suivants accélérés par le cache IndexedDB (`OverlayDevice`) |
-| « ActionCable/WebSockets natifs » | Impossible à travers un pont requête/réponse | Hors périmètre V1 — voir Roadmap |
+## 2. Guide d'utilisation
 
-## Architecture réelle (2.1)
-
-```
-┌────────────────────────────── NAVIGATEUR ───────────────────────────────┐
-│  PAGE HÔTE (thread principal)                 IFRAME APPLICATIVE        │
-│  ├─ main.js : orchestration, badges, log      └─ HTML Rails, Turbo…     │
-│  ├─ vm/rails-vm.js : boot CheerpX + pont            │ fetch /app/*      │
-│  │    (workers internes gérés par CheerpX)          ▼                   │
-│  │                                        SW UNIQUE sw-proxy.js         │
-│  │  MessageChannel (renouvelé à chaque    ├─ proxy /app/* → page hôte   │
-│  └───────────◄─── redémarrage du SW) ─────┤─ en-têtes COOP/COEP (COI)   │
-│                                           └─ redemande le port si perdu │
-├─────────────────────────── VM LINUX x86 (CheerpX) ──────────────────────┤
-│  /            ext2 : OverlayDevice(disque HTTP/wss, IDBDevice) → persist│
-│  /data        DataDevice  : JS → VM (scripts, descripteurs, corps)      │
-│  /files       IDBDevice   : VM → JS (réponses, lues par readFileAsBlob) │
-│  boot.sh      1 seul cx.run : serveur en arrière-plan + boucle de pont  │
-│  bridge-client.py   client HTTP/1.0, un seul sendall, codes façon curl  │
-│  Puma unix:// (image Rails) │ mini-app Python/Ruby (démo)               │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-Cycle d'une requête : l'iframe fait `fetch("/app/posts")` → le SW la
-sérialise (méthode, chemin, en-têtes, corps — **validés** dans
-`request-codec.js`) → la page hôte écrit `req-N.json` + `req-N.body` puis
-`req-N.cmd` dans `/data` → la boucle shell de la VM lance
-`bridge-client.py` → il parle HTTP/1.0 au serveur via le socket Unix →
-écrit `res-N.{head,body}` puis `res-N.done` dans `/files` → la page les lit
-(en attendant les tailles annoncées) → le SW reconstruit une `Response`.
-L'en-tête `Host` d'origine est retransmis pour que `redirect_to` génère des
-URLs correctes. En cas d'échec de préparation, un script neutre est tout de
-même écrit pour que la boucle (strictement ordonnée) ne se bloque jamais.
-
-## Backend v86 : une vraie application (jiyufit) dans le navigateur
-
-**Validé le 15/08/2026** : jiyufit (Rails 7.2.3, Ruby 3.3.10, PostgreSQL 15,
-Redis, Puma 7, Devise, Stripe, Sidekiq) rend sa page d'accueil **entièrement
-stylée** (tailwind, 2 492 règles, bannière cookies Stimulus fonctionnelle)
-dans Chrome. Mesures : boot à froid ~13 min (noyau 55 s, PostgreSQL 1 min,
-Rails 11 min) ; à chaud **home en 1,1 s** (4 requêtes SQL) et 404 en 556 ms.
-
-**Instantané mémoire** : l'état complet de la VM est restauré au lieu d'être
-reconstruit — **26 s pour un nouvel utilisateur** (instantané pré-calculé
-téléchargé), **~40 s** depuis le cache local, contre ~13 min de boot à froid.
-Clé d'invalidation = config disque (`builtAt` régénéré à chaque build) ;
-`?fresh=1` purge le cache et force un boot à froid.
-
-### Quatre pièges de l'instantané mémoire (traités)
-
-| Piège | Conséquence | Traitement |
-|---|---|---|
-| **Gel d'horloge** — le noyau restauré reprend à la date de la capture | cookies de session et jetons CSRF vus comme expirés, TLS invalide | trame `@RIB1 TIME <epoch>` envoyée à chaque sonde et juste avant la première vraie requête ; le démon applique `date -s` si la dérive dépasse 2 s |
-| **Fuite Blob** — `URL.createObjectURL` sur 640 Mo n'est jamais libéré | mémoire de l'onglet doublée | supprimé à la racine : v86 accepte `initial_state: { buffer }`, donc plus aucun Object URL (mieux que `revokeObjectURL`) |
-| **Boot à froid de 13 min chez l'utilisateur** | inacceptable en production | `make-snapshot.mjs` génère l'instantané en CI (v86 sous Node, même codec série) ; il est livré en `/disks/jiyufit-state.bin(.gz)` et téléchargé si le cache local est vide |
-| **Débit série** — v86 émet un événement JS **par octet** (369 282 pour le CSS) | à-coups de rendu potentiels | assembleur en `Uint8Array` pré-alloué à croissance géométrique, zéro allocation par octet : **24 ns/octet, 8,9 ms pour 270 Ko** (`node tools/bench-serial.mjs`) — le coût réel est l'UART émulée, pas le JS |
-
-**Résultat mesuré du parcours « nouvel utilisateur, cache vide »** : instantané
-téléchargé (656 Mo décompressés en 4,1 s depuis le `.gz` de 174 Mo) puis
-application disponible **26 s après le chargement de la page**, contre ~13 min
-de boot à froid. Aucun Object URL créé (vérifié : 0 entrée `blob:`).
-
-Découverte au passage : l'horloge invitée **dérive en continu** sous émulation
-chargée, pas seulement au gel de l'instantané — jusqu'à 20 s de retard toutes
-les 5 s pendant le boot. Le recalage est donc aussi périodique (toutes les
-15 s) en fonctionnement, sinon les sessions finiraient par expirer d'elles-mêmes.
-
-Génération de l'instantané pré-calculé :
+### Tester en local
 
 ```bash
-node tools/build-v86-image/make-snapshot.mjs
+npm install
+npm start        # http://localhost:8080 — COOP/COEP, Range et gzip inclus
+npm test         # 37 tests unitaires, zéro dépendance (node --test)
 ```
 
-Il écrit `jiyufit-state.bin` + `.gz`, et ajoute `"state"` à `v86-config.json`.
-Le serveur de dev sert automatiquement le `.gz` avec `Content-Encoding: gzip`
-(décompression transparente par le navigateur).
+Sans image applicative, le moteur par défaut (CheerpX) boote une image Debian
+publique et sert une mini-application de démonstration : la chaîne complète
+navigateur → VM → serveur HTTP est vérifiable en une trentaine de secondes.
 
-### Inspecteur d'environnement : réparer sans reconstruire
-
-Une application Rails sérieuse refuse de démarrer si sa configuration est
-incomplète — c'est voulu, et c'est le principal obstacle à l'exécuter
-ailleurs que sur son infrastructure d'origine. Le panneau « Environnement »
-transforme cet échec en étape d'installation.
-
-Le point de conception qui rend la chose utilisable : **la réparation agit à
-chaud**. Le pont écrit les variables dans `/opt/rib/env.local.sh` et relance
-le serveur applicatif — pas de reconstruction d'image (10 min), pas de
-redémarrage de la VM. Le démon du pont est un processus distinct de
-l'application : il survit à son plantage, donc le canal reste disponible
-précisément quand on en a besoin.
-
-Le détecteur lit les journaux de démarrage et reconnaît les formulations
-réelles (`key not found: "X"`, `X must be set in production`,
-`X is missing or empty`, équivalents français, triplet de chiffrement Active
-Record signalé globalement). Les faux positifs sont testés : une ligne
-`Completed 200 OK` ne déclenche rien.
-
-Le classement en trois familles reflète ce qui est vraiment simulable :
-
-| Famille | Traitement | Raison |
+| URL | Moteur | Ce qui tourne |
 |---|---|---|
-| Secrets internes (signature, chiffrement, mots de passe) | générés au format attendu (hex 32 ou 64 octets) | une valeur aléatoire est parfaitement valide |
-| Services tiers (OAuth, API) | champ éditable, **jamais généré** | aucune valeur inventée ne peut fonctionner ; la simuler donnerait une fausse impression de réparation |
-| Stripe | généré **au format** `sk_live_…` | l'initializer valide le format localement, pas la validité auprès de Stripe |
+| `http://localhost:8080` | CheerpX | mini-app de démonstration |
+| `http://localhost:8080/?engine=v86` | v86 | votre application Rails |
+| `…/?engine=v86&fresh=1` | v86 | idem, en ignorant l'instantané (boot à froid) |
 
-Les valeurs saisies sont conservées en `localStorage` (outil de développement
-local) pour survivre à un rechargement.
+### Packager votre application Rails
 
-### Montage sous-URI : `RAILS_RELATIVE_URL_ROOT` ne suffit pas
+Deux commandes, sous **WSL2 ou Linux** (Docker et `e2fsprogs` requis) :
 
-L'application tourne sous le préfixe `/app`, seul périmètre intercepté par le
-Service Worker. Piège vérifié sur le HTML réellement servi : la variable
-`RAILS_RELATIVE_URL_ROOT` **ne préfixe que les assets**.
+```bash
+bash tools/build-v86-image/build.sh /chemin/vers/votre-app   # ~25 min
+node tools/build-v86-image/make-snapshot.mjs                 # ~12 min
+```
 
-| Helper | URL générée | Sans montage Rack |
+La première construit l'image disque : Dockerfile en deux étages — les assets
+se précompilent en x86_64 (tailwind, esbuild et dartsass n'ont pas de binaire
+i386), le rootfs est en i386 avec Ruby compilé depuis les sources, la base de
+données préparée et le noyau extrait pour un démarrage direct.
+
+La seconde boote cette image **sous Node**, attend que l'application réponde,
+capture l'état mémoire et écrit `jiyufit-state.bin(.gz)`. C'est ce qui évite
+à l'utilisateur final le boot à froid de treize minutes.
+
+Le `Dockerfile` est aujourd'hui **écrit pour jiyufit** : version de Ruby,
+PostgreSQL et Redis, scripts npm, et une quinzaine de variables d'environnement
+propres à sa doctrine de sécurité. Le adapter à une autre application demande
+d'éditer ces points — voir la section 4 pour ce qui est généralisable.
+
+### Réparer une configuration incomplète
+
+Une application Rails sérieuse refuse de démarrer si une clé manque. Le
+panneau **Environnement** (en haut à droite) détecte ces variables dans les
+journaux de boot, génère les secrets internes au bon format en un clic, offre
+un champ pour les identifiants de services tiers, puis **injecte le tout dans
+la VM et relance l'application à chaud** — sans reconstruire l'image.
+
+## 3. Architecture
+
+### Comparatif des moteurs
+
+Les deux backends implémentent la même façade ; seul le transport diffère.
+
+| | **v86** (recommandé) | **CheerpX** |
 |---|---|---|
-| `stylesheet_link_tag` | `/app/assets/tailwind-…` | ✅ intercepté |
-| `link_to`, `form_with` | `/gymhouses`, `/locale` | ❌ échappe au proxy → 404 du serveur statique |
+| Licence | BSD-2-Clause | propriétaire (gratuit en usage personnel) |
+| Émulation | PC i386 complet, **vrai noyau Linux** | user-mode x86 32 bits, JIT |
+| Réseau invité | loopback TCP natif (`127.0.0.1:3000`) | **pas de TCP sans Tailscale** → socket Unix |
+| Transport du pont | port série `ttyS0` | fichiers via `DataDevice` / `IDBDevice` |
+| Instantané mémoire | oui (`save_state`) → boot en 26 s | aucune API publique |
+| Vitesse d'exécution | plus lente | JIT plus rapide |
+| Usage dans ce projet | applications réelles | mini-app de démonstration |
 
-Les helpers de routes s'appuient sur le `SCRIPT_NAME` de Rack, vide quand
-Puma sert l'application à la racine. La correction est le déploiement
-sous-URI standard : un `config.ru` fourni par l'image (jamais une
-modification du code applicatif) monte l'application via `Rack::URLMap`.
-Le préfixe est alors conservé de bout en bout — le Service Worker ne le
-retire plus avant la VM.
+### Schéma de flux
 
-Reste cosmétique : `/favicon.ico` et `/site.webmanifest`, que Rails écrit en
-dur sans préfixe, produisent des 404 silencieux.
+```
+┌─────────────────────────── NAVIGATEUR ────────────────────────────┐
+│  IFRAME APPLICATIVE            PAGE HÔTE (thread principal)       │
+│  fetch("/app/gymhouses")       ├─ main.js : orchestration, log    │
+│        │                       ├─ vm/v86-vm.js : boot + pont      │
+│        ▼                       └─ env-drawer.js : réparation      │
+│  SERVICE WORKER (sw-proxy.js)          ▲                          │
+│  ├─ intercepte /app/*                  │ MessageChannel           │
+│  ├─ réinjecte COOP/COEP                │ (renouvelé si le SW meurt)│
+│  └─ réécrit les Location absolues ─────┘                          │
+├───────────────────────── VM LINUX i386 (v86) ─────────────────────┤
+│  ttyS0 ◄── REQ / BOD+ACK / FIN ─── trames @RIB1 ──► RSB/DAT/END   │
+│    │                                                              │
+│    ▼                                                              │
+│  serial-bridge.py  ──HTTP──►  Puma 127.0.0.1:3000                 │
+│  (démon, survit au       (Rack::URLMap monte l'app sous /app)     │
+│   plantage de l'app)          │                                   │
+│                               ├─ PostgreSQL 15                    │
+│                               └─ Redis                            │
+└───────────────────────────────────────────────────────────────────┘
+```
 
-### Protocole du pont série (v2) et limite mesurée du canal montant
+Le préfixe `/app` est conservé de bout en bout : le Service Worker n'intercepte
+que lui, et l'application le génère nativement puisqu'elle est montée dessous
+par `Rack::URLMap`.
 
-Le canal **descendant** (invité → navigateur) encaisse tout : v86 délivre les
-octets à la vitesse où le JS les consomme. Le canal **montant** (navigateur →
-invité), lui, passe par le tampon d'entrée du TTY/UART émulé, **sans contrôle
-de flux** — et il perd des octets bien avant ce qu'on imagine :
+## 4. Retour d'expérience : les défis résolus
 
-| Corps d'un POST | Avant (une seule ligne) | Après (tranches acquittées) |
+Vingt-deux itérations de build ont été nécessaires. Les obstacles n'étaient
+presque jamais où on les attend — voici ceux qui ont coûté le plus cher.
+
+### Le loopback TCP n'existe pas sous CheerpX
+
+`bind()` sur `127.0.0.1` échoue avec un `EADDRINUSE` fantôme : toute la pile
+TCP passe par Tailscale. Puma écoute donc sur un **socket Unix**, purement
+interne au noyau émulé. C'est ce qui a motivé le passage à v86, dont le vrai
+noyau Linux rend le loopback trivial.
+
+### Le canal montant perd les gros POST
+
+Le port série n'a **aucun contrôle de flux** dans le sens navigateur → invité.
+Mesuré : un POST de 32 Ko passe, **128 Ko est perdu et bloque le canal
+définitivement**. La correction est un protocole en tranches acquittées une
+par une (fenêtre d'émission de 1 536 octets), ce qui borne les octets en vol
+quelle que soit la taille du tampon.
+
+| Corps du POST | Avant | Après |
 |---|---|---|
 | 1–32 Ko | arrive | arrive |
-| **128 Ko** | **perdu — 502 après 120 s, canal ensuite bloqué** | arrive |
-| 256 Ko | perdu | **1,4 s** |
-| **1 Mo** | perdu | **2,5 s** |
+| 128 Ko | **perdu**, canal mort | arrive |
+| 1 Mo | perdu | **2,5 s** |
 
-Aucun « corps incomplet » sur l'ensemble de l'échelle : le démon vérifie que
-les tranches reçues totalisent exactement la taille annoncée, donc ces
-transferts sont intègres à l'octet près, pas seulement « arrivés ».
+Effet de bord bénéfique : le corps n'étant plus embarqué dans le descripteur
+JSON lui-même ré-encodé, la charge utile perd **77 %** de son gonflement.
 
-D'où le protocole en deux temps, avec fenêtre d'émission de **une** tranche :
+### Le canal est semi-duplex, et ça se voit
 
-```
-navigateur → invité :  REQ <id> <b64 descripteur sans corps>
-                       BOD <id> <b64 tranche de 1536 o>   ⟵ attend ACK
-                       BOD <id> …                          ⟵ attend ACK
-                       FIN <id>
-                       TIME <epoch>            (recalage d'horloge)
-invité → navigateur :  ACK <id>                (après écriture de la tranche)
-                       RSB <id> <taille brute> ⟵ le lecteur alloue une fois
-                       DAT <id> <b64 8000 car.> ⟵ décodé au vol dans le tampon
-                       END <id> | ERR <id> <code> | LOG …
-```
+Une grosse réponse en cours monopolise l'écriture de l'invité : l'acquittement
+d'une tranche montante attend derrière. Le même POST de 4 Ko met **105 s**
+pendant le chargement des assets, contre moins d'une seconde canal libre. Le
+délai d'acquittement est donc aligné sur celui d'une requête complète — une
+valeur courte faisait échouer à tort tout POST concurrent d'un téléchargement.
 
-Deux effets de bord bénéfiques : le corps n'est plus encodé deux fois en
-base64 (**−77 % de charge utile**), et une réponse dont les tranches ne
-totalisent pas la taille annoncée est rejetée franchement au lieu d'être
-livrée tronquée.
+### Un seul écrivain sur le port série
 
-**Le canal reste étroit et semi-duplex** : une grosse réponse en cours (les
-assets de la page d'accueil) monopolise l'écriture de l'invité, et
-l'acquittement d'une tranche montante attend derrière. Mesuré : le même POST
-de 4 Ko met 105 s pendant le chargement des assets, contre moins d'une
-seconde une fois le canal libre. C'est pourquoi le délai d'acquittement est
-aligné sur celui d'une requête complète (120 s) et non sur une valeur courte
-— un délai de 30 s faisait échouer à tort tout POST concurrent d'un
-téléchargement.
+Un `tail -F` ajouté pour la télémétrie écrivait en concurrence du démon : ses
+lignes s'entrelaçaient avec les trames et **corrompaient les transferts
+volumineux** (CSS de 270 Ko illisible). Les logs applicatifs sont désormais
+relayés par le démon lui-même, sous son verrou.
 
-Règle d'or du pont série : **un seul écrivain**. Les logs applicatifs sont
-relayés par le démon du pont lui-même (sous son verrou) — jamais par un
-`tail -F` concurrent, dont les lignes s'entrelacent avec les trames et
-corrompent les transferts volumineux (vécu : CSS de 270 Ko corrompu).
+### L'horloge invitée dérive en permanence
 
-Pièges rencontrés (tous corrigés dans le Dockerfile/init, dans l'ordre) :
-`docker export` perd `/etc/hosts` et les uid si extrait sans root ; l'init
-maison doit monter `/dev/shm` (PostgreSQL 15) ; `BUNDLE_WITHOUT` /
-`BUNDLE_FORCE_RUBY_PLATFORM` doivent exister au **runtime** (pas seulement au
-build) ; BuildKit ne pose pas la personnalité 32 bits (gems précompilées
-x86_64 → tout compiler source) ; `tmp/ log/ storage/` sont exclus par le
-.dockerignore de jiyufit (Puma exige `tmp/pids`) ; le tty série doit être en
-`raw -echo` (le mode canonique tronque à 4096 caractères) ; et le SW doit
-**retirer le préfixe /app** (reconnaissance des routes) pendant que
-`RAILS_RELATIVE_URL_ROOT` préfixe la génération d'URLs.
+Attendu après restauration d'instantané (le noyau reprend à la date de la
+capture), mais la mesure a montré pire : sous émulation chargée, l'invité
+prend **jusqu'à 20 s de retard toutes les 5 s**. Sans recalage périodique, les
+cookies de session et les jetons CSRF finissent par expirer d'eux-mêmes en
+cours d'utilisation.
 
-v86 (BSD-2-Clause) émule un PC i386 complet avec un vrai noyau Linux : le
-loopback TCP fonctionne nativement (Puma écoute en `tcp://127.0.0.1:3000`
-sans détour), et le pont passe par le **port série** ttyS0 — un canal ordonné
-et fiable, sans les pièges de persistance du pont fichiers CheerpX.
+### `RAILS_RELATIVE_URL_ROOT` ne préfixe que les assets
 
-```
-iframe → SW → page hôte → serial0_send("@RIB1 REQ id b64(json)")
-  → ttyS0 → /opt/rib/serial-bridge.py (démon Python dans la VM)
-  → HTTP 127.0.0.1:3000 (Puma) → trames RSB/DAT/END → Response
-```
+| Helper | URL générée |
+|---|---|
+| `stylesheet_link_tag` | `/app/assets/tailwind-…` ✅ |
+| `link_to`, `form_with` | `/gymhouses` ❌ échappe au proxy |
 
-Les requêtes sont multiplexées par id (pas d'ordre strict, contrairement au
-pont CheerpX) et toute ligne série sans le préfixe `@RIB1` est affichée comme
-log (noyau, Puma) dans le panneau de la page hôte.
+Les helpers de routes lisent le `SCRIPT_NAME` de Rack, vide quand Puma sert à
+la racine. La correction est le déploiement sous-URI standard : un `config.ru`
+fourni par l'image monte l'application via `Rack::URLMap`, **sans toucher au
+code applicatif**. Défaut trouvé en cliquant sur un lien — pas en regardant la
+page d'accueil s'afficher.
 
-Construction de l'image (WSL2, docker + e2fsprogs) :
+### Quatre pièges de l'instantané mémoire
 
-```bash
-cd tools/build-v86-image && bash build.sh /chemin/vers/jiyufit
-```
+| Piège | Traitement |
+|---|---|
+| Gel d'horloge | trame `TIME` + `date -s` au-delà de 2 s de dérive |
+| Fuite mémoire — `URL.createObjectURL` sur 650 Mo n'est jamais libéré | supprimé à la racine : v86 accepte `initial_state: { buffer }` |
+| Boot à froid de 13 min chez l'utilisateur | instantané généré en CI, livré en gzip, téléchargé si le cache local est vide |
+| v86 émet **un événement JS par octet** (369 282 pour le CSS) | assembleur `Uint8Array` pré-alloué : **24 ns/octet**, 8,9 ms pour 270 Ko |
 
-Le Dockerfile est en deux étages : les assets (tailwind/esbuild/dartsass,
-binaires amd64 uniquement) se précompilent en x86_64, le rootfs est en i386
-avec Ruby 3.3.10 compilé depuis les sources, PostgreSQL 15, Redis, et le
-noyau Debian 686 que v86 boote directement (bzImage + initrd, sans
-bootloader). La base est préparée pendant le build (`db:prepare` + seeds
-légaux) et les clés obligatoires au boot (`ACTIVE_RECORD_ENCRYPTION_*`,
-`ACCESS_MASTER_SIGNING_KEY`, `COMPLIANCE_PSEUDONYMIZATION_KEY`) sont
-générées aléatoirement — propres à cette image locale de démo.
+### Détecter une variable manquante sans se tromper de mot
 
-Particularité jiyufit : `config.force_ssl = true` — le SW ajoute
-`X-Forwarded-Proto: https` à toutes les requêtes proxifiées (Chrome accepte
-les cookies `Secure` sur localhost, les sessions fonctionnent donc en local).
+Une expression du type `(VARIABLE).{0,40}(mot-clé)` capture le **premier**
+jeton majuscule de la ligne — sur
+`{"severity":"FATAL","message":"GOOGLE_CLIENT_ID is missing"}` elle proposait
+sérieusement `FATAL` comme variable à renseigner. Remplacée par une recherche
+par fenêtre autour du mot-clé, avec retrait des étiquettes de journal
+(`[DEVISE]`, `[STRIPE]`) et exigence d'un souligné dans le nom.
 
-## Monter votre application Rails (CheerpX)
+Autre nuance : « bloquant » se juge sur la **gravité du message**, pas sur la
+famille de la variable. Un `WARN` laisse l'application démarrer, seule la
+fonctionnalité concernée reste inactive.
 
-1. Sous Linux/WSL2 : `cd tools/build-rails-image && ./build.sh`
-   (adaptez le Dockerfile : remplacez `rails new` par un `COPY` de votre app ;
-   `RAILS_RELATIVE_URL_ROOT=/app` est déjà posé, gardez-le).
-2. Copiez `rails.ext2` dans `public/disks/`.
-3. Dans `public/main.js` : `bootVm({ diskImageUrl: "/disks/rails.ext2", onConsole: logLine })`.
+### Pièges de construction d'image, en vrac
 
-`boot.sh` détecte `/root/app/bin/rails` et lance
-`bin/rails server -b "unix://$APP_SOCKET"` (Puma supporte nativement les
-sockets Unix). `SECRET_KEY_BASE` est généré aléatoirement à chaque session
-côté navigateur — aucun secret en dur.
+`docker export` perd `/etc/hosts` et les uid si l'extraction n'est pas faite
+en root ; un init maison doit monter `/dev/shm` (PostgreSQL 15) ;
+`BUNDLE_WITHOUT` et `BUNDLE_FORCE_RUBY_PLATFORM` doivent exister **au runtime**
+et pas seulement au build ; BuildKit n'applique pas la personnalité 32 bits,
+donc `uname -m` ment et Bundler installe des gems x86_64 inchargeables ;
+nokogiri ne compile pas son libxml2 embarqué en i386 (bibliothèques système
+obligatoires) ; `tmp/`, `log/` et `storage/` sont souvent exclus par le
+`.dockerignore` alors que Puma exige `tmp/pids` ; le tty série doit être en
+`raw -echo`, le mode canonique tronquant à 4 096 caractères.
 
-L'overlay IndexedDB rend la VM **stateful** : migrations, écritures SQLite et
-installations survivent au rechargement de l'onglet. Pour repartir de zéro :
-DevTools → Application → IndexedDB → supprimer `cjFS_/rails-root/`.
+### Limites connues
 
-## Limites connues et roadmap
-
-- **ActionCable / WebSockets** : non supportés par le pont V1. Pistes V2 :
-  long-polling côté client, ou multiplexage d'un flux dédié via le protocole
-  de fichiers (SSE simulé par polling).
-- **Débit** : 1 requête à la fois (boucle strictement ordonnée), ~2–3 s par
-  requête sous émulation. Suffisant pour Turbo/HTML, pas pour des rafales
-  d'assets — d'où le `assets:precompile` dans l'image.
-- **Réseau sortant** (APIs externes, `bundle install`) : nécessite l'option
-  Tailscale de CheerpX (`networkInterface` de `Linux.create`), non câblée ici.
-- **Image publique WebVM** : Debian avec Ruby 2.5 et Python 3 — suffisante
-  pour la démo, pas pour Rails 7 (d'où l'image custom).
-- **Licence CheerpX** : gratuit pour usage personnel/évaluation ; usage
-  commercial soumis à licence Leaning Technologies. À valider avant prod.
-- **Navigateurs** : validé sous Chrome. Les webviews embarquées qui bloquent
-  les Service Workers ne peuvent pas fonctionner.
-- **SQLite/OPFS** : la persistance passe par IndexedDB (`IDBDevice`), le
-  mécanisme natif de CheerpX ; OPFS serait une optimisation future.
+- **ActionCable / WebSockets** : hors périmètre, incompatibles avec un pont
+  requête/réponse. Piste : long-polling ou flux dédié multiplexé.
+- **Débit** : le pont est un tuyau étroit et partagé. Suffisant pour du
+  Turbo/HTML, pas pour des rafales d'assets — d'où le `assets:precompile`.
+- **Réseau sortant** (APIs tierces, `bundle install` en ligne) : nécessiterait
+  l'option Tailscale, non câblée ici.
+- **Généricité** : le runtime est agnostique, la recette de build ne l'est pas
+  encore (voir section 2).
+- **Licence CheerpX** : usage commercial soumis à licence Leaning Technologies.
+- `/favicon.ico` et `/site.webmanifest`, écrits en dur par Rails sans préfixe,
+  produisent des 404 silencieux.
 
 ## Arborescence
 
 ```
-serve.mjs                       # serveur dev : COOP/COEP + Range, zéro dépendance
+serve.mjs                          serveur de dev : COOP/COEP, Range, gzip
 public/
-├── index.html                  # page hôte : badges d'état, log, iframe
-├── main.js                     # orchestration SW ↔ VM ↔ pont
-├── sw-proxy.js                 # SW unique : proxy /app/* + isolation COI
-├── shared/request-codec.js     # validation/sérialisation HTTP (testé)
+├── index.html · main.js           page hôte : orchestration, badges, journal
+├── sw-proxy.js                    SW unique : proxy /app/* + isolation COI
+├── env-drawer.js · .css           inspecteur d'environnement
+├── shared/
+│   ├── request-codec.js           validation HTTP (commun aux deux moteurs)
+│   ├── serial-codec.js            trames @RIB1, contrôle de flux montant
+│   └── env-detector.js            détection des variables manquantes
 └── vm/
-    ├── rails-vm.js             # boot CheerpX, montages, façade du pont
-    └── vm-scripts.js           # boot.sh, bridge-client.py, mini-apps (LF garantis)
-tests/request-codec.test.mjs    # node --test
-tools/build-rails-image/        # Dockerfile i386 + build.sh → rails.ext2
+    ├── v86-vm.js                  boot v86, instantané, horloge, pont série
+    └── rails-vm.js · vm-scripts.js  backend CheerpX
+tests/                             37 tests (node --test)
+tools/
+├── build-v86-image/               Dockerfile i386 + build.sh + make-snapshot.mjs
+├── build-rails-image/             image CheerpX (rails new générique)
+└── bench-serial.mjs               mesure du coût du chemin chaud série
 ```
