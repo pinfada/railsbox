@@ -21,6 +21,9 @@ export const REMEDIES = Object.freeze({
   "unsupported-database": "Utilisez PostgreSQL ou SQLite, ou déclarez database: dans railsbox.yml.",
   "missing-ruby-version":
     "Ajoutez un fichier .ruby-version à la racine, ou déclarez ruby: dans railsbox.yml.",
+  "unresolvable-ruby-series":
+    "Série de Ruby inconnue de railsbox : épinglez une version complète (ruby: X.Y.Z) " +
+    "dans railsbox.yml.",
   "missing-gemfile-lock":
     "Lancez `bundle install` pour produire Gemfile.lock : sans lui, gems natives et services " +
     "restent invisibles.",

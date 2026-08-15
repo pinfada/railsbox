@@ -2,5 +2,8 @@ node_modules/
 public/vendor/
 public/disks/
 tools/build-v86-image/build.log
+# Application Rails de démonstration : code généré par `rails new`, laissé
+# tel quel pour rester comparable à une application réelle.
+tools/demo-app/
 *.md
 package-lock.json

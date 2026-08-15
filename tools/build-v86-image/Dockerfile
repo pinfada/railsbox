@@ -1,61 +1,88 @@
 # syntax=docker/dockerfile:1.7
-# Image disque jiyufit pour v86 (émulateur x86 32 bits dans le navigateur).
+# Image disque railsbox pour v86 (émulateur x86 32 bits dans le navigateur).
+# Générique : TOUS les réglages propres à une application arrivent en
+# --build-arg, calculés par manifest-to-args.mjs à partir de l'auto-détection.
 #
-# Deux étages :
-#  1. assets  (amd64) : tailwindcss/esbuild/dartsass n'ont AUCUN binaire i386 —
-#     la précompilation des assets se fait donc en x86_64.
-#  2. rootfs  (i386)  : Debian bookworm + Ruby 3.3.10 compilé depuis les
-#     sources (bookworm i386 ne fournit que ruby 3.1) + PostgreSQL + Redis +
-#     noyau Linux 686 (v86 boote le bzImage directement, sans bootloader).
+# Trois étages :
+#  1. assets-1 (amd64) : tailwindcss/esbuild/dartsass n'ont AUCUN binaire i386 —
+#     la précompilation des assets npm se fait donc en x86_64.
+#  2. assets-0 (i386)  : étage vide, choisi quand l'application n'a pas de
+#     package.json (importmap/propshaft précompile directement dans le rootfs).
+#  3. rootfs  (i386)   : Debian bookworm + Ruby compilé depuis les sources
+#     (bookworm i386 ne fournit que ruby 3.1) + services + noyau Linux 686
+#     (v86 boote le bzImage directement, sans bootloader).
 #
-# Contexte de build attendu : la racine du dépôt jiyufit
-#   docker build --platform linux/386 -f <ce fichier> -t jiyufit-v86 <jiyufit>
+# Contexte de build attendu : la racine de l'application Rails.
+#   docker build --platform linux/386 -f <ce fichier> --build-arg … -t <tag> <app>
+
+ARG RUBY_VERSION=3.3.10
+# 0 : aucun package.json, l'étage amd64 est entièrement sauté.
+ARG NPM_ASSETS=0
 
 ########################################################################
-# Étage 1 : précompilation des assets (amd64)
+# Étage 1a : précompilation des assets npm (amd64)
 ########################################################################
-FROM --platform=linux/amd64 ruby:3.3.10-slim AS assets
+FROM --platform=linux/amd64 ruby:${RUBY_VERSION}-slim AS assets-1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential libpq-dev libyaml-dev zlib1g-dev git curl ca-certificates \
-      nodejs npm \
+      build-essential libpq-dev libyaml-dev zlib1g-dev libsqlite3-dev \
+      git curl ca-certificates openssl nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ENV BUNDLE_WITHOUT="development:test" BUNDLE_JOBS=4 BUNDLE_FROZEN=false
-COPY Gemfile Gemfile.lock ./
+COPY Gemfile* ./
 RUN bundle install
 
 COPY . .
-# node_modules est exclu par .dockerignore : installation complète (npm ci)
-# nécessaire pour build:css (tailwind + plugins @tailwindcss/*) et build:js
-# (bundle esbuild de @fullcalendar/*). esbuild n'est pas dans package.json.
+# node_modules est exclu par le .dockerignore de l'application : installation
+# complète (npm ci) nécessaire aux scripts de build. esbuild est ajouté sans
+# --save car certaines applications l'appellent sans le déclarer.
 RUN npm ci --no-audit --no-fund \
     && npm install --no-save --no-audit --no-fund esbuild
 
 # Valeurs jetables : ce stage ne sert qu'à produire public/assets, il est
 # entièrement écarté de l'image finale. Les vraies clés de la VM sont
 # générées aléatoirement dans l'étage rootfs.
+ARG MOUNT_PATH=/app
 ENV RAILS_ENV=production \
     RACK_ENV=production \
     SECRET_KEY_BASE=assets-stage-throwaway \
     ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
     ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
     ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=0000000000000000000000000000000000000000000000000000000000000000 \
-    ACCESS_MASTER_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
-    COMPLIANCE_PSEUDONYMIZATION_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
-    RAILS_RELATIVE_URL_ROOT=/app \
-    RAILS_LOG_TO_STDOUT=1 \
-    POSTHOG_ENABLED=false \
-    SIDEKIQ_USERNAME=assets-stage \
-    SIDEKIQ_PASSWORD=assets-stage-throwaway \
-    FRAUD_EVIDENCE_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
-    STRIPE_SECRET_KEY=sk_live_assetsStageThrowaway000000 \
-    STRIPE_PUBLIC_KEY=pk_live_assetsStageThrowaway000000
-# build:css/build:js explicites : cssbundling ne les déclenche pas de façon
-# fiable dans ce contexte, et leur absence donnait un rendu sans tailwind
-# (warnings « Importmap skipped missing path: fullcalendar.js »).
-RUN npm run build:css && npm run build:js && bundle exec rails assets:precompile
+    RAILS_RELATIVE_URL_ROOT=${MOUNT_PATH} \
+    RAILS_LOG_TO_STDOUT=1
+
+# Scripts npm explicites (détectés dans package.json) : cssbundling ne les
+# déclenche pas de façon fiable ici, et leur absence donne un rendu sans CSS.
+# L'environnement porte les variables exigées par les initializers de
+# l'application (clés au format attendu) : sans elles, l'environnement de
+# production refuse de démarrer et assets:precompile échoue. Deux sources :
+#  - APP_ENV_MANIFEST (railsbox.yml, TIERS) : valeurs single-quotées, un
+#    `. source` ne les exécute donc jamais — un $(commande) reste inerte.
+#  - APP_ENV_TRUSTED (--env-file, opérateur) : peut contenir des $(openssl
+#    rand …), légitimement exécutés au sourcing. Cet étage est jetable
+#    (écarté de l'image finale), l'éventuelle rotation ici est sans effet.
+ARG ASSET_SCRIPTS=""
+ARG APP_ENV_MANIFEST=""
+ARG APP_ENV_TRUSTED=""
+RUN printf '%s\n' "$APP_ENV_MANIFEST" > /tmp/app-env.sh \
+    && printf '%s\n' "$APP_ENV_TRUSTED" >> /tmp/app-env.sh \
+    && set -a && . /tmp/app-env.sh && set +a \
+    && for script in $ASSET_SCRIPTS; do npm run "$script"; done \
+    && bundle exec rails assets:precompile \
+    && rm -f /tmp/app-env.sh
+
+########################################################################
+# Étage 1b : substitut vide quand l'application n'utilise pas npm
+########################################################################
+# Même base que le rootfs : aucune image supplémentaire à télécharger.
+FROM i386/debian:bookworm-slim AS assets-0
+RUN mkdir -p /app/public/assets /app/app/assets/builds
+
+# Sélection de l'étage d'assets par la valeur de NPM_ASSETS (0 ou 1).
+FROM assets-${NPM_ASSETS} AS assets
 
 ########################################################################
 # Étage 2 : rootfs i386 bootable par v86
@@ -63,31 +90,45 @@ RUN npm run build:css && npm run build:js && bundle exec rails assets:precompile
 FROM i386/debian:bookworm-slim AS rootfs
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Socle commun à TOUTES les applications : cette couche ne dépend d'aucun
+# --build-arg, elle est donc réutilisée telle quelle d'une image à l'autre.
+# libxml2-dev/libxslt1-dev y figurent d'office : nokogiri est présent dans la
+# quasi-totalité des applications Rails et sa compilation les exige.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       linux-image-686 initramfs-tools \
-      postgresql postgresql-client redis-server \
-      build-essential libpq-dev libyaml-dev zlib1g-dev libssl-dev libffi-dev \
-      libgmp-dev libreadline-dev bison \
-      libvips42 \
+      build-essential libyaml-dev zlib1g-dev libssl-dev libffi-dev \
+      libgmp-dev libreadline-dev bison pkg-config patch \
+      libxml2-dev libxslt1-dev \
       python3 iproute2 procps openssl curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && update-initramfs -u -k all
 
-# Ruby 3.3.10 exact (le Gemfile jiyufit épingle "3.3.10") depuis les sources.
-RUN curl -fsSL https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.10.tar.gz -o /tmp/ruby.tar.gz \
+# Ruby exact demandé par l'application, compilé depuis les sources : les
+# dépôts bookworm i386 ne fournissent que ruby 3.1.
+ARG RUBY_VERSION
+RUN set -eu; \
+    series="$(echo "$RUBY_VERSION" | cut -d. -f1,2)"; \
+    curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${series}/ruby-${RUBY_VERSION}.tar.gz" -o /tmp/ruby.tar.gz \
     && tar -xzf /tmp/ruby.tar.gz -C /tmp \
-    && cd /tmp/ruby-3.3.10 \
+    && cd "/tmp/ruby-${RUBY_VERSION}" \
     && ./configure --disable-install-doc \
     && make -j"$(nproc)" \
     && make install \
     && cd / && rm -rf /tmp/ruby*
 
-# Couche séparée (préserve le cache de la compilation Ruby ci-dessus) :
-# nokogiri en bibliothèques système — la compilation de son libxml2 embarqué
+# Paquets propres à l'application (base de données, Redis, bibliothèques des
+# gems natives) : couche séparée pour préserver le cache de la compilation
+# Ruby ci-dessus, qui est de loin la plus coûteuse.
+ARG EXTRA_PACKAGES=""
+RUN set -eu; \
+    if [ -n "$EXTRA_PACKAGES" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends $EXTRA_PACKAGES \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# nokogiri en bibliothèques système : la compilation de son libxml2 embarqué
 # (mini_portile) échoue sous i386.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      libxml2-dev libxslt1-dev pkg-config patch \
-    && rm -rf /var/lib/apt/lists/*
 ENV NOKOGIRI_USE_SYSTEM_LIBRARIES=true
 
 WORKDIR /app
@@ -97,7 +138,7 @@ WORKDIR /app
 # compilation source de toutes les gems natives avec la toolchain i386.
 ENV BUNDLE_WITHOUT="development:test" BUNDLE_JOBS=4 BUNDLE_FROZEN=false \
     BUNDLE_FORCE_RUBY_PLATFORM=true
-COPY Gemfile Gemfile.lock ./
+COPY Gemfile* ./
 # Le lockfile ne connaît vraisemblablement que x86_64-linux : on ajoute la
 # plateforme i386 (x86-linux) + ruby pour que les gems natives compilent.
 RUN bundle lock --add-platform x86-linux ruby && bundle install
@@ -420,7 +461,7 @@ main()
 RIB_BRIDGE
 
 # Montage sous-URI : le config.ru de l'application la lance à la RACINE, donc
-# ses helpers de routes génèrent « /gymhouses » — des liens qui échappent au
+# ses helpers de routes génèrent « /posts » — des liens qui échappent au
 # périmètre /app du Service Worker et tombent sur le serveur statique.
 # RAILS_RELATIVE_URL_ROOT ne suffit pas : il ne préfixe que les assets, car
 # les helpers de routes s'appuient sur le SCRIPT_NAME Rack. On monte donc
@@ -447,10 +488,15 @@ exec bundle exec puma /opt/rib/config.ru -b tcp://127.0.0.1:3000
 RIB_START
 
 # Init du guest (remplace systemd) : monte les pseudo-fs, active le loopback,
-# démarre PostgreSQL + Redis + Puma, puis attache le pont série à ttyS0.
+# démarre les services détectés puis Puma, et attache le pont série à ttyS0.
+# Les services à démarrer viennent de /opt/rib/services.sh, généré plus bas à
+# partir des --build-arg : le corps du script reste identique d'une image à
+# l'autre (couche de cache partagée).
 COPY <<'RIB_INIT' /opt/rib/guest-init.sh
 #!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+. /opt/rib/services.sh
 
 mount -o remount,rw / 2>/dev/null
 mountpoint -q /proc || mount -t proc proc /proc
@@ -463,30 +509,34 @@ mount -t tmpfs -o mode=1777 tmpfs /dev/shm 2>/dev/null
 mount -t tmpfs tmpfs /run 2>/dev/null
 mount -t tmpfs tmpfs /tmp 2>/dev/null
 
-hostname jiyufit
+hostname "$RIB_APP_NAME"
 ip link set lo up
 # docker export ne conserve pas /etc/hosts (bind-mount runtime de Docker) :
 # sans lui, PostgreSQL ne résout pas "localhost" et refuse de démarrer.
-printf "127.0.0.1\tlocalhost jiyufit\n::1\tlocalhost\n" > /etc/hosts
+printf "127.0.0.1\tlocalhost %s\n::1\tlocalhost\n" "$RIB_APP_NAME" > /etc/hosts
 dmesg -n 1
 
-echo "[init] demarrage PostgreSQL..."
-mkdir -p /var/run/postgresql
-# Ceinture et bretelles : si l'ext2 a été fabriqué avec des uid décalés,
-# on rétablit la propriété des répertoires PostgreSQL avant le démarrage.
-chown -R postgres:postgres /var/run/postgresql /var/lib/postgresql /etc/postgresql /var/log/postgresql 2>/dev/null
-su -s /bin/sh postgres -c "pg_ctlcluster 15 main start"
+if [ "$RIB_WITH_POSTGRES" = 1 ]; then
+  echo "[init] demarrage PostgreSQL..."
+  mkdir -p /var/run/postgresql
+  # Ceinture et bretelles : si l'ext2 a été fabriqué avec des uid décalés,
+  # on rétablit la propriété des répertoires PostgreSQL avant le démarrage.
+  chown -R postgres:postgres /var/run/postgresql /var/lib/postgresql /etc/postgresql /var/log/postgresql 2>/dev/null
+  su -s /bin/sh postgres -c "pg_ctlcluster ${RIB_PG_VERSION} main start"
+fi
 
-echo "[init] demarrage Redis..."
-redis-server --daemonize yes --port 6379 --save '' --appendonly no
+if [ "$RIB_WITH_REDIS" = 1 ]; then
+  echo "[init] demarrage Redis..."
+  redis-server --daemonize yes --port 6379 --save '' --appendonly no
+fi
 
 . /opt/rib/env.sh
 cd /app
 
-echo "[init] demarrage Puma (jiyufit, monte sous \$RAILS_RELATIVE_URL_ROOT)..."
-# .dockerignore de jiyufit exclut tmp/*, log/* et storage/* : ces répertoires
-# n'existent pas dans l'image. Puma exige tmp/pids (pidfile), ActiveStorage
-# exige storage/.
+echo "[init] demarrage Puma (monte sous \$RAILS_RELATIVE_URL_ROOT)..."
+# Le .dockerignore des applications exclut souvent tmp/*, log/* et storage/* :
+# ces répertoires n'existent pas dans l'image. Puma exige tmp/pids (pidfile),
+# ActiveStorage exige storage/. start-app.sh les recrée.
 sh /opt/rib/start-app.sh >/var/log/puma.log 2>&1 &
 echo $! > /run/rib-app.pid
 
@@ -503,12 +553,33 @@ stty -F /dev/ttyS0 raw -echo
 exec python3 /opt/rib/serial-bridge.py </dev/ttyS0 >/dev/ttyS0 2>/var/log/bridge-err.log
 RIB_INIT
 
-# Génération des clés de session (aléatoires, propres à CETTE image locale de
-# démo — jamais des clés de production) + préparation de la base.
+########################################################################
+# Environnement d'exécution : services, clés jetables, variables de l'app
+########################################################################
+ARG APP_NAME=app
+ARG DATABASE=sqlite3
+ARG WITH_POSTGRES=0
+ARG WITH_REDIS=0
+ARG MOUNT_PATH=/app
+# Deux sources d'environnement traitées différemment (voir plus bas) :
+# APP_ENV_MANIFEST (railsbox.yml tiers) ajouté verbatim, APP_ENV_TRUSTED
+# (--env-file opérateur) évalué une fois pour figer ses $(…).
+ARG APP_ENV_MANIFEST=""
+ARG APP_ENV_TRUSTED=""
+ARG PG_VERSION=15
 RUN <<'RIB_SETUP'
-set -e
-chmod +x /opt/rib/guest-init.sh
+set -eu
+chmod +x /opt/rib/guest-init.sh /opt/rib/start-app.sh
 
+cat > /opt/rib/services.sh <<SERVICES
+export RIB_APP_NAME='${APP_NAME}'
+export RIB_WITH_POSTGRES=${WITH_POSTGRES}
+export RIB_WITH_REDIS=${WITH_REDIS}
+export RIB_PG_VERSION=${PG_VERSION}
+SERVICES
+
+# Clés de session aléatoires, propres à CETTE image locale de démo — jamais
+# des clés de production.
 cat > /opt/rib/env.sh <<ENVFILE
 export RAILS_ENV=production
 export RACK_ENV=production
@@ -522,58 +593,95 @@ export SECRET_KEY_BASE=$(openssl rand -hex 64)
 export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$(openssl rand -hex 32)
 export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$(openssl rand -hex 32)
 export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$(openssl rand -hex 32)
-export ACCESS_MASTER_SIGNING_KEY=$(openssl rand -hex 32)
-export COMPLIANCE_PSEUDONYMIZATION_KEY=$(openssl rand -hex 32)
-export FRAUD_EVIDENCE_SIGNING_KEY=$(openssl rand -hex 32)
-export SIDEKIQ_USERNAME=demo
-export SIDEKIQ_PASSWORD=$(openssl rand -hex 16)
-# Clés Stripe factices au format sk_live_/pk_live_ : l'initializer refuse les
-# clés de test ET valide le format en production. Inertes (aucun appel Stripe
-# réel ne peut aboutir) — VM locale de démo uniquement.
-export STRIPE_SECRET_KEY=sk_live_$(openssl rand -hex 12)
-export STRIPE_PUBLIC_KEY=pk_live_$(openssl rand -hex 12)
-export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/jiyufit_production?sslmode=disable'
-export REDIS_URL='redis://127.0.0.1:6379/1'
-export RAILS_RELATIVE_URL_ROOT=/app
+export RAILS_RELATIVE_URL_ROOT=${MOUNT_PATH}
 export RAILS_SERVE_STATIC_FILES=true
 export RAILS_LOG_TO_STDOUT=true
 export LOG_LEVEL=info
-export ADDITIONAL_ALLOWED_HOSTS='localhost,localhost:8080,127.0.0.1'
-export APP_HOST='http://localhost:8080'
 export WEB_CONCURRENCY=0
 export RAILS_MAX_THREADS=4
 export PORT=3000
-export POSTHOG_ENABLED=false
-export DEFAULT_FROM_EMAIL=demo@jiyufit.local
 export TZ=Europe/Paris
-export LEGAL_ENTITY_NAME='Demo locale'
-export LEGAL_ENTITY_FORM='Demo'
-export LEGAL_ENTITY_REGISTERED_ADDRESS='Demo'
-export LEGAL_ENTITY_REGISTRATION='Demo'
-export LEGAL_PUBLICATION_DIRECTOR='Demo'
-export LEGAL_CONTACT_EMAIL=demo@jiyufit.local
-export LEGAL_HOST_NAME='Demo'
-export LEGAL_HOST_ADDRESS='Demo'
 ENVFILE
-chmod 600 /opt/rib/env.sh
-chmod +x /opt/rib/start-app.sh
 
-# Préparation de la base pendant le build (schéma + seeds) pour que le
-# premier boot dans le navigateur n'ait pas à migrer. Redis doit tourner :
-# les seeds enfilent des jobs Sidekiq (TrustScoreUpdateJob…).
-mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql
-su -s /bin/sh postgres -c "pg_ctlcluster 15 main start"
-su -s /bin/sh postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres';\""
-redis-server --daemonize yes --port 6379 --save '' --appendonly no
+if [ "${WITH_POSTGRES}" = 1 ]; then
+  echo "export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/${APP_NAME}_production?sslmode=disable'" >> /opt/rib/env.sh
+fi
+if [ "${WITH_REDIS}" = 1 ]; then
+  echo "export REDIS_URL='redis://127.0.0.1:6379/1'" >> /opt/rib/env.sh
+fi
+
+# Variables issues de railsbox.yml (code TIERS non fiable) : ajoutées
+# VERBATIM. Leurs valeurs sont déjà entre apostrophes (échappement POSIX
+# bulletproof côté manifest-to-args.mjs) ; sourcées au boot, un `$(commande)`
+# y reste une chaîne littérale et n'est JAMAIS exécuté. Aucune évaluation ici.
+if [ -n "${APP_ENV_MANIFEST}" ]; then
+  printf '%s\n' "${APP_ENV_MANIFEST}" >> /opt/rib/env.sh
+fi
+
+# Variables du --env-file (fournies par l'opérateur du build, DE CONFIANCE) :
+# ÉVALUÉES une fois ici pour figer les $(openssl rand …) qu'elles contiennent
+# — sans quoi la clé de session serait rejouée à chaque boot et invaliderait
+# toutes les sessions. Ce chemin n'est JAMAIS alimenté par railsbox.yml.
+if [ -n "${APP_ENV_TRUSTED}" ]; then
+  printf '%s\n' "${APP_ENV_TRUSTED}" > /tmp/app-env-trusted.in
+  eval "cat <<APPENV
+$(cat /tmp/app-env-trusted.in)
+APPENV" >> /opt/rib/env.sh
+  rm -f /tmp/app-env-trusted.in
+fi
+chmod 600 /opt/rib/env.sh
+RIB_SETUP
+
+# Précompilation des assets DANS le rootfs quand l'application n'a pas de
+# chaîne npm (importmap + propshaft/sprockets) : rien à emprunter à l'étage
+# amd64, tout se fait avec le Ruby i386 déjà présent.
+ARG ASSET_PRECOMPILE=0
+ARG NPM_ASSETS
+RUN <<'RIB_ASSETS'
+set -eu
+if [ "${ASSET_PRECOMPILE}" != 1 ] || [ "${NPM_ASSETS}" = 1 ]; then
+  echo "[build] precompilation d'assets non requise dans le rootfs"
+  exit 0
+fi
 . /opt/rib/env.sh
 cd /app
-# Schéma : chargé depuis schema.rb (base neuve) — rejouer les migrations
-# historiques échoue sur d'anciennes migrations d'engines retirés (Pay).
-# Seeds : best-effort (des validations métier peuvent refuser des données de
-# démo sans que l'app soit inutilisable pour autant).
-bundle exec rails db:create db:schema:load
-bundle exec rails db:seed || echo "[build] seeds partiels — voir erreurs ci-dessus, non bloquant"
-bundle exec rails legal:seed_initial_versions || echo "seed legal ignore (tache absente ?)"
-redis-cli shutdown nosave || true
-su -s /bin/sh postgres -c "pg_ctlcluster 15 main stop"
-RIB_SETUP
+bundle exec rails assets:precompile
+RIB_ASSETS
+
+# Préparation de la base PENDANT la construction (schéma + seeds) : le premier
+# boot dans le navigateur n'a ainsi ni migration ni amorçage à faire, et
+# l'instantané mémoire capture une base déjà peuplée.
+ARG DB_PREPARE_COMMAND="bundle exec rails db:prepare"
+ARG SEED_COMMAND=""
+# 1 : un seed en échec n'arrête pas la construction (validations métier qui
+# refusent des données de démo sur une application réelle).
+ARG SEED_OPTIONAL=0
+RUN <<'RIB_DATABASE'
+set -eu
+if [ "${WITH_POSTGRES}" = 1 ]; then
+  mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql
+  su -s /bin/sh postgres -c "pg_ctlcluster ${PG_VERSION} main start"
+  su -s /bin/sh postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres';\""
+fi
+if [ "${WITH_REDIS}" = 1 ]; then
+  # Redis doit tourner : des seeds enfilent parfois des jobs Sidekiq.
+  redis-server --daemonize yes --port 6379 --save '' --appendonly no
+fi
+
+. /opt/rib/env.sh
+cd /app
+mkdir -p tmp/pids tmp/cache log storage
+sh -c "${DB_PREPARE_COMMAND}"
+if [ -n "${SEED_COMMAND}" ]; then
+  if [ "${SEED_OPTIONAL}" = 1 ]; then
+    sh -c "${SEED_COMMAND}" || echo "[build] seeds partiels — voir erreurs ci-dessus, non bloquant"
+  else
+    sh -c "${SEED_COMMAND}"
+  fi
+fi
+
+if [ "${WITH_REDIS}" = 1 ]; then redis-cli shutdown nosave || true; fi
+if [ "${WITH_POSTGRES}" = 1 ]; then
+  su -s /bin/sh postgres -c "pg_ctlcluster ${PG_VERSION} main stop"
+fi
+RIB_DATABASE

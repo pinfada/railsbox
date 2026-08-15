@@ -11,6 +11,9 @@ export default [
       "public/vendor/**",
       "public/disks/**",
       "tools/build-v86-image/build.log",
+      // Application Rails de démonstration : sources générées par `rails new`,
+      // hors périmètre des conventions du dépôt.
+      "tools/demo-app/**",
     ],
   },
   js.configs.recommended,
