@@ -1,0 +1,24 @@
+# Application de démonstration railsbox : seules les sources sont versionnées.
+# (Fichier normalement produit par `rails new` ; --skip-git l'omet.)
+
+# Fichiers temporaires et journaux, régénérés à chaque construction d'image.
+/.bundle
+/log/*
+/tmp/*
+!/log/.keep
+!/tmp/.keep
+/tmp/pids/*
+!/tmp/pids/.keep
+
+# Bases SQLite et pièces jointes : la construction de l'image les recrée.
+/storage/*
+!/storage/.keep
+
+# Assets précompilés : produits dans l'image, jamais dans le dépôt.
+/public/assets
+
+# Clé de chiffrement des credentials : jetable, propre à cette démo locale.
+/config/master.key
+
+# Dépendances front (l'application est en importmap, aucun npm requis).
+/node_modules
