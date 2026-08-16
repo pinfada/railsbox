@@ -396,6 +396,30 @@ journaux de boot, génère les secrets internes au bon format en un clic, offre
 un champ pour les identifiants de services tiers, puis **injecte le tout dans
 la VM et relance l'application à chaud** — sans reconstruire l'image.
 
+### Quand la construction échoue
+
+Un refus **amont** (avant construction) est déjà lisible : code, message et
+remède dans le résumé du job. Un échec **aval** — `bundle install`, assets,
+migration, capture d'instantané, publication — l'est désormais aussi. Le
+workflow capture le journal de l'étape faillible et publie dans le résumé un
+bloc **« Pourquoi la construction a échoué »** : catégorie, code stable,
+extrait du journal qui prouve le diagnostic, et remède actionnable. Le journal
+complet reste dans les traces du runner pour qui veut creuser.
+
+La taxonomie vit dans
+[`tools/build-v86-image/classifier-echec.mjs`](tools/build-v86-image/classifier-echec.mjs)
+(module pur, testé). Elle nomme ce que le journal ne dit pas : le **paquet
+Debian** à ajouter à la base derrière un `libpq-fe.h` introuvable, l'étage
+amd64 derrière un « Exec format error », l'erreur ActiveRecord exacte derrière
+une migration qui plante. Faute de motif connu, elle livre honnêtement les
+trente dernières lignes utiles, débarrassées du bruit de progression Docker.
+L'extrait est **caviardé** avant publication : le journal capturé n'a pas
+traversé le masquage des secrets du runner.
+
+```
+node tools/build-v86-image/classifier-echec.mjs --etape "<nom>" --journal <fichier>
+```
+
 ## 3. Architecture
 
 ### Schéma de flux
