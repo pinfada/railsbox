@@ -126,7 +126,7 @@ jobs:
           # messages de commit et le résumé — jamais tel que fourni.
           nom="$(printf '%s' "$nom" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
           # Via GITHUB_ENV et non GITHUB_OUTPUT : les étapes suivantes lisent
-          # des variables d'environnement, jamais une interpolation ${{ }}
+          # des variables d'environnement, jamais une interpolation d'entrée
           # dans le texte de leur script.
           echo "SB_NOM=$nom" >> "$GITHUB_ENV"
           echo "SB_BASE=base-${IN_BASE}" >> "$GITHUB_ENV"
