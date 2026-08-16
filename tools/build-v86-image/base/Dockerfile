@@ -19,6 +19,13 @@ ARG RUBY_VERSION=3.3.12
 
 FROM i386/debian:bookworm-slim AS base
 
+# Rattache le paquet GHCR à ce dépôt. Sans cette étiquette, GHCR lie le paquet
+# au premier dépôt qui l'a poussé — et le GITHUB_TOKEN des autres dépôts se voit
+# ensuite refuser l'écriture (`denied: permission_denied: write_package`).
+LABEL org.opencontainers.image.source="https://github.com/pinfada/railsbox"
+LABEL org.opencontainers.image.description="Rootfs i386 mutualisé de railsbox : Debian bookworm, Ruby compilé depuis les sources, Redis, pont série. Sans application."
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Personnalité 32 bits pour TOUTE la construction. Docker ne la pose pas sur
 # une image linux/386 : `uname -m` y renvoie « x86_64 » (le noyau de l'hôte),
 # alors que le userland est bien en 32 bits. Les autoconf s'y trompent — sans
