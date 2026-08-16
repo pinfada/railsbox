@@ -20,7 +20,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {{npm?: boolean, scripts?: readonly string[], tools?: readonly string[]}} [assets] pipeline d'assets
  * @property {readonly NativeGem[]} [nativeGems] gems à extension native
  * @property {{redis?: boolean, sidekiq?: boolean}} [services] services d'arrière-plan
- * @property {{command?: string, autoLogin?: string}} [seed] amorçage des données
+ * @property {{command?: string, autoLogin?: string, autoLoginCode?: string}} [seed] amorçage des données
  * @property {Record<string, string>} [env] variables d'environnement déclarées
  */
 
@@ -34,7 +34,11 @@ const NEST_INDENT = 2;
 
 /** Blocs imbriqués reconnus, avec la correspondance clé YAML → clé manifeste. */
 const NESTED_KEYS = Object.freeze({
-  seed: Object.freeze({ command: "command", auto_login: "autoLogin" }),
+  seed: Object.freeze({
+    command: "command",
+    auto_login: "autoLogin",
+    auto_login_code: "autoLoginCode",
+  }),
   assets: Object.freeze({ scripts: "scripts" }),
 });
 
@@ -79,7 +83,9 @@ export function parseRailsboxYml(text) {
   const state = { manifest: {}, findings: [], block: null };
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
-    handleLine(state, lines[index], index + 1);
+    // handleLine rend le nombre de lignes SUPPLÉMENTAIRES qu'il a absorbées :
+    // un scalaire en bloc (`clé: |`) s'étend sur les lignes suivantes.
+    index += handleLine(state, lines[index], index + 1, lines, index);
   }
   return { manifest: deepFreeze(state.manifest), findings: Object.freeze(state.findings) };
 }
@@ -89,28 +95,83 @@ export function parseRailsboxYml(text) {
  * @param {ParseState} state état mutable de l'analyse
  * @param {string} rawLine ligne brute
  * @param {number} lineNumber numéro de ligne, pour les diagnostics
- * @returns {void}
+ * @param {string[]} [lines] toutes les lignes, pour les scalaires en bloc
+ * @param {number} [index] position de cette ligne dans `lines`
+ * @returns {number} lignes supplémentaires absorbées (0 hors scalaire en bloc)
  */
-function handleLine(state, rawLine, lineNumber) {
+function handleLine(state, rawLine, lineNumber, lines = [], index = 0) {
   const line = stripComment(rawLine);
-  if (line.trim() === "") return;
+  if (line.trim() === "") return 0;
   const indent = line.length - line.trimStart().length;
   if (indent !== 0 && indent !== NEST_INDENT) {
     pushMalformed(state, lineNumber, "indentation non supportée (0 ou 2 espaces attendus)");
-    return;
+    return 0;
   }
   const entry = ENTRY.exec(line.trim());
   if (!entry) {
     pushMalformed(state, lineNumber, "format « clé: valeur » attendu");
-    return;
+    return 0;
   }
   const key = entry[1];
+
+  // Scalaire en bloc littéral : `clé: |` (ou `|-`). Le contenu est pris
+  // VERBATIM sur les lignes plus indentées qui suivent — sans retrait des
+  // commentaires, puisqu'un « # » y est du texte et non un commentaire YAML.
+  // Indispensable à `auto_login_code`, qui porte du Ruby multiligne.
+  const blockMarker = /^\|([-+]?)$/.exec(entry[2].trim());
+  if (blockMarker) {
+    const { value, consumed } = readBlockScalar(lines, index, indent, blockMarker[1]);
+    if (indent === 0) applyTopLevel(state, key, value, lineNumber);
+    else applyNested(state, key, value, lineNumber);
+    return consumed;
+  }
+
   const value = parseScalar(entry[2]);
   if (indent === 0) {
     applyTopLevel(state, key, value, lineNumber);
-    return;
+    return 0;
   }
   applyNested(state, key, value, lineNumber);
+  return 0;
+}
+
+/**
+ * Lit le contenu d'un scalaire en bloc littéral.
+ *
+ * Les lignes retenues sont celles, vides ou plus indentées que la clé, qui
+ * suivent immédiatement. Le retrait commun est ôté — c'est ce qui permet
+ * d'écrire du Ruby lisible dans le YAML sans qu'il hérite de son indentation.
+ * @param {string[]} lines toutes les lignes du document
+ * @param {number} keyIndex position de la ligne portant la clé
+ * @param {number} keyIndent indentation de cette clé
+ * @param {string} chomping indicateur YAML : « - » retire le saut final
+ * @returns {{ value: string, consumed: number }}
+ */
+function readBlockScalar(lines, keyIndex, keyIndent, chomping) {
+  const collected = [];
+  let cursor = keyIndex + 1;
+  for (; cursor < lines.length; cursor += 1) {
+    const candidate = lines[cursor];
+    if (candidate.trim() === "") {
+      collected.push("");
+      continue;
+    }
+    const candidateIndent = candidate.length - candidate.trimStart().length;
+    if (candidateIndent <= keyIndent) break;
+    collected.push(candidate);
+  }
+  // Les lignes vides finales appartiennent au document, pas au bloc.
+  while (collected.length > 0 && collected[collected.length - 1] === "") collected.pop();
+
+  const indents = collected
+    .filter((entry) => entry.trim() !== "")
+    .map((entry) => entry.length - entry.trimStart().length);
+  const common = indents.length > 0 ? Math.min(...indents) : 0;
+  const body = collected.map((entry) => entry.slice(common)).join("\n");
+  return {
+    value: chomping === "-" || body === "" ? body : `${body}\n`,
+    consumed: collected.length,
+  };
 }
 
 /**

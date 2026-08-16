@@ -5,6 +5,7 @@ import {
   INITIALIZER_PATH,
   buildAutoLoginInitializer,
   rubyStringLiteral,
+  wantsFirstUser,
 } from "../tools/build-v86-image/auto-login.mjs";
 
 test("aucune auto-connexion demandée : aucun fichier généré", () => {
@@ -95,4 +96,19 @@ test("le middleware s'ajoute en fin de pile", () => {
 test("constantes exposées", () => {
   assert.equal(DEFAULT_MODEL, "User");
   assert.match(INITIALIZER_PATH, /^config\/initializers\/.*\.rb$/);
+});
+
+test("wantsFirstUser reconnaît le booléen YAML normalisé en texte", () => {
+  // L'analyseur du manifeste rend tout en chaîne : `auto_login: true` arrive
+  // ici sous la forme "true".
+  assert.equal(wantsFirstUser(true), true);
+  assert.equal(wantsFirstUser("true"), true);
+  assert.equal(wantsFirstUser("True"), true);
+  assert.equal(wantsFirstUser("admin@example.com"), false);
+  assert.equal(wantsFirstUser(null), false);
+});
+
+test("auto_login: true venu du YAML produit bien la résolution « premier »", () => {
+  const source = buildAutoLoginInitializer({ autoLogin: "true" });
+  assert.match(source, /resoudre\(nil, 'User'\)/);
 });

@@ -52,6 +52,28 @@ COPY . .
 # sinon bundle exec refuse le bundle pourtant installé.
 RUN bundle lock --add-platform x86-linux ruby && bundle check
 
+# Auto-connexion du visiteur (contrainte produit : arriver sur une démonstration
+# peuplée, session ouverte). Déposé dans l'arbre de l'application plutôt que
+# dans la base : le middleware doit s'insérer DANS la pile de Rails, après la
+# session et Warden, ce que seul un initialiseur permet. Vide quand le manifeste
+# n'en demande pas — aucun fichier n'est alors créé.
+#
+# SÉCURITÉ : contenu produit par auto-login.mjs à partir de railsbox.yml, donc
+# de code TIERS. Écrit VERBATIM, jamais évalué ici ; il ne s'exécute que dans le
+# guest, où le code de l'application tourne déjà.
+ARG AUTO_LOGIN_INITIALIZER=""
+RUN <<'RIB_AUTOLOGIN'
+set -eu
+if [ -n "${AUTO_LOGIN_INITIALIZER}" ]; then
+  mkdir -p config/initializers
+  printf '%s\n' "${AUTO_LOGIN_INITIALIZER}" > config/initializers/zzz_railsbox_auto_login.rb
+  ruby -c config/initializers/zzz_railsbox_auto_login.rb
+  echo "[build] auto-connexion installée"
+else
+  echo "[build] aucune auto-connexion demandée"
+fi
+RIB_AUTOLOGIN
+
 # Précompilation des assets (importmap/propshaft : tout se fait avec le Ruby
 # i386 de la base). Les applications à chaîne npm ne sont PAS couvertes par le
 # MVP (elles exigeraient l'étage amd64 du build monolithique).
@@ -91,7 +113,12 @@ RIB_DB
 # est écrit VERBATIM, jamais évalué ici : les valeurs sont déjà single-quotées
 # par manifest-to-args.mjs (un `$(commande)` reste une chaîne littérale) et les
 # noms de variables sont validés à l'analyse du manifeste (invalid-env-name).
+#
+# RAILSBOX_SANDBOX marque le contexte d'exécution : l'initialiseur
+# d'auto-connexion s'en sert comme garde et reste inerte partout ailleurs. Il
+# est posé ici, sur le disque applicatif, plutôt que dans l'env.sh de la base —
+# celle-ci est publiée et immuable, la toucher imposerait une nouvelle version.
 ARG APP_ENV_MANIFEST=""
 RUN mkdir -p /app/.railsbox \
-    && printf '%s\n' "${APP_ENV_MANIFEST}" > /app/.railsbox/app-env.sh \
+    && printf 'export RAILSBOX_SANDBOX=1\n%s\n' "${APP_ENV_MANIFEST}" > /app/.railsbox/app-env.sh \
     && chmod 600 /app/.railsbox/app-env.sh

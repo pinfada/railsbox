@@ -106,6 +106,11 @@ fi
 ENV_COUNT="$(printf '%s' "${APP_ENV_MANIFEST:-}" | grep -c '^export ' || true)"
 echo "  Base $BASE_IMAGE · Ruby $RUBY_VERSION · db $DATABASE · seed ${SEED_COMMAND:-aucun}"
 echo "  Environnement déclaré : $ENV_COUNT variable(s)"
+if [ -n "${AUTO_LOGIN_INITIALIZER:-}" ]; then
+  echo "  Auto-connexion : activée"
+else
+  echo "  Auto-connexion : aucune (le visiteur arrivera déconnecté)"
+fi
 
 ########################################################################
 # Build de l'image applicative (FROM base) et export de /app
@@ -120,6 +125,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "SEED_COMMAND=$SEED_COMMAND" \
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
+  --build-arg "AUTO_LOGIN_INITIALIZER=$AUTO_LOGIN_INITIALIZER" \
   "$APP_DIR"
 
 echo "→ Export de l'arbre /app…"

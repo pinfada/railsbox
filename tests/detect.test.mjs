@@ -697,3 +697,62 @@ test("hasBlocking distingue les diagnostics bloquants des autres", () => {
   assert.equal(hasBlocking([]), false);
   assert.equal(hasBlocking(undefined), false);
 });
+
+// ── Scalaires en bloc littéraux (`clé: |`) ────────────────────────────────
+// Nécessaires à seed.auto_login_code, qui porte du Ruby multiligne. Le
+// contenu doit être pris VERBATIM : un « # » y est du code, pas un
+// commentaire YAML.
+
+test("parseRailsboxYml lit un scalaire en bloc multiligne", () => {
+  const { manifest, findings } = parseRailsboxYml(
+    [
+      "seed:",
+      '  command: "bin/rails db:seed"',
+      "  auto_login_code: |",
+      '    compte = Account.find_by(email: "demo@example.com")',
+      "    env['rack.session'][:account_id] = compte.id",
+      "database: sqlite3",
+    ].join("\n"),
+  );
+  assert.equal(
+    manifest.seed.autoLoginCode,
+    'compte = Account.find_by(email: "demo@example.com")\n' +
+      "env['rack.session'][:account_id] = compte.id",
+  );
+  // La clé qui suit le bloc est bien reprise : le curseur ne l'a pas avalée.
+  assert.equal(manifest.database, "sqlite3");
+  assert.deepEqual(
+    findings.filter((f) => f.code === "malformed-line"),
+    [],
+  );
+});
+
+test("un dièse dans un scalaire en bloc est du contenu, pas un commentaire", () => {
+  const { manifest } = parseRailsboxYml(
+    ["seed:", "  auto_login_code: |", "    # commentaire Ruby", '    puts "#{1 + 1}"'].join("\n"),
+  );
+  assert.equal(manifest.seed.autoLoginCode, '# commentaire Ruby\nputs "#{1 + 1}"');
+});
+
+test("le retrait commun d'un scalaire en bloc est ôté sans écraser l'imbrication", () => {
+  const { manifest } = parseRailsboxYml(
+    ["seed:", "  auto_login_code: |", "    if vrai", "      agir", "    end"].join("\n"),
+  );
+  assert.equal(manifest.seed.autoLoginCode, "if vrai\n  agir\nend");
+});
+
+test("les lignes vides finales ne sont pas absorbées par le bloc", () => {
+  const { manifest } = parseRailsboxYml(
+    ["seed:", "  auto_login_code: |", "    agir", "", "", "ruby: 3.3.12"].join("\n"),
+  );
+  assert.equal(manifest.seed.autoLoginCode, "agir");
+  assert.equal(manifest.ruby, "3.3.12");
+});
+
+test("auto_login reste un scalaire simple", () => {
+  const { manifest } = parseRailsboxYml(
+    ["seed:", '  command: "bin/rails db:seed"', '  auto_login: "admin@example.com"'].join("\n"),
+  );
+  assert.equal(manifest.seed.autoLogin, "admin@example.com");
+  assert.equal(manifest.seed.autoLoginCode, undefined);
+});

@@ -14,6 +14,7 @@ import { detectApp, readOptionalFile } from "../detect/detect.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
 import { parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
+import { buildAutoLoginInitializer } from "./auto-login.mjs";
 import { formatReport, hasBlocking } from "../detect/report.mjs";
 
 /** @typedef {import("../detect/manifest.mjs").Manifest} Manifest */
@@ -174,6 +175,13 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
     SEED_COMMAND: seedCommand,
     // Non fiable (railsbox.yml tiers) : ajouté verbatim, jamais évalué.
     APP_ENV_MANIFEST: formatEnvFragment(manifest.env),
+    // Initialiseur d'auto-connexion, vide si le manifeste n'en demande pas.
+    // Même discipline : déposé tel quel dans l'arbre applicatif, exécuté par
+    // le seul guest, jamais évalué à la construction.
+    AUTO_LOGIN_INITIALIZER: buildAutoLoginInitializer({
+      autoLogin: manifest.seed?.autoLogin ?? null,
+      autoLoginCode: manifest.seed?.autoLoginCode ?? null,
+    }),
   };
 }
 

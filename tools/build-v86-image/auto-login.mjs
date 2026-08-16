@@ -35,6 +35,18 @@ export function rubyStringLiteral(value) {
 }
 
 /**
+ * `auto_login: true` demande « le premier utilisateur, peu importe lequel ».
+ * L'analyseur du manifeste normalise toute valeur en texte : le booléen YAML
+ * arrive donc ici sous la forme « true », qu'il faut reconnaître comme telle
+ * sans confondre avec un identifiant qui vaudrait littéralement « true ».
+ * @param {string|boolean|null|undefined} autoLogin
+ * @returns {boolean}
+ */
+export function wantsFirstUser(autoLogin) {
+  return autoLogin === true || String(autoLogin).trim().toLowerCase() === "true";
+}
+
+/**
  * Corps de la méthode de connexion, selon le niveau utilisé.
  * @param {{ autoLogin?: string|boolean|null, autoLoginCode?: string|null, model?: string }} options
  * @returns {string} lignes Ruby indentées de six espaces
@@ -48,11 +60,11 @@ function connectionBody({ autoLoginCode, autoLogin, model = DEFAULT_MODEL }) {
       .map((line) => (line.trim() === "" ? "" : `      ${line}`))
       .join("\n");
   }
-  const identifiant = autoLogin === true ? "nil" : rubyStringLiteral(String(autoLogin));
+  const premier = wantsFirstUser(autoLogin);
+  const identifiant = premier ? "nil" : rubyStringLiteral(String(autoLogin));
+  const description = premier ? "la demande" : String(autoLogin).replace(/["\\]/g, "");
   return `      utilisateur = resoudre(${identifiant}, ${rubyStringLiteral(model)})
-      return avertir("aucun utilisateur ne correspond à ${
-        autoLogin === true ? "la demande" : String(autoLogin).replace(/"/g, "")
-      }") if utilisateur.nil?
+      return avertir("aucun utilisateur ne correspond à ${description}") if utilisateur.nil?
       connecter(env, utilisateur)`;
 }
 
