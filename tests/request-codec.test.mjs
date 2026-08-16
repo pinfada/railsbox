@@ -4,6 +4,7 @@ import {
   filterRequestHeaders,
   parseCurlHeaders,
   sanitizeAppPath,
+  sanitizeCookieHeader,
   sanitizeForwardHost,
   sanitizeMethod,
   shellSingleQuote,
@@ -48,6 +49,31 @@ test("filterRequestHeaders retire host, les CRLF et les noms exotiques", () => {
     ["accept", "text/html"],
     ["content-type", "application/x-www-form-urlencoded"],
   ]);
+});
+
+test("filterRequestHeaders retire Cookie et Origin, venus du navigateur", () => {
+  // Cookie : le bocal du Service Worker est la source UNIQUE (canal dédié de
+  // buildRequestFrames). Origin : Rails le compare à request.base_url, que le
+  // guest ne peut pas deviner — le retirer rend la vérification neutre, la
+  // protection CSRF restant portée par le jeton de session.
+  const kept = filterRequestHeaders([
+    ["Cookie", "_demo_session=forge"],
+    ["Origin", "https://pinfada.github.io"],
+    ["Accept", "text/html"],
+  ]);
+  assert.deepEqual(kept, [["accept", "text/html"]]);
+});
+
+test("sanitizeCookieHeader accepte un en-tête normal et refuse les injections", () => {
+  assert.equal(sanitizeCookieHeader("_demo_session=abc; autre=1"), "_demo_session=abc; autre=1");
+  assert.equal(sanitizeCookieHeader(""), null);
+  assert.equal(sanitizeCookieHeader(null), null);
+  assert.equal(
+    sanitizeCookieHeader(`a=1${String.fromCharCode(13)}${String.fromCharCode(10)}X-Injecte: oui`),
+    null,
+  );
+  assert.equal(sanitizeCookieHeader(`a=${String.fromCharCode(0)}`), null);
+  assert.equal(sanitizeCookieHeader("a=".padEnd(9000, "x")), null, "en-tête démesuré refusé");
 });
 
 test("parseCurlHeaders lit statut + en-têtes et retire les hop-by-hop", () => {

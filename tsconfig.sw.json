@@ -11,5 +11,5 @@
     "forceConsistentCasingInFileNames": true,
     "types": []
   },
-  "include": ["public/sw-proxy.js", "public/shared/request-codec.js"]
+  "include": ["public/sw-proxy.js", "public/shared/request-codec.js", "public/shared/cookie-jar.js"]
 }

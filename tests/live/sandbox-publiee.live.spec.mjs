@@ -11,7 +11,12 @@
 //  5. une page du scaffold traverse le proxy et rend du HTML Rails ;
 //  6. aucune requête d'artefact ne porte d'en-tête non safelisté, et aucun
 //     préflight OPTIONS n'est émis (point de vigilance de l'ADR 0001 : GitHub
-//     Pages répond 405 à OPTIONS, une requête préflightée échouerait).
+//     Pages répond 405 à OPTIONS, une requête préflightée échouerait) ;
+//  7. un billet est RÉELLEMENT CRÉÉ — formulaire chargé, jeton CSRF de la page,
+//     POST, redirection, billet visible. C'est la vérification qui manquait :
+//     la suite ne faisait que du GET, elle était à 8/8 au vert pendant que la
+//     démonstration répondait 422 InvalidAuthenticityToken à toute écriture
+//     (aucun cookie ne circulait, voir public/shared/cookie-jar.js).
 //
 // Elle dépend du réseau et d'un déploiement : elle ne tourne donc PAS dans
 // `npm test` ni dans la CI standard. Voir playwright.live.config.mjs.
@@ -177,6 +182,85 @@ test.describe("Sandbox publiée", () => {
       reponse.corps,
       "le document doit venir de Rails (jeton CSRF rendu par la couche vue)",
     ).toContain('name="csrf-token"');
+  });
+
+  test("crée un billet : le POST du scaffold traverse le proxy", async () => {
+    // LA vérification qui manquait. Elle échoue tant que la sandbox publiée
+    // date d'avant le bocal à cookies (public/shared/cookie-jar.js) : sans
+    // cookie de session, Rails répond 422 « InvalidAuthenticityToken ». C'est
+    // voulu — une suite verte sur une démonstration incapable d'écrire est
+    // précisément le défaut que ce test supprime.
+    test.setTimeout(REQUETE_VM_TIMEOUT_MS * 4);
+    const titre = `railsbox-live-${Date.now()}`;
+    const debut = Date.now();
+
+    const resultat = await page.evaluate(async (titreBillet) => {
+      const navigateur = /** @type {any} */ (globalThis);
+
+      // 1. Le formulaire, tel que le visiteur le reçoit.
+      const formulaire = await navigateur.fetch("app/posts/new");
+      const html = await formulaire.text();
+      const document = new navigateur.DOMParser().parseFromString(html, "text/html");
+      const jeton =
+        document.querySelector('input[name="authenticity_token"]')?.value ??
+        document.querySelector('meta[name="csrf-token"]')?.content ??
+        null;
+
+      // 2. Le POST, avec le jeton de CETTE page — exactement ce que soumet le
+      //    navigateur quand on clique « Create Post ».
+      const corps = new navigateur.URLSearchParams({
+        authenticity_token: jeton ?? "",
+        "post[title]": titreBillet,
+        "post[body]": "Créé par la recette en ligne de railsbox.",
+        commit: "Create Post",
+      });
+      const creation = await navigateur.fetch("app/posts", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: corps.toString(),
+      });
+      const apresCreation = await creation.text();
+
+      // 3. L'index, pour prouver que le billet existe vraiment en base.
+      const index = await navigateur.fetch("app/posts");
+      const listeHtml = await index.text();
+
+      return {
+        statutFormulaire: formulaire.status,
+        jetonTrouve: jeton !== null,
+        statutCreation: creation.status,
+        redirige: creation.redirected,
+        urlFinale: creation.url,
+        corpsCreation: apresCreation.slice(0, 4000),
+        listeContientBillet: listeHtml.includes(titreBillet),
+      };
+    }, titre);
+
+    console.log(
+      `[live] POST app/posts → ${resultat.statutCreation} (redirigé: ${resultat.redirige}) ` +
+        `vers ${resultat.urlFinale} en ${secondes(debut)} s`,
+    );
+
+    expect(resultat.statutFormulaire, "le formulaire de création doit être servi").toBe(200);
+    expect(resultat.jetonTrouve, "la page doit porter un jeton CSRF Rails").toBe(true);
+    // Un 422 est LA signature du défaut : sans cookie de session, la graine du
+    // jeton CSRF manque et Rails refuse l'écriture. En production le corps est
+    // la page 422 générique, d'où la vérification sur le statut lui-même.
+    expect(
+      resultat.statutCreation,
+      "422 = protection CSRF déclenchée, donc aucun cookie de session n'a circulé",
+    ).not.toBe(422);
+    expect(
+      resultat.corpsCreation,
+      "le POST ne doit pas être refusé par la protection CSRF",
+    ).not.toContain("InvalidAuthenticityToken");
+    expect(resultat.redirige, "la création doit répondre par une redirection (302)").toBe(true);
+    expect(resultat.urlFinale, "la redirection doit mener au billet créé").toMatch(
+      /\/app\/posts\/\d+$/,
+    );
+    expect(resultat.statutCreation, "la page du billet doit être servie").toBe(200);
+    expect(resultat.corpsCreation, "le billet créé doit être affiché").toContain(titre);
+    expect(resultat.listeContientBillet, "le billet doit apparaître dans l'index").toBe(true);
   });
 
   test("n'ajoute aucun en-tête non safelisté sur les requêtes d'artefacts", async () => {

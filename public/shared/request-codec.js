@@ -12,6 +12,33 @@ const HEADER_NAME_PATTERN = /^[a-z0-9-]+$/;
 const HOST_PATTERN = /^[a-zA-Z0-9.\-:[\]]+$/;
 
 // En-têtes hop-by-hop, ou recalculés par curl / le constructeur Response.
+//
+// Deux ajouts qui ne sont pas hop-by-hop et méritent leur justification :
+//
+//  - « cookie » : le navigateur n'a AUCUN cookie de l'application (un Service
+//    Worker ne peut pas en faire poser, voir shared/cookie-jar.js). Le seul
+//    magasin qui existe est celui du proxy, et il est injecté par le canal
+//    dédié de buildRequestFrames. Filtrer ici garantit qu'un `Cookie:` fabriqué
+//    par du script de l'application ne puisse pas doubler ni supplanter le
+//    magasin — le bocal reste la source unique.
+//
+//  - « origin » : Rails compare `request.origin` à `request.base_url`
+//    (forgery_protection_origin_check). Le guest ne peut PAS connaître
+//    l'origine publique de façon fiable — schéma forcé à https pour les
+//    applications en force_ssl, port de développement, sous-répertoire de
+//    publication — et le moindre écart produit un 422 opaque sur une
+//    application NON MODIFIÉE. On retire donc l'en-tête : Rails traite
+//    `origin` nul comme valide (RFC : un client peut légitimement ne pas
+//    l'envoyer), et la protection CSRF reste entièrement assurée par le jeton
+//    de session, que le bocal à cookies fait de nouveau circuler.
+//    C'est sûr ICI parce que ce module est la seule frontière d'entrée du
+//    guest : rien n'atteint la VM sans passer par le Service Worker, qui
+//    n'intercepte que les requêtes de ses propres clients same-origin
+//    (une page tierce n'est pas un client : ses requêtes vers notre origine
+//    ne le traversent jamais), et les documents applicatifs sont servis sous
+//    `form-action 'self'` + `frame-ancestors 'self'`. Une requête inter-origine
+//    forgée n'a aucun chemin jusqu'ici ; il faudrait déjà un XSS DANS
+//    l'application, qui lirait alors le jeton CSRF de toute façon.
 const STRIPPED_REQUEST_HEADERS = new Set([
   "host",
   "connection",
@@ -21,6 +48,8 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   "keep-alive",
   "transfer-encoding",
   "expect",
+  "cookie",
+  "origin",
 ]);
 const STRIPPED_RESPONSE_HEADERS = new Set([
   "connection",
@@ -60,6 +89,25 @@ export function sanitizeAppPath(rawPath) {
 export function sanitizeForwardHost(host) {
   if (typeof host !== "string" || host.length === 0) return null;
   return HOST_PATTERN.test(host) ? host : null;
+}
+
+/**
+ * Valide l'en-tête `Cookie:` que le bocal du proxy veut injecter. Il ne vient
+ * pas du navigateur mais d'un magasin alimenté par les réponses de la VM,
+ * c'est-à-dire par du contenu applicatif : il traverse donc la frontière au
+ * même titre que le reste. Contrôle par code de caractère — tout caractère de
+ * contrôle (CR, LF, NUL) ou DEL disqualifie l'en-tête entier.
+ * @param {string | null | undefined} value
+ * @returns {string | null}
+ */
+export function sanitizeCookieHeader(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  if (value.length > MAX_HEADER_VALUE_LENGTH) return null;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  return value;
 }
 
 export function filterRequestHeaders(entries) {
