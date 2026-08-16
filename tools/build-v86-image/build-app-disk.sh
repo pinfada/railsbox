@@ -86,6 +86,17 @@ if [ "${NPM_ASSETS:-0}" = 1 ]; then
   echo "✗ Applications à chaîne npm hors périmètre du MVP B2 (importmap seulement)." >&2
   exit 1
 fi
+# Tailwind et dart-sass précompilent leurs assets avec un EXÉCUTABLE livré par
+# plateforme, et aucun n'existe pour i386 (vérifié sur rubygems). Sans cette
+# garde, `rails assets:precompile` échouerait dans la VM sur un binaire
+# illisible — un message incompréhensible, dix minutes après le début du build.
+if [ -n "${BINARY_ASSET_GEMS:-}" ]; then
+  echo "✗ Outils d'assets à binaire précompilé, indisponibles en i386 : $BINARY_ASSET_GEMS" >&2
+  echo "  Ces gems livrent un exécutable par plateforme (x86_64, arm64) et railsbox" >&2
+  echo "  construit en 32 bits. Contournement : précompilez vos assets en amont et" >&2
+  echo "  versionnez public/assets, ou attendez l'étage de précompilation amd64." >&2
+  exit 1
+fi
 # La base est mutualisée : son jeu de bibliothèques système est figé à sa
 # construction et le disque applicatif ne peut rien y ajouter. Une gem native
 # réclamant autre chose échouerait à la compilation, loin de la cause — on

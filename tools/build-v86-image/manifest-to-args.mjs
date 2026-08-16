@@ -70,6 +70,32 @@ const ASSET_PIPELINE_GEMS = Object.freeze([
   "importmap-rails",
 ]);
 
+/**
+ * Gems dont la précompilation d'assets passe par un EXÉCUTABLE précompilé,
+ * publié par plateforme — et jamais pour i386.
+ *
+ * Vérifié le 2026-08-16 sur rubygems : `tailwindcss-ruby`, dont dépend
+ * tailwindcss-rails, ne publie que aarch64-linux, arm64-darwin, x86_64-linux,
+ * x86_64-darwin et mingw ; `dartsass-ruby` télécharge de même un binaire
+ * x86_64. Dans la base i386, `rails assets:precompile` échoue donc sur un
+ * « executable not found » ou un ELF illisible, très loin de la cause.
+ *
+ * Ce n'est pas une impasse de fond : ces outils produisent du CSS et du JS
+ * ordinaires, indépendants de l'architecture. Les faire tourner sur l'hôte
+ * amd64 puis copier `public/assets` dans le disque i386 lèverait la limite —
+ * c'est le chantier à ouvrir pour couvrir les applications Tailwind.
+ */
+const BINARY_ASSET_GEMS = Object.freeze(["tailwindcss-rails", "dartsass-rails"]);
+
+/**
+ * Gems à outillage binaire présentes dans le verrou.
+ * @param {Map<string, string>} specs gems résolues du Gemfile.lock
+ * @returns {string[]} noms détectés, triés
+ */
+export function binaryAssetGems(specs) {
+  return BINARY_ASSET_GEMS.filter((gem) => specs.has(gem)).sort();
+}
+
 /** Commande de préparation de la base par défaut (crée, migre, charge le schéma). */
 const DEFAULT_DB_PREPARE = "bundle exec rails db:prepare";
 
@@ -170,6 +196,8 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
     NPM_ASSETS: assets.npm ? "1" : "0",
     ASSET_SCRIPTS: assets.scripts.join(" "),
     ASSET_PRECOMPILE: assets.precompile ? "1" : "0",
+    // Outils d'assets à binaire précompilé : aucun n'existe pour i386.
+    BINARY_ASSET_GEMS: binaryAssetGems(specs).join(" "),
     EXTRA_PACKAGES: extraPackages(manifest).join(" "),
     DB_PREPARE_COMMAND: DEFAULT_DB_PREPARE,
     SEED_COMMAND: seedCommand,

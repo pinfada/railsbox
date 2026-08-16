@@ -10,6 +10,7 @@ import {
   assetsPlan,
   buildArgs,
   defaultAppName,
+  binaryAssetGems,
   extraPackages,
   formatAssignments,
   formatEnvFragment,
@@ -347,4 +348,21 @@ test("analyzeApp transforme une série de Ruby inconnue en diagnostic bloquant",
     ),
   );
   assert.match(analysis.report, /2\.7/);
+});
+
+test("les gems d'assets à binaire précompilé sont détectées", () => {
+  // tailwindcss-ruby et dartsass-ruby ne publient aucun binaire i386 (vérifié
+  // sur rubygems) : sans détection, assets:precompile échouerait dans la VM
+  // sur un exécutable illisible, dix minutes après le début du build.
+  assert.deepEqual(binaryAssetGems(new Map([["propshaft", "1.0"]])), []);
+  assert.deepEqual(binaryAssetGems(new Map([["tailwindcss-rails", "3.0"]])), ["tailwindcss-rails"]);
+  assert.deepEqual(
+    binaryAssetGems(
+      new Map([
+        ["dartsass-rails", "0.5"],
+        ["tailwindcss-rails", "3.0"],
+      ]),
+    ),
+    ["dartsass-rails", "tailwindcss-rails"],
+  );
 });

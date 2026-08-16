@@ -1,10 +1,193 @@
 /*
- * This is a manifest file that'll be compiled into application.css.
+ * Feuille de style de l'application de démonstration railsbox.
  *
- * With Propshaft, assets are served efficiently without preprocessing steps. You can still include
- * application-wide styles in this file, but keep in mind that CSS precedence will follow the standard
- * cascading order, meaning styles declared later in the document or manifest will override earlier ones,
- * depending on specificity.
+ * Elle a une raison d'être au-delà de l'esthétique : tant que ce fichier ne
+ * contenait que les commentaires laissés par `rails new`, la sandbox publiée
+ * chargeait bien une feuille de style — 491 octets, zéro règle — et paraissait
+ * cassée alors que toute la chaîne fonctionnait. Des règles réelles rendent la
+ * différence visible entre « les assets passent » et « les assets manquent ».
  *
- * Consider organizing styles into separate files for maintainability.
+ * Propshaft, donc pas de préprocesseur : du CSS ordinaire, aucun outil à
+ * binaire précompilé (ni Tailwind ni dart-sass, indisponibles en i386).
  */
+
+:root {
+  color-scheme: light dark;
+
+  --encre: #16202b;
+  --encre-douce: #5a6b7d;
+  --fond: #f7f8fa;
+  --surface: #ffffff;
+  --bord: #e3e7ec;
+  --accent: #1f6feb;
+  --accent-doux: #eaf1fe;
+  --danger: #b4232a;
+
+  --rayon: 10px;
+  --ombre: 0 1px 2px rgb(16 32 43 / 6%), 0 8px 24px rgb(16 32 43 / 6%);
+  --colonne: 46rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --encre: #e8edf3;
+    --encre-douce: #93a2b4;
+    --fond: #0f151c;
+    --surface: #161e27;
+    --bord: #253141;
+    --accent: #5b9bff;
+    --accent-doux: #17263d;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: clamp(1.5rem, 5vw, 3.5rem) 1.25rem;
+  background: var(--fond);
+  color: var(--encre);
+  font:
+    16px/1.65 ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
+
+main,
+body > h1,
+body > p {
+  max-width: var(--colonne);
+  margin-inline: auto;
+}
+
+h1 {
+  margin: 0 0 1.5rem;
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Le scaffold Rails enveloppe chaque enregistrement dans un div#post_N. */
+[id^="post_"] {
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--bord);
+  border-radius: var(--rayon);
+  box-shadow: var(--ombre);
+}
+
+[id^="post_"] p {
+  margin: 0.35rem 0;
+}
+
+[id^="post_"] strong {
+  display: inline-block;
+  min-width: 5.5rem;
+  color: var(--encre-douce);
+  font-weight: 600;
+}
+
+/* Formulaires du scaffold. */
+form {
+  padding: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--bord);
+  border-radius: var(--rayon);
+  box-shadow: var(--ombre);
+}
+
+form div {
+  margin-bottom: 1rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--encre-douce);
+}
+
+input[type="text"],
+input[type="email"],
+textarea {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  color: inherit;
+  background: var(--fond);
+  border: 1px solid var(--bord);
+  border-radius: 8px;
+  font: inherit;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input[type="submit"],
+button {
+  padding: 0.55rem 1.1rem;
+  color: #fff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+input[type="submit"]:hover,
+button:hover {
+  filter: brightness(1.08);
+}
+
+/* Messages d'erreur de validation du scaffold. */
+#error_explanation {
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--rayon);
+}
+
+.field_with_errors input,
+.field_with_errors textarea {
+  border-color: var(--danger);
+}
+
+/* Notice après création ou suppression. */
+.notice,
+#notice {
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  color: var(--accent);
+  background: var(--accent-doux);
+  border-radius: var(--rayon);
+  font-weight: 600;
+}
