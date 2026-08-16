@@ -80,6 +80,18 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
+    # Les entrées de l'appelant ne s'interpolent JAMAIS directement dans un
+    # bloc run : elles transitent par l'environnement, où le shell les traite
+    # comme des données. En workflow_call le dommage serait auto-infligé
+    # (runner et jeton de l'appelant), mais la discipline coûte peu.
+    env:
+      IN_NOM: ${{ inputs.name }}
+      IN_BASE: ${{ inputs.base }}
+      IN_ASSETS_URL: ${{ inputs.assets-url }}
+      IN_BASE_IMAGE: ${{ inputs.base-image }}
+      IN_APP_PATH: ${{ inputs.app-path }}
+      IN_SEED: ${{ inputs.seed }}
+      IN_TARGET_REPO: ${{ inputs.target-repo }}
     steps:
       - name: Récupération de l'application
         uses: actions/checkout@v4
@@ -104,18 +116,24 @@ jobs:
       - name: Paramètres de la construction
         id: parametres
         run: |
-          nom="${{ inputs.name }}"
-          [ -n "$nom" ] || nom="$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
-          echo "nom=$nom" >> "$GITHUB_OUTPUT"
-          echo "base=base-${{ inputs.base }}" >> "$GITHUB_OUTPUT"
-          echo "racine=${{ inputs.assets-url }}/base-${{ inputs.base }}" >> "$GITHUB_OUTPUT"
+          nom="$IN_NOM"
+          [ -n "$nom" ] || nom="${GITHUB_REPOSITORY##*/}"
+          # Assaini dans TOUS les cas : le nom finit dans des chemins, des
+          # messages de commit et le résumé — jamais tel que fourni.
+          nom="$(printf '%s' "$nom" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
+          # Via GITHUB_ENV et non GITHUB_OUTPUT : les étapes suivantes lisent
+          # des variables d'environnement, jamais une interpolation ${{ }}
+          # dans le texte de leur script.
+          echo "SB_NOM=$nom" >> "$GITHUB_ENV"
+          echo "SB_BASE=base-${IN_BASE}" >> "$GITHUB_ENV"
+          echo "SB_RACINE=${IN_ASSETS_URL}/base-${IN_BASE}" >> "$GITHUB_ENV"
           # Racine publique de la sandbox : « /depot » sur un Pages de projet.
           # L'application doit être montée dessus, sinon elle génère ses liens
           # et ses assets à la racine du domaine, hors du site.
-          cible="${{ inputs.target-repo }}"
-          [ -n "$cible" ] || cible="${{ github.repository }}"
-          echo "prefixe=/${cible##*/}" >> "$GITHUB_OUTPUT"
-          echo "Sandbox « $nom » sur la base ${{ inputs.base }}" >> "$GITHUB_STEP_SUMMARY"
+          cible="$IN_TARGET_REPO"
+          [ -n "$cible" ] || cible="$GITHUB_REPOSITORY"
+          echo "SB_PREFIXE=/${cible##*/}" >> "$GITHUB_ENV"
+          echo "Sandbox « $nom » sur la base ${IN_BASE}" >> "$GITHUB_STEP_SUMMARY"
 
       # L'analyse est de toute façon rejouée par build-app-disk.sh : elle est
       # faite ici pour le MAINTENEUR. L'étage de précompilation retenu et les
@@ -126,9 +144,9 @@ jobs:
         working-directory: railsbox
         run: |
           set -eu
-          app="${GITHUB_WORKSPACE}/application/${{ inputs.app-path }}"
+          app="${GITHUB_WORKSPACE}/application/${IN_APP_PATH}"
           if ! node tools/build-v86-image/manifest-to-args.mjs \
-                 "$app" "${{ steps.parametres.outputs.nom }}" > plan.env 2> plan.txt; then
+                 "$app" "$SB_NOM" > plan.env 2> plan.txt; then
             cat plan.txt >&2
             {
               echo "### Construction refusée"
@@ -166,8 +184,8 @@ jobs:
         working-directory: railsbox
         run: |
           set -eu
-          racine="${{ steps.parametres.outputs.racine }}"
-          base="${{ steps.parametres.outputs.base }}"
+          racine="$SB_RACINE"
+          base="$SB_BASE"
           mkdir -p public/disks
           node tools/build-v86-image/assemble-artifact.mjs \
             "${racine}/${base}.ext2.zst" --out "public/disks/${base}.ext2"
@@ -185,16 +203,16 @@ jobs:
         working-directory: railsbox
         run: |
           set -eu
-          docker pull -q "${{ inputs.base-image }}:${{ inputs.base }}"
+          docker pull -q "${IN_BASE_IMAGE}:${IN_BASE}"
           # Tableau et non chaîne : une commande de seed contient des espaces,
           # qu'une expansion non quotée découperait en arguments distincts.
           extra=()
-          [ -z "${{ inputs.seed }}" ] || extra+=(--seed "${{ inputs.seed }}")
+          [ -z "$IN_SEED" ] || extra+=(--seed "$IN_SEED")
           sudo -E env "PATH=$PATH" bash tools/build-v86-image/build-app-disk.sh \
-            "${GITHUB_WORKSPACE}/application/${{ inputs.app-path }}" \
-            --name "${{ steps.parametres.outputs.nom }}" \
-            --base "${{ inputs.base-image }}:${{ inputs.base }}" \
-            --mount-prefix "${{ steps.parametres.outputs.prefixe }}" \
+            "${GITHUB_WORKSPACE}/application/${IN_APP_PATH}" \
+            --name "$SB_NOM" \
+            --base "${IN_BASE_IMAGE}:${IN_BASE}" \
+            --mount-prefix "$SB_PREFIXE" \
             "${extra[@]}"
           sudo chown -R "$USER" public/disks
 
@@ -206,10 +224,10 @@ jobs:
         working-directory: railsbox
         run: |
           node tools/build-v86-image/make-delta-snapshot.mjs \
-            --name "${{ steps.parametres.outputs.nom }}" \
-            --base "${{ steps.parametres.outputs.base }}" \
-            --mount-path "${{ steps.parametres.outputs.prefixe }}/app" \
-            --base-url "${{ steps.parametres.outputs.racine }}" \
+            --name "$SB_NOM" \
+            --base "$SB_BASE" \
+            --mount-path "${SB_PREFIXE}/app" \
+            --base-url "$SB_RACINE" \
             --base-chunk-size "${CHUNK_BYTES}" \
             --app-chunk-size "${CHUNK_BYTES}" \
             --state-suffix ".gz"
@@ -218,7 +236,7 @@ jobs:
         working-directory: railsbox
         run: |
           set -eu
-          nom="${{ steps.parametres.outputs.nom }}"
+          nom="$SB_NOM"
           node tools/build-v86-image/split-artifact.mjs \
             "public/disks/${nom}-app.ext2" --zstd --out publication/disks
           # L'instantané est téléchargé d'un bloc par le visiteur : gzippé il
@@ -250,12 +268,12 @@ jobs:
           # mainteneur tiers, la base est cross-origin et la CSP bloquerait
           # les XHR de v86 avant même le CORS. On autorise l'origine de la
           # base — et rien d'autre — quand elle diffère du site cible.
-          cible="${{ inputs.target-repo }}"
-          [ -n "$cible" ] || cible="${{ github.repository }}"
+          cible="$IN_TARGET_REPO"
+          [ -n "$cible" ] || cible="$GITHUB_REPOSITORY"
           proprietaire="$(echo "${cible%%/*}" | tr '[:upper:]' '[:lower:]')"
           node tools/build-v86-image/autoriser-origine-base.mjs \
             publication/index.html \
-            --base-url "${{ steps.parametres.outputs.racine }}" \
+            --base-url "$SB_RACINE" \
             --site-origin "https://${proprietaire}.github.io"
           du -sh publication
           # Garde-fou de la limite Pages : mieux vaut refuser ici que publier
@@ -273,9 +291,10 @@ jobs:
         working-directory: railsbox/publication
         env:
           PUBLISH_KEY: ${{ secrets.publish-key }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          cible="${{ inputs.target-repo }}"
+          cible="$IN_TARGET_REPO"
           if [ -n "$cible" ]; then
             if [ -z "${PUBLISH_KEY:-}" ]; then
               echo "::error::target-repo exige le secret publish-key (clé de déploiement en écriture)."
@@ -287,15 +306,18 @@ jobs:
             ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
             distant="git@github.com:${cible}.git"
           else
-            cible="${{ github.repository }}"
-            distant="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${cible}.git"
+            cible="$GITHUB_REPOSITORY"
+            # Le jeton reste une variable d'environnement : jamais interpolé
+            # dans le texte du script, ni figé dans une URL de remote que git
+            # pourrait réémettre en cas d'erreur.
+            distant="https://x-access-token:${GH_TOKEN}@github.com/${cible}.git"
           fi
 
           git init -q -b gh-pages
           git config user.email "actions@github.com"
           git config user.name "railsbox"
           git add -A
-          git commit -q -m "sandbox railsbox — ${{ steps.parametres.outputs.nom }} (${{ github.sha }})"
+          git commit -q -m "sandbox railsbox — ${SB_NOM} (${GITHUB_SHA})"
           # Branche remise à plat : la sandbox est entièrement régénérée à
           # chaque construction, conserver l'historique n'empilerait que des
           # binaires morts.
@@ -321,6 +343,6 @@ jobs:
             echo "à un service de badges, et rien à maintenir."
             echo ""
             echo "Activez GitHub Pages sur la branche \`gh-pages\` si ce n'est pas déjà fait."
-            echo "Le rootfs mutualisé est servi par \`${{ inputs.assets-url }}\` :"
+            echo "Le rootfs mutualisé est servi par \`${IN_ASSETS_URL}\` :"
             echo "le dépôt n'héberge que l'application."
           } >> "$GITHUB_STEP_SUMMARY"
