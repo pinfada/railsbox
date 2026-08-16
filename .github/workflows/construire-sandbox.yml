@@ -69,6 +69,10 @@ on:
 env:
   CHUNK_BYTES: 4194304
   MAX_FILE_BYTES: 99614720
+  # L'étage amd64 de précompilation des assets s'appuie sur deux capacités de
+  # BuildKit : le contexte de build nommé (--build-context) et la sortie locale
+  # (--output). Le runner l'active par défaut ; on ne le laisse pas au hasard.
+  DOCKER_BUILDKIT: 1
 
 jobs:
   construire:
@@ -113,6 +117,45 @@ jobs:
           echo "prefixe=/${cible##*/}" >> "$GITHUB_OUTPUT"
           echo "Sandbox « $nom » sur la base ${{ inputs.base }}" >> "$GITHUB_STEP_SUMMARY"
 
+      # L'analyse est de toute façon rejouée par build-app-disk.sh : elle est
+      # faite ici pour le MAINTENEUR. L'étage de précompilation retenu et les
+      # diagnostics doivent se lire dans le résumé de la construction, pas au
+      # milieu de cinq cents lignes de journal — et un refus doit tomber avant
+      # les neuf minutes de réassemblage du rootfs.
+      - name: Plan de construction
+        working-directory: railsbox
+        run: |
+          set -eu
+          app="${GITHUB_WORKSPACE}/application/${{ inputs.app-path }}"
+          if ! node tools/build-v86-image/manifest-to-args.mjs \
+                 "$app" "${{ steps.parametres.outputs.nom }}" > plan.env 2> plan.txt; then
+            cat plan.txt >&2
+            {
+              echo "### Construction refusée"
+              echo ""
+              echo '```'
+              cat plan.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cat plan.txt
+          # Les valeurs sont déjà entre apostrophes (manifest-to-args.mjs) :
+          # sourcer ce fragment n'évalue jamais un $(commande) d'un railsbox.yml.
+          . ./plan.env
+          {
+            echo "### Plan de construction"
+            echo ""
+            echo "| Élément | Valeur |"
+            echo "|---|---|"
+            echo "| Ruby | $RUBY_VERSION |"
+            echo "| Base de données | $DATABASE |"
+            echo "| Précompilation des assets | \`$ASSETS_STAGE\` |"
+            echo "| Outils d'assets sans binaire i386 | ${BINARY_ASSET_GEMS:-aucun} |"
+            echo "| Scripts npm de build | ${ASSET_SCRIPTS:-aucun} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f plan.env plan.txt
+
       # ------------------------------------------------------------------
       # Le rootfs est RÉASSEMBLÉ depuis les octets publiés, jamais reconstruit.
       # Un ext2 refabriqué ici aurait d'autres UUID et horodatages : le delta
@@ -134,6 +177,10 @@ jobs:
           gunzip -kf "public/disks/${base}-state.bin.gz"
           ls -la public/disks
 
+      # Le script orchestre lui-même l'étage amd64 de précompilation des assets
+      # quand l'application en a besoin (Tailwind, dart-sass, chaîne npm) : le
+      # runner GitHub est un amd64, ses binaires y tournent nativement, et seul
+      # le résultat — public/assets — entre dans le disque i386.
       - name: Construction du disque applicatif
         working-directory: railsbox
         run: |

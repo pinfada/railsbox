@@ -10,6 +10,7 @@
 // Sort en 1 si un diagnostic bloquant existe, 2 en cas d'échec de l'analyse.
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ASSET_STAGE, binaryAssetGems, planAssets } from "../detect/assets.mjs";
 import { detectApp, readOptionalFile } from "../detect/detect.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
 import { parseLockSpecs } from "../detect/gems.mjs";
@@ -59,42 +60,10 @@ const DATABASE_PACKAGES = Object.freeze({
   sqlite3: Object.freeze(["libsqlite3-dev"]),
 });
 
-/** Gems trahissant un pipeline d'assets à précompiler sans npm. */
-const ASSET_PIPELINE_GEMS = Object.freeze([
-  "propshaft",
-  "sprockets-rails",
-  "sprockets",
-  "dartsass-rails",
-  "cssbundling-rails",
-  "jsbundling-rails",
-  "importmap-rails",
-]);
-
-/**
- * Gems dont la précompilation d'assets passe par un EXÉCUTABLE précompilé,
- * publié par plateforme — et jamais pour i386.
- *
- * Vérifié le 2026-08-16 sur rubygems : `tailwindcss-ruby`, dont dépend
- * tailwindcss-rails, ne publie que aarch64-linux, arm64-darwin, x86_64-linux,
- * x86_64-darwin et mingw ; `dartsass-ruby` télécharge de même un binaire
- * x86_64. Dans la base i386, `rails assets:precompile` échoue donc sur un
- * « executable not found » ou un ELF illisible, très loin de la cause.
- *
- * Ce n'est pas une impasse de fond : ces outils produisent du CSS et du JS
- * ordinaires, indépendants de l'architecture. Les faire tourner sur l'hôte
- * amd64 puis copier `public/assets` dans le disque i386 lèverait la limite —
- * c'est le chantier à ouvrir pour couvrir les applications Tailwind.
- */
-const BINARY_ASSET_GEMS = Object.freeze(["tailwindcss-rails", "dartsass-rails"]);
-
-/**
- * Gems à outillage binaire présentes dans le verrou.
- * @param {Map<string, string>} specs gems résolues du Gemfile.lock
- * @returns {string[]} noms détectés, triés
- */
-export function binaryAssetGems(specs) {
-  return BINARY_ASSET_GEMS.filter((gem) => specs.has(gem)).sort();
-}
+// La classification du pipeline d'assets (et donc l'étage de précompilation)
+// vit dans tools/detect/assets.mjs : elle sert au rapport d'analyse comme aux
+// arguments de construction, et ne doit exister qu'une fois.
+export { binaryAssetGems };
 
 /** Commande de préparation de la base par défaut (crée, migre, charge le schéma). */
 const DEFAULT_DB_PREPARE = "bundle exec rails db:prepare";
@@ -143,15 +112,24 @@ export function extraPackages(manifest) {
 
 /**
  * Décrit le pipeline d'assets à exécuter pendant la construction.
+ *
+ * `precompile` ne vaut plus que pour la précompilation DANS le guest i386 :
+ * quand l'étage amd64 s'en charge, le disque applicatif ne fait que recevoir
+ * `public/assets` — il ne relance rien.
  * @param {Manifest} manifest manifeste fusionné
  * @param {Map<string, string>} specs gems résolues du Gemfile.lock
- * @returns {{npm: boolean, scripts: string[], precompile: boolean}} plan d'assets
+ * @returns {{npm: boolean, scripts: string[], stage: string, install: string, binaryGems: string[], precompile: boolean}} plan d'assets
  */
 export function assetsPlan(manifest, specs) {
-  const npm = Boolean(manifest.assets?.npm);
-  const scripts = [...(manifest.assets?.scripts ?? [])];
-  const precompile = ASSET_PIPELINE_GEMS.some((gem) => specs.has(gem));
-  return { npm, scripts, precompile };
+  const { plan } = planAssets({ assets: manifest.assets, specs });
+  return {
+    npm: plan.npm,
+    scripts: [...plan.scripts],
+    stage: plan.stage,
+    install: plan.install,
+    binaryGems: [...plan.binaryGems],
+    precompile: plan.stage === ASSET_STAGE.GUEST,
+  };
 }
 
 /**
@@ -195,9 +173,18 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
     WITH_REDIS: manifest.services?.redis ? "1" : "0",
     NPM_ASSETS: assets.npm ? "1" : "0",
     ASSET_SCRIPTS: assets.scripts.join(" "),
+    // Précompilation dans le guest i386 : seulement quand aucun outil n'exige
+    // l'étage amd64 (importmap/propshaft pur).
     ASSET_PRECOMPILE: assets.precompile ? "1" : "0",
-    // Outils d'assets à binaire précompilé : aucun n'existe pour i386.
-    BINARY_ASSET_GEMS: binaryAssetGems(specs).join(" "),
+    // Étage de précompilation retenu (« aucun », « i386 » ou « amd64 ») : le
+    // script de construction s'en sert pour déclencher — ou non — le build
+    // amd64, et HOST_ASSETS sélectionne l'étage côté Dockerfile.
+    ASSETS_STAGE: assets.stage,
+    HOST_ASSETS: assets.stage === ASSET_STAGE.HOST ? "1" : "0",
+    NPM_INSTALL_COMMAND: assets.install,
+    // Outils d'assets à binaire précompilé : aucun n'existe pour i386, ils
+    // tournent donc sur l'étage amd64. Conservé pour le journal de build.
+    BINARY_ASSET_GEMS: assets.binaryGems.join(" "),
     EXTRA_PACKAGES: extraPackages(manifest).join(" "),
     DB_PREPARE_COMMAND: DEFAULT_DB_PREPARE,
     SEED_COMMAND: seedCommand,

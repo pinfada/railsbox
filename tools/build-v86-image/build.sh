@@ -129,7 +129,7 @@ if [ -n "$ENV_FILE" ]; then
   APP_ENV_TRUSTED="$(cat "$ENV_FILE")"$'\n'
 fi
 
-echo "  Ruby $RUBY_VERSION · base $DATABASE · redis $WITH_REDIS · assets npm $NPM_ASSETS"
+echo "  Ruby $RUBY_VERSION · base $DATABASE · redis $WITH_REDIS · assets « $ASSETS_STAGE »"
 echo "  paquets supplémentaires : ${EXTRA_PACKAGES:-aucun}"
 echo "  seed : ${SEED_COMMAND:-aucun}"
 
@@ -146,6 +146,8 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMA
   --build-arg "PG_VERSION=${PG_VERSION:-15}" \
   --build-arg "WITH_REDIS=$WITH_REDIS" \
   --build-arg "NPM_ASSETS=$NPM_ASSETS" \
+  --build-arg "HOST_ASSETS=$HOST_ASSETS" \
+  --build-arg "NPM_INSTALL_COMMAND=$NPM_INSTALL_COMMAND" \
   --build-arg "ASSET_SCRIPTS=$ASSET_SCRIPTS" \
   --build-arg "ASSET_PRECOMPILE=$ASSET_PRECOMPILE" \
   --build-arg "EXTRA_PACKAGES=$EXTRA_PACKAGES" \

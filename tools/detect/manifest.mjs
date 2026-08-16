@@ -17,7 +17,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {string|null} [rails] version de Rails résolue
  * @property {string|null} [database] adaptateur de base de données
  * @property {string|null} [bundler] version de Bundler ayant produit le lock
- * @property {{npm?: boolean, scripts?: readonly string[], tools?: readonly string[]}} [assets] pipeline d'assets
+ * @property {{npm?: boolean, scripts?: readonly string[], tools?: readonly string[], stage?: string, binaryGems?: readonly string[], install?: string}} [assets] pipeline d'assets et étage de précompilation
  * @property {readonly NativeGem[]} [nativeGems] gems à extension native
  * @property {{redis?: boolean, sidekiq?: boolean}} [services] services d'arrière-plan
  * @property {{command?: string, autoLogin?: string, autoLoginCode?: string}} [seed] amorçage des données

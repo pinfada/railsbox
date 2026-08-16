@@ -64,6 +64,11 @@ command -v node >/dev/null || { echo "node introuvable" >&2; exit 1; }
 APP_DIR="$(cd "$APP_DIR" && pwd)"
 [ -n "$NAME" ] || NAME="$(basename "$APP_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
 
+# BuildKit est une exigence, pas un confort : les contextes de build nommés
+# (--build-context), les sorties locales (--output) et les heredocs des
+# Dockerfile n'existent pas sans lui.
+export DOCKER_BUILDKIT=1
+
 echo "→ Analyse de l'application ($APP_DIR)…"
 ARGS_FILE="$(mktemp)"
 WORK_DIR="$(mktemp -d)"
@@ -77,24 +82,10 @@ fi
 
 if [ "$SEED_OVERRIDE_SET" -eq 1 ]; then SEED_COMMAND="$SEED_OVERRIDE"; fi
 
-# MVP : sqlite3 + importmap uniquement. PostgreSQL et chaîne npm hors périmètre.
+# PostgreSQL reste hors périmètre : le cluster devrait être initialisé dans le
+# disque applicatif et démarré après son montage (ADR 0002).
 if [ "${WITH_POSTGRES:-0}" = 1 ]; then
   echo "✗ PostgreSQL hors périmètre du MVP B2 (voir ADR 0002)." >&2
-  exit 1
-fi
-if [ "${NPM_ASSETS:-0}" = 1 ]; then
-  echo "✗ Applications à chaîne npm hors périmètre du MVP B2 (importmap seulement)." >&2
-  exit 1
-fi
-# Tailwind et dart-sass précompilent leurs assets avec un EXÉCUTABLE livré par
-# plateforme, et aucun n'existe pour i386 (vérifié sur rubygems). Sans cette
-# garde, `rails assets:precompile` échouerait dans la VM sur un binaire
-# illisible — un message incompréhensible, dix minutes après le début du build.
-if [ -n "${BINARY_ASSET_GEMS:-}" ]; then
-  echo "✗ Outils d'assets à binaire précompilé, indisponibles en i386 : $BINARY_ASSET_GEMS" >&2
-  echo "  Ces gems livrent un exécutable par plateforme (x86_64, arm64) et railsbox" >&2
-  echo "  construit en 32 bits. Contournement : précompilez vos assets en amont et" >&2
-  echo "  versionnez public/assets, ou attendez l'étage de précompilation amd64." >&2
   exit 1
 fi
 # La base est mutualisée : son jeu de bibliothèques système est figé à sa
@@ -122,10 +113,47 @@ ENV_COUNT="$(printf '%s' "${APP_ENV_MANIFEST:-}" | grep -c '^export ' || true)"
 echo "  Base $BASE_IMAGE · Ruby $RUBY_VERSION · db $DATABASE · seed ${SEED_COMMAND:-aucun}"
 echo "  Environnement déclaré : $ENV_COUNT variable(s)"
 echo "  Montée sous : ${MOUNT_PREFIX}/app"
+echo "  Assets : précompilation « ${ASSETS_STAGE:-aucun} »${BINARY_ASSET_GEMS:+ (${BINARY_ASSET_GEMS})}"
 if [ -n "${AUTO_LOGIN_INITIALIZER:-}" ]; then
   echo "  Auto-connexion : activée"
 else
   echo "  Auto-connexion : aucune (le visiteur arrivera déconnecté)"
+fi
+
+########################################################################
+# Étage amd64 de précompilation des assets (critère C8)
+########################################################################
+# tailwindcss-ruby, dartsass-ruby et les chaînes npm ne publient aucun binaire
+# i386. Leur sortie, elle, est du CSS et du JS ordinaires : on les exécute sur
+# l'hôte de construction (amd64) et l'on injecte public/assets dans le disque
+# i386 par un contexte de build nommé. Ce contexte existe TOUJOURS — vide quand
+# la précompilation a lieu dans le guest — pour que app.Dockerfile reste unique.
+ASSETS_CONTEXT="$WORK_DIR/assets"
+mkdir -p "$ASSETS_CONTEXT/public/assets" "$ASSETS_CONTEXT/app/assets/builds"
+
+if [ "${ASSETS_STAGE:-aucun}" = "amd64" ]; then
+  echo "→ Précompilation des assets sur un étage amd64…"
+  docker build --platform linux/amd64 $NO_CACHE -f "$SCRIPT_DIR/assets-amd64.Dockerfile" \
+    --build-arg "RUBY_VERSION=$RUBY_VERSION" \
+    --build-arg "NPM_ASSETS=${NPM_ASSETS:-0}" \
+    --build-arg "NPM_INSTALL_COMMAND=${NPM_INSTALL_COMMAND:-}" \
+    --build-arg "ASSET_SCRIPTS=${ASSET_SCRIPTS:-}" \
+    --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
+    --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
+    --output "type=local,dest=$ASSETS_CONTEXT" \
+    "$APP_DIR"
+
+  ASSET_COUNT="$(find "$ASSETS_CONTEXT/public/assets" -type f | wc -l)"
+  # Seul refus qui subsiste sur les assets, et il est tardif par nature : un
+  # étage muet livrerait une application sans CSS, panne que le visiteur ne
+  # découvrirait qu'à l'affichage de la page.
+  if [ "$ASSET_COUNT" -eq 0 ]; then
+    echo "✗ L'étage amd64 n'a produit aucun asset dans public/assets." >&2
+    echo "  Vérifiez que « rails assets:precompile » aboutit hors railsbox, et que les" >&2
+    echo "  scripts npm de build (${ASSET_SCRIPTS:-aucun}) écrivent bien dans app/assets/builds." >&2
+    exit 1
+  fi
+  echo "  $ASSET_COUNT fichiers précompilés sous ${MOUNT_PREFIX}/app"
 fi
 
 ########################################################################
@@ -134,8 +162,10 @@ fi
 IMAGE_TAG="railsbox-app-$NAME"
 echo "→ Build Docker i386 du disque applicatif (FROM $BASE_IMAGE)…"
 docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile" -t "$IMAGE_TAG" \
+  --build-context "railsbox-assets=$ASSETS_CONTEXT" \
   --build-arg "BASE_IMAGE=$BASE_IMAGE" \
-  --build-arg "ASSET_PRECOMPILE=${ASSET_PRECOMPILE:-1}" \
+  --build-arg "ASSET_PRECOMPILE=${ASSET_PRECOMPILE:-0}" \
+  --build-arg "HOST_ASSETS=${HOST_ASSETS:-0}" \
   --build-arg "WITH_REDIS=${WITH_REDIS:-0}" \
   --build-arg "DB_PREPARE_COMMAND=$DB_PREPARE_COMMAND" \
   --build-arg "SEED_COMMAND=$SEED_COMMAND" \

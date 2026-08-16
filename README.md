@@ -154,6 +154,11 @@ Entrées utiles : `app-path` si l'application n'est pas à la racine, `seed` pou
 forcer une commande d'amorçage, `base` pour épingler une version de base,
 `target-repo` pour publier ailleurs que dans le dépôt applicatif.
 
+**Tailwind, dart-sass et les chaînes npm** n'ont rien à déclarer : la détection
+les repère et bascule seule la précompilation sur un **étage amd64** (voir
+« Où sont précompilés les assets » plus bas). Le résumé de la construction
+affiche l'étage retenu.
+
 > **Prérequis actuel** : `railsbox` est un dépôt privé, ce qui empêche un dépôt
 > tiers de référencer ce workflow. Cette voie ne sera ouverte qu'avec le dépôt.
 
@@ -241,11 +246,42 @@ elle le dit et s'arrête là.
 | `http://localhost:8080` | votre application Rails, restaurée depuis l'instantané |
 | `http://localhost:8080/?fresh=1` | idem, en ignorant l'instantané (boot à froid) |
 
+### Où sont précompilés les assets
+
+Le guest est un **i386**, et deux familles d'outils d'assets ne publient aucun
+binaire pour cette architecture : les gems à exécutable précompilé
+(`tailwindcss-ruby` dont dépend tailwindcss-rails, `dartsass-ruby`) et les
+chaînes npm (esbuild, sass). Elles produisent pourtant du CSS et du JS
+**ordinaires**, indépendants de l'architecture — on les exécute donc sur un
+**étage amd64**, et le disque i386 ne reçoit que `public/assets`. Le guest
+n'exécute jamais ces binaires.
+
+L'auto-détection classe seule chaque application :
+
+| Ce qu'elle trouve | Étage retenu | Ce qui tourne |
+|---|---|---|
+| propshaft/sprockets + importmap | `i386` | `assets:precompile` dans le disque applicatif |
+| tailwindcss-rails, dartsass-rails | `amd64` | `assets:precompile` sur l'hôte, copie de `public/assets` |
+| `package.json` (jsbundling/cssbundling) | `amd64` | `npm ci` + scripts de build, puis `assets:precompile` |
+| aucun pipeline | `aucun` | rien |
+
+L'étage amd64 pose exactement le même `RAILS_RELATIVE_URL_ROOT` que le disque
+applicatif : les URL figées dans le CSS portent le préfixe **public complet**
+(`/depot/app/assets/…`), sous le site et non à la racine du domaine — sans quoi
+le Service Worker ne pourrait même pas les rattraper.
+
+Deux points d'attention plutôt qu'un refus : sans `package-lock.json` (ou avec
+un verrou yarn/pnpm/bun, que railsbox ne relit pas), l'installation retombe sur
+`npm install` et la construction n'est plus reproductible — c'est un
+avertissement du rapport d'analyse. Et si l'étage amd64 ne produit **aucun**
+asset, la construction s'arrête là : une application sans CSS est une panne que
+le visiteur découvrirait à l'affichage de la page.
+
 ### Construire à la main (voie monolithique héritée)
 
 Antérieure au découpage base/application, cette voie produit une image unique
-et reste la seule à couvrir PostgreSQL, Tailwind et les chaînes npm — son
-Dockerfile précompile les assets sur un étage amd64.
+et reste la seule à couvrir PostgreSQL — son Dockerfile précompile les assets
+sur le même étage amd64.
 
 Le build est **piloté par auto-détection** : `build.sh` inspecte l'application
 (version de Ruby via `.ruby-version`/Gemfile, adaptateur de base via
@@ -260,7 +296,7 @@ node tools/build-v86-image/make-snapshot.mjs   # capture l'instantané mémoire
 
 Le Dockerfile reste en deux étages — assets précompilés en x86_64 (tailwind,
 esbuild et dartsass n'ont pas de binaire i386, et un étage vide est
-sélectionné pour les applications importmap sans npm), rootfs i386 avec Ruby,
+sélectionné quand rien ne l'exige), rootfs i386 avec Ruby,
 base préparée, noyau extrait pour un démarrage direct. Tous les pièges i386
 (section 4) sont préservés ; l'étage d'installation des paquets est ordonné
 pour partager le cache entre images.
@@ -472,8 +508,8 @@ importmap, publié et bootant en ligne. Le reste, honnêtement :
 | Limite | État |
 |---|---|
 | **PostgreSQL** | refusé par la construction. Le crochet existe dans `guest-init.sh` (le cluster ne démarrerait qu'après montage du disque applicatif) mais n'est pas branché. SQLite est la voie nominale. |
-| **Tailwind, dart-sass** | refusés par la construction : `tailwindcss-ruby` et `dartsass-ruby` ne publient aucun binaire i386. La sortie est identifiée — précompiler sur l'étage amd64, comme le fait déjà le build monolithique — mais pas encore portée sur la voie découplée. |
-| **Chaînes npm** (esbuild, cssbundling) | même cause, même sortie. |
+| **Tailwind, dart-sass** | **pris en charge** : précompilés sur un étage amd64, puis copiés dans le disque i386 (le guest n'exécute jamais ces binaires). Validé sur l'étage lui-même ; un boot de bout en bout reste à faire en CI. |
+| **Chaînes npm** (esbuild, cssbundling) | **pris en charge** par le même étage (`npm ci` puis scripts de build). Un verrou yarn/pnpm/bun n'est pas relu : repli sur `npm install`, signalé. |
 | **ActionCable / WebSockets** | hors périmètre : incompatibles avec un pont requête/réponse. Piste : long-polling ou flux dédié. |
 | **Réseau sortant** | inexistant. C'est aussi une propriété du modèle de démonstration — voir [`SECURITY.md`](SECURITY.md). |
 | **Débit du pont** | tuyau étroit et partagé, suffisant pour du Turbo/HTML. Les assets précompilés ne l'empruntent pas : extraits de l'image, ils sont servis statiquement par le Service Worker. |
@@ -507,8 +543,11 @@ tests/                             200 tests unitaires + intégration (VM réell
 └── live/                          recette de la sandbox PUBLIÉE (réseau, hors CI)
 tools/
 ├── detect/                        auto-détection d'une app Rails → manifeste
+│                                  (dont assets.mjs : étage de précompilation)
 ├── build-v86-image/               Dockerfile paramétré, build.sh, make-snapshot,
-│                                  manifest-to-args, validate-boot, env/
+│                                  manifest-to-args, validate-boot, env/,
+│                                  assets-amd64.Dockerfile (étage d'assets),
+│                                  base/ (rootfs mutualisé + disque applicatif)
 ├── vm-harness.mjs                 boot d'une VM v86 sous Node (piloté par config)
 ├── extract-assets.sh             extraction des assets de l'image (debugfs)
 ├── demo-app/                      application `rails new` de validation

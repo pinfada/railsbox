@@ -1,8 +1,9 @@
 // Auto-détection d'une application Rails : produit le manifeste de build que
 // railsbox utilisera pour préparer l'image. Tout est tolérant à l'absence de
 // fichier — un projet incomplet doit donner un rapport, jamais une exception.
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { NPM_LOCKFILES, planAssets } from "./assets.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
@@ -51,6 +52,33 @@ export async function readOptionalFile(filePath) {
     if (error && ABSENT_CODES.includes(error.code)) return null;
     throw error;
   }
+}
+
+/**
+ * Teste l'existence d'un chemin en tolérant son absence.
+ * @param {string} filePath chemin à tester
+ * @returns {Promise<boolean>} vrai si le chemin existe
+ * @throws {Error} pour toute erreur autre qu'une absence (droits, E/S)
+ */
+export async function pathExists(filePath) {
+  try {
+    await stat(filePath);
+    return true;
+  } catch (error) {
+    if (error && ABSENT_CODES.includes(error.code)) return false;
+    throw error;
+  }
+}
+
+/**
+ * Relève les verrous de dépendances front présents à la racine.
+ * @param {string} appDir racine de l'application
+ * @returns {Promise<string[]>} noms des verrous trouvés, dans l'ordre de la table
+ */
+async function detectNpmLockfiles(appDir) {
+  const names = Object.keys(NPM_LOCKFILES);
+  const present = await Promise.all(names.map((name) => pathExists(join(appDir, name))));
+  return names.filter((_, index) => present[index]);
 }
 
 /**
@@ -265,12 +293,13 @@ export async function detectApp(appDir) {
   if (typeof appDir !== "string" || appDir.trim() === "") {
     throw new TypeError("detectApp attend le chemin du dossier de l'application");
   }
-  const [rubyVersionFile, gemfile, lock, databaseYml, packageJson] = await Promise.all([
+  const [rubyVersionFile, gemfile, lock, databaseYml, packageJson, lockfiles] = await Promise.all([
     readOptionalFile(join(appDir, ".ruby-version")),
     readOptionalFile(join(appDir, "Gemfile")),
     readOptionalFile(join(appDir, "Gemfile.lock")),
     readOptionalFile(join(appDir, "config", "database.yml")),
     readOptionalFile(join(appDir, "package.json")),
+    detectNpmLockfiles(appDir),
   ]);
 
   /** @type {Finding[]} */
@@ -294,6 +323,10 @@ export async function detectApp(appDir) {
   findings.push(...database.findings);
   const assets = detectAssets(packageJson);
   findings.push(...assets.findings);
+  // L'étage de précompilation se décide ici et nulle part ailleurs : il dépend
+  // à la fois du package.json (chaîne npm) et du Gemfile.lock (gems à binaire).
+  const assetPlan = planAssets({ assets: assets.assets, specs, lockfiles });
+  findings.push(...assetPlan.findings);
   const native = collectNativeGems(specs);
   findings.push(...native.findings);
   // mysql2 dans le lock est aussi bloquant, mais inutile de le signaler deux
@@ -327,7 +360,7 @@ export async function detectApp(appDir) {
     rails: rails.version,
     database: database.database,
     bundler,
-    assets: assets.assets,
+    assets: assetPlan.plan,
     nativeGems: native.nativeGems,
     services: detectServices(specs),
   });

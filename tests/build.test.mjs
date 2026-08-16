@@ -129,7 +129,7 @@ test("extraPackages n'installe ni PostgreSQL ni Redis pour une application sqlit
 
 // --- Pipeline d'assets -------------------------------------------------------
 
-test("assetsPlan signale une précompilation rootfs pour une application importmap", () => {
+test("assetsPlan signale une précompilation dans le guest pour une application importmap", () => {
   // Arrange
   const manifest = { assets: { npm: false, scripts: [] } };
   const specs = new Map([["propshaft", "1.1.0"]]);
@@ -138,7 +138,28 @@ test("assetsPlan signale une précompilation rootfs pour une application importm
   const plan = assetsPlan(manifest, specs);
 
   // Assert
-  assert.deepEqual(plan, { npm: false, scripts: [], precompile: true });
+  assert.equal(plan.stage, "i386");
+  assert.equal(plan.precompile, true);
+  assert.deepEqual(plan.scripts, []);
+  assert.deepEqual(plan.binaryGems, []);
+});
+
+test("assetsPlan renvoie la précompilation d'une application Tailwind sur l'étage amd64", () => {
+  // Arrange : Tailwind par la gem, sans package.json — le cas refusé jusqu'ici.
+  const manifest = { assets: { npm: false, scripts: [] } };
+  const specs = new Map([
+    ["propshaft", "1.1.0"],
+    ["tailwindcss-rails", "4.3.0"],
+    ["tailwindcss-ruby", "4.3.3"],
+  ]);
+
+  // Act
+  const plan = assetsPlan(manifest, specs);
+
+  // Assert : rien à précompiler dans le guest, tout vient de l'étage amd64.
+  assert.equal(plan.stage, "amd64");
+  assert.equal(plan.precompile, false);
+  assert.deepEqual(plan.binaryGems, ["tailwindcss-rails", "tailwindcss-ruby"]);
 });
 
 test("assetsPlan reprend les scripts npm détectés", () => {
@@ -215,8 +236,66 @@ test("buildArgs décrit une application sqlite3 sans service ni npm", () => {
   assert.equal(args.WITH_REDIS, "0");
   assert.equal(args.NPM_ASSETS, "0");
   assert.equal(args.ASSET_PRECOMPILE, "1");
+  assert.equal(args.ASSETS_STAGE, "i386");
+  assert.equal(args.HOST_ASSETS, "0");
+  assert.equal(args.NPM_INSTALL_COMMAND, "");
   assert.equal(args.RUBY_VERSION, "3.3.12");
   assert.equal(args.SEED_COMMAND, "bundle exec rails db:seed");
+});
+
+test("buildArgs bascule une application Tailwind sur l'étage amd64", () => {
+  // Arrange
+  const manifest = {
+    ruby: "3.3.12",
+    database: "sqlite3",
+    assets: { npm: false, scripts: [] },
+    services: {},
+  };
+
+  // Act
+  const args = buildArgs({
+    manifest,
+    specs: new Map([
+      ["propshaft", "1.1.0"],
+      ["tailwindcss-rails", "4.3.0"],
+    ]),
+    hasSeeds: false,
+    appName: "demo",
+  });
+
+  // Assert : l'étage amd64 précompile, le guest i386 ne relance rien.
+  assert.equal(args.ASSETS_STAGE, "amd64");
+  assert.equal(args.HOST_ASSETS, "1");
+  assert.equal(args.ASSET_PRECOMPILE, "0");
+  assert.equal(args.BINARY_ASSET_GEMS, "tailwindcss-rails");
+});
+
+test("buildArgs décrit l'installation npm d'une application cssbundling", () => {
+  // Arrange
+  const manifest = {
+    ruby: "3.3.12",
+    database: "sqlite3",
+    assets: {
+      npm: true,
+      scripts: ["build:css"],
+      install: "npm ci --no-audit --no-fund",
+    },
+    services: {},
+  };
+
+  // Act
+  const args = buildArgs({
+    manifest,
+    specs: new Map([["cssbundling-rails", "1.4.0"]]),
+    hasSeeds: false,
+    appName: "demo",
+  });
+
+  // Assert
+  assert.equal(args.NPM_ASSETS, "1");
+  assert.equal(args.HOST_ASSETS, "1");
+  assert.equal(args.ASSET_SCRIPTS, "build:css");
+  assert.equal(args.NPM_INSTALL_COMMAND, "npm ci --no-audit --no-fund");
 });
 
 test("buildArgs laisse la commande de seed vide sans db/seeds.rb", () => {
@@ -352,8 +431,9 @@ test("analyzeApp transforme une série de Ruby inconnue en diagnostic bloquant",
 
 test("les gems d'assets à binaire précompilé sont détectées", () => {
   // tailwindcss-ruby et dartsass-ruby ne publient aucun binaire i386 (vérifié
-  // sur rubygems) : sans détection, assets:precompile échouerait dans la VM
-  // sur un exécutable illisible, dix minutes après le début du build.
+  // sur rubygems) : leur présence bascule la précompilation sur l'étage amd64,
+  // sans quoi assets:precompile échouerait dans la VM sur un exécutable
+  // illisible, dix minutes après le début du build.
   assert.deepEqual(binaryAssetGems(new Map([["propshaft", "1.0"]])), []);
   assert.deepEqual(binaryAssetGems(new Map([["tailwindcss-rails", "3.0"]])), ["tailwindcss-rails"]);
   assert.deepEqual(
@@ -365,4 +445,37 @@ test("les gems d'assets à binaire précompilé sont détectées", () => {
     ),
     ["dartsass-rails", "tailwindcss-rails"],
   );
+});
+
+test("analyzeApp accepte désormais une application Tailwind, avec son étage amd64", async () => {
+  // Arrange : une application Rails Tailwind ordinaire (gem, pas npm).
+  const dir = await createApp({
+    Gemfile: 'source "https://rubygems.org"\ngem "rails"\ngem "tailwindcss-rails"\n',
+    "Gemfile.lock": `GEM
+  remote: https://rubygems.org/
+  specs:
+    propshaft (1.1.0)
+    rails (8.1.3.1)
+    sqlite3 (2.1.0)
+    tailwindcss-rails (4.3.0)
+    tailwindcss-ruby (4.3.3)
+
+BUNDLED WITH
+   2.5.22
+`,
+    ".ruby-version": "3.3.12\n",
+    "config/database.yml": "production:\n  adapter: sqlite3\n",
+  });
+
+  // Act
+  const analysis = await analyzeApp(dir, "demo");
+
+  // Assert : plus aucun diagnostic bloquant, et un étage amd64 planifié.
+  assert.deepEqual(
+    analysis.findings.filter((finding) => finding.severity === "blocking"),
+    [],
+  );
+  assert.equal(analysis.args.ASSETS_STAGE, "amd64");
+  assert.equal(analysis.args.HOST_ASSETS, "1");
+  assert.equal(analysis.args.ASSET_PRECOMPILE, "0");
 });
