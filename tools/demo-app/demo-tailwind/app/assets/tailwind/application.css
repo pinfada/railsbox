@@ -1,0 +1,30 @@
+/*
+ * Point d'entrée Tailwind v4 de la variante « demo-tailwind ».
+ *
+ * Ce fichier n'est JAMAIS servi tel quel : tailwindcss-rails le donne au
+ * binaire tailwindcss, qui écrit app/assets/builds/tailwind.css, lequel est
+ * ensuite digéré par Propshaft dans public/assets. Et ce binaire n'existe pas
+ * en i386 — d'où l'étage amd64 de précompilation (assets-amd64.Dockerfile).
+ *
+ * app/assets/tailwind est exclu des chemins Propshaft par l'engine de la gem :
+ * la source ne part donc pas dans le disque servi, seul le résultat compilé y va.
+ */
+@import "tailwindcss";
+
+/*
+ * Détection explicite des sources. Tailwind v4 sait la déduire seul, mais sa
+ * déduction s'appuie sur la racine du dépôt Git — absente du contexte Docker
+ * de l'étage amd64. Un balayage muet ne casse rien : il produit simplement une
+ * feuille sans aucune des classes utilisées, panne invisible jusqu'à l'écran.
+ */
+@source "../../../app/views";
+@source "../../../app/helpers";
+
+/*
+ * Marqueur de compilation : une variable de thème personnalisée n'apparaît
+ * dans la sortie que si le binaire tailwindcss a réellement tourné. C'est ce
+ * que le test d'intégration cherche dans la feuille digérée servie par la VM.
+ */
+@theme {
+  --color-railsbox: oklch(62% 0.19 255);
+}

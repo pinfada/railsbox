@@ -1,6 +1,8 @@
 ﻿node_modules/
 .claude/
 public/disks/
+# Clones superficiels des applications OSS de contrôle (tests/detect-oss).
+.oss/
 tools/build-v86-image/build.log
 test-results/
 playwright-report/

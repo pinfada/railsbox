@@ -268,6 +268,17 @@ Trois niveaux de tests hors ligne, tous requis avant un commit :
 (`tsc --checkJs` sur trois cibles : navigateur, Service Worker, Node) et tests
 unitaires — c'est exactement ce que joue la CI (`.github/workflows/ci.yml`).
 
+Le **panel de variantes** couvre ce qu'une application seule ne peut pas :
+`demo` (sqlite3, assets dans le guest), `demo-pg` (cluster PostgreSQL embarqué)
+et `demo-tailwind` (assets sur un étage amd64). `npm test` en fige les
+manifestes d'auto-détection ; le workflow
+[`valider-variantes.yml`](.github/workflows/valider-variantes.yml) rejoue la
+chaîne entière — surcouche, disque applicatif, instantané, boot d'une VM
+réelle — à la demande et chaque mercredi, sans rien publier. Il vérifie en plus
+le classement de deux applications open source réelles (rubygems.org, mastodon),
+clonées en superficiel : ces tests-là s'ignorent hors CI, `npm test` ne devant
+dépendre ni du réseau ni de GitHub.
+
 ### Vérifier une sandbox publiée
 
 Les trois niveaux ci-dessus testent le **code**. Un quatrième teste le
@@ -326,6 +337,23 @@ L'étage amd64 pose exactement le même `RAILS_RELATIVE_URL_ROOT` que le disque
 applicatif : les URL figées dans le CSS portent le préfixe **public complet**
 (`/depot/app/assets/…`), sous le site et non à la racine du domaine — sans quoi
 le Service Worker ne pourrait même pas les rattraper.
+
+Une variante Tailwind de l'application de démonstration sert de banc d'essai —
+surcouche de sept fichiers sur `demo/`, comme `demo-pg` :
+
+```bash
+APP="$(bash tools/demo-app/preparer-demo-tailwind.sh)"
+wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP" \
+    --name demo-tailwind --base ghcr.io/pinfada/railsbox-base:3.3-r2
+node tools/build-v86-image/make-delta-snapshot.mjs --name demo-tailwind --base base-3.3-r2
+node --test tests/integration/vm-tailwind.it.mjs
+```
+
+Le test d'intégration ne se contente pas de constater qu'une feuille de style
+existe : il va chercher dans le CSS **servi par la VM** un utilitaire à valeur
+arbitraire (`tracking-[0.35em]`), qu'aucune feuille pré-construite ne peut
+contenir. Sa présence prouve que le binaire `tailwindcss` a balayé les vues
+pendant cette construction — sur l'hôte amd64, jamais dans le guest.
 
 Deux points d'attention plutôt qu'un refus : sans `package-lock.json` (ou avec
 un verrou yarn/pnpm/bun, que railsbox ne relit pas), l'installation retombe sur
@@ -589,7 +617,7 @@ importmap, publié et bootant en ligne. Le reste, honnêtement :
 | Limite | État |
 |---|---|
 | **PostgreSQL** | **branché** sur la voie découplée : le serveur vit dans la base (à partir de la révision `3.3-r2`), le répertoire de données sur le disque applicatif, et le cluster ne démarre qu'après le montage de celui-ci. Exige une base `3.3-r2` ou plus récente — la construction refuse explicitement une base antérieure. Voir « PostgreSQL » plus bas. |
-| **Tailwind, dart-sass** | **pris en charge** : précompilés sur un étage amd64, puis copiés dans le disque i386 (le guest n'exécute jamais ces binaires). Validé sur l'étage lui-même ; un boot de bout en bout reste à faire en CI. |
+| **Tailwind, dart-sass** | **pris en charge** : précompilés sur un étage amd64, puis copiés dans le disque i386 (le guest n'exécute jamais ces binaires). Tailwind est validé **de bout en bout** — variante `demo-tailwind`, boot d'une VM v86 réelle, feuille compilée servie par le guest — et rejoué par le workflow [`valider-variantes.yml`](.github/workflows/valider-variantes.yml). dart-sass emprunte le même chemin, sans banc d'essai dédié. |
 | **Chaînes npm** (esbuild, cssbundling) | **pris en charge** par le même étage (`npm ci` puis scripts de build). Un verrou yarn/pnpm/bun n'est pas relu : repli sur `npm install`, signalé. |
 | **ActionCable / WebSockets** | hors périmètre : incompatibles avec un pont requête/réponse. Piste : long-polling ou flux dédié. |
 | **Réseau sortant** | inexistant. C'est aussi une propriété du modèle de démonstration — voir [`SECURITY.md`](SECURITY.md). |
@@ -641,7 +669,8 @@ tools/
 ├── vm-harness.mjs                 boot d'une VM v86 sous Node (piloté par config)
 ├── extract-assets.sh             extraction des assets de l'image (debugfs)
 ├── demo-app/                      application `rails new` de validation (demo/)
-│                                  + sa surcouche PostgreSQL (demo-pg/)
+│                                  + ses surcouches PostgreSQL (demo-pg/) et
+│                                  Tailwind (demo-tailwind/)
 └── bench-serial.mjs               mesure du coût du chemin chaud série
 docs/decisions/                    ADR : distribution des artefacts, découpage base/app
 SECURITY.md · CONTRIBUTING.md      modèle de menace · conventions

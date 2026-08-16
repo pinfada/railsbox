@@ -1,0 +1,205 @@
+# Recette du PANEL de variantes — le filet anti-régression des chemins de
+# construction que la CI ordinaire ne peut pas exercer.
+#
+# ci.yml ne vérifie que des modules purs : les artefacts VM ne sont pas dans le
+# dépôt, et un push ne doit pas coûter une heure de runner. Résultat, les deux
+# chemins les plus fragiles de railsbox n'étaient prouvés que par un mainteneur,
+# à la main, un jour donné :
+#
+#   demo-pg        cluster PostgreSQL embarqué dans le disque applicatif
+#   demo-tailwind  assets précompilés sur un étage amd64 (aucun binaire i386)
+#
+# Ce workflow les rejoue en entier — surcouche, disque applicatif, instantané
+# delta, boot d'une VRAIE VM v86 sous Node — et RIEN n'est publié : ni gh-pages,
+# ni artefact de dépôt. C'est une recette, pas une chaîne de livraison.
+#
+# Il tourne à la demande et une fois par semaine. Une semaine, ce n'est pas de
+# la superstition : ces chemins cassent sans qu'aucun commit ne les touche —
+# une gem d'assets qui change de variantes de plateforme, un rubygems.org qui
+# retire un binaire, une base publiée dont l'artefact expire.
+name: Valider les variantes
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Version de la base railsbox à valider"
+        type: string
+        default: "3.3-r2"
+      assets-url:
+        description: "Racine du dépôt d'artefacts railsbox"
+        type: string
+        default: "https://pinfada.github.io/railsbox-assets"
+      base-image:
+        description: "Image de construction (doit correspondre à `base`)"
+        type: string
+        default: "ghcr.io/pinfada/railsbox-base"
+  schedule:
+    # Mercredi 05:00 UTC : à distance du lundi de verifier-sandbox.yml, pour ne
+    # pas empiler deux recettes longues sur le même créneau de runners.
+    - cron: "0 5 * * 3"
+
+# Dépôt public, recette pure : aucune écriture, nulle part.
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Volet 1 — l'auto-détection, sur nos trois variantes ET sur deux
+  # applications open source réelles. Rapide (quelques minutes), il tombe donc
+  # avant qu'on engage une heure de VM sur un classement déjà cassé.
+  # ------------------------------------------------------------------
+  detection:
+    name: Détection (panel + applications OSS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # Clones superficiels : seuls Gemfile.lock, package.json, .ruby-version et
+      # config/database.yml sont lus. L'historique ne dirait rien de plus, et
+      # coûterait plusieurs centaines de mégaoctets.
+      - name: Clone des applications de contrôle
+        run: |
+          set -eu
+          mkdir -p .oss
+          git clone --depth 1 --quiet https://github.com/rubygems/rubygems.org .oss/rubygems.org
+          git clone --depth 1 --quiet https://github.com/mastodon/mastodon .oss/mastodon
+          du -sh .oss/*
+
+      # RAILSBOX_OSS_DIR réveille tests/detect-oss.test.mjs, qui s'ignore
+      # partout ailleurs : `npm test` ne doit dépendre ni du réseau ni de GitHub.
+      - name: Tests unitaires, contrôle OSS compris
+        env:
+          RAILSBOX_OSS_DIR: .oss
+        run: npm test
+
+  # ------------------------------------------------------------------
+  # Volet 2 — la construction complète et le boot, une variante par runner.
+  # ------------------------------------------------------------------
+  sandbox:
+    name: Sandbox ${{ matrix.variante.nom }}
+    needs: detection
+    runs-on: ubuntu-latest
+    # Réassemblage du rootfs (~9 min) + bundle i386 + instantané + boot.
+    timeout-minutes: 90
+    strategy:
+      # Une variante en panne ne doit pas masquer le verdict de l'autre : c'est
+      # tout l'intérêt d'un panel.
+      fail-fast: false
+      matrix:
+        variante:
+          - nom: demo-tailwind
+            preparation: preparer-demo-tailwind.sh
+            integration: tests/integration/vm-tailwind.it.mjs
+          - nom: demo-pg
+            preparation: preparer-demo-pg.sh
+            integration: tests/integration/vm-postgres.it.mjs
+    # Les entrées et les valeurs de matrice ne s'interpolent JAMAIS dans un bloc
+    # run : elles transitent par l'environnement, où le shell les traite comme
+    # des données et non comme du texte de script.
+    env:
+      VB_NOM: ${{ matrix.variante.nom }}
+      VB_PREPARATION: ${{ matrix.variante.preparation }}
+      VB_INTEGRATION: ${{ matrix.variante.integration }}
+      # Sur déclenchement planifié, les entrées sont vides : le défaut est
+      # redonné ici, sans quoi la recette hebdomadaire viserait une base « ».
+      VB_BASE: ${{ inputs.base || '3.3-r2' }}
+      VB_ASSETS_URL: ${{ inputs.assets-url || 'https://pinfada.github.io/railsbox-assets' }}
+      VB_BASE_IMAGE: ${{ inputs.base-image || 'ghcr.io/pinfada/railsbox-base' }}
+      # L'étage amd64 de précompilation s'appuie sur deux capacités de BuildKit :
+      # le contexte de build nommé et la sortie locale. Le runner l'active par
+      # défaut ; on ne le laisse pas au hasard.
+      DOCKER_BUILDKIT: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # Le rootfs est RÉASSEMBLÉ depuis les octets publiés, jamais reconstruit :
+      # un ext2 refabriqué aurait d'autres UUID et horodatages, et le delta
+      # capturé dessus embarquerait un cache de blocs divergeant (ADR 0002).
+      - name: Réassemblage du rootfs de base
+        run: |
+          set -eu
+          racine="${VB_ASSETS_URL}/base-${VB_BASE}"
+          base="base-${VB_BASE}"
+          mkdir -p public/disks
+          node tools/build-v86-image/assemble-artifact.mjs \
+            "${racine}/${base}.ext2.zst" --out "public/disks/${base}.ext2"
+          curl -sSfL "${racine}/${base}-vmlinuz" -o "public/disks/${base}-vmlinuz"
+          curl -sSfL "${racine}/${base}-initrd" -o "public/disks/${base}-initrd"
+          curl -sSfL "${racine}/${base}-state.bin.gz" -o "public/disks/${base}-state.bin.gz"
+          gunzip -kf "public/disks/${base}-state.bin.gz"
+          ls -la public/disks
+
+      # La surcouche est matérialisée dans un dossier temporaire : le dépôt ne
+      # porte que les fichiers qui diffèrent de demo/, et cette étape est la
+      # seule à savoir les recomposer.
+      - name: Matérialisation de la surcouche
+        run: |
+          # pipefail : sans lui, le `tee` ci-dessous avalerait un refus de
+          # l'analyse, et l'échec ne tomberait qu'à la construction du disque.
+          set -euo pipefail
+          app="$(bash "tools/demo-app/${VB_PREPARATION}")"
+          echo "VB_APP=$app" >> "$GITHUB_ENV"
+          node tools/detect/cli.mjs "$app" | tee plan.txt
+          {
+            echo "### Plan de construction — ${VB_NOM}"
+            echo ""
+            echo '```'
+            cat plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f plan.txt
+
+      - name: Construction du disque applicatif
+        run: |
+          set -eu
+          docker pull -q "${VB_BASE_IMAGE}:${VB_BASE}"
+          sudo -E env "PATH=$PATH" bash tools/build-v86-image/build-app-disk.sh \
+            "$VB_APP" --name "$VB_NOM" --base "${VB_BASE_IMAGE}:${VB_BASE}"
+          sudo chown -R "$USER" public/disks
+          ls -la "public/disks/${VB_NOM}-app.ext2"
+
+      # Aucun --base-url : la configuration produite reste locale, elle ne
+      # décrit pas une publication. Rien de ce que fabrique ce workflow ne sort
+      # du runner.
+      - name: Capture du delta d'instantané
+        run: |
+          node tools/build-v86-image/make-delta-snapshot.mjs \
+            --name "$VB_NOM" --base "base-${VB_BASE}"
+
+      # LE verdict : une vraie VM v86 sous Node, l'instantané restauré, et des
+      # requêtes HTTP réelles à travers le pont série.
+      - name: Test d'intégration sur VM réelle
+        run: |
+          set -eu
+          # Les suites d'intégration s'IGNORENT quand les artefacts manquent —
+          # comportement voulu en local, piège mortel ici : un test ignoré
+          # ressemble trait pour trait à un test réussi. On exige donc la
+          # présence de la configuration, qui EST leur condition d'exécution.
+          test -f "public/disks/${VB_NOM}-split-config.json"
+          node --test "$VB_INTEGRATION"
+
+      # Sans cela, un échec ne laisse qu'un journal : la configuration et la
+      # fiche du disque disent en trois lignes quelle base, quelle image et
+      # quelle géométrie ont été réellement produites.
+      - name: Artefacts de diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-${{ matrix.variante.nom }}
+          path: |
+            public/disks/*-split-config.json
+            public/disks/*-app.json
+          if-no-files-found: ignore
+          retention-days: 7
