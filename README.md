@@ -1,5 +1,7 @@
 # railsbox
 
+[![Try with railsbox](https://pinfada.github.io/railsbox-demo/badge.svg)](https://pinfada.github.io/railsbox-demo/)
+
 **Une application Rails complète, non modifiée, qui tourne entièrement dans le
 navigateur.** Pas de serveur applicatif, pas de conteneur distant : Puma,
 PostgreSQL, Redis et les gems C natives s'exécutent dans une VM Linux x86
@@ -122,6 +124,23 @@ jobs:
 
 Activez ensuite GitHub Pages sur la branche `gh-pages`. Chaque construction
 publie votre démonstration sur `https://<compte>.github.io/<depot>/`.
+
+### Le badge
+
+Chaque sandbox sert son propre badge, à côté d'elle :
+
+```markdown
+[![Try with railsbox](https://<compte>.github.io/<depot>/badge.svg)](https://<compte>.github.io/<depot>/)
+```
+
+Le workflow l'imprime tout prêt, avec vos URL, dans le résumé de chaque
+construction. Le badge est servi par votre sandbox et non par un générateur
+tiers : rien à maintenir, rien qui puisse tomber sans que votre démonstration
+tombe aussi.
+
+> **Le clic ouvre l'onglet courant.** GitHub retire `target="_blank"` des
+> README, quelle que soit la syntaxe employée — vérifié sur son API de rendu.
+> Aucun badge de l'écosystème n'y échappe. Vos lecteurs gardent le clic-milieu.
 
 Ce que fait le workflow, en ~9 minutes : il réassemble le rootfs mutualisé
 depuis le dépôt d'artefacts, construit le disque de votre application depuis

@@ -253,6 +253,15 @@ jobs:
             echo ""
             echo "[$adresse]($adresse)"
             echo ""
+            echo "### Le badge à coller dans votre README"
+            echo ""
+            echo '```markdown'
+            echo "[![Try with railsbox](${adresse}badge.svg)](${adresse})"
+            echo '```'
+            echo ""
+            echo "Le badge est servi par votre propre sandbox : aucune dépendance"
+            echo "à un service de badges, et rien à maintenir."
+            echo ""
             echo "Activez GitHub Pages sur la branche \`gh-pages\` si ce n'est pas déjà fait."
             echo "Le rootfs mutualisé est servi par \`${{ inputs.assets-url }}\` :"
             echo "le dépôt n'héberge que l'application."

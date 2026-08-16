@@ -7,3 +7,4 @@ tools/build-v86-image/build.log
 tools/demo-app/
 *.md
 package-lock.json
+public/*.svg
