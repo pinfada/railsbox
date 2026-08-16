@@ -43,7 +43,7 @@ export default [
     },
   },
   {
-    files: ["serve.mjs", "tests/**/*.mjs", "tools/**/*.mjs"],
+    files: ["serve.mjs", "playwright*.config.mjs", "tests/**/*.mjs", "tools/**/*.mjs"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",

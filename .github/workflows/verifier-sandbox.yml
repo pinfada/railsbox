@@ -1,0 +1,51 @@
+# Recette de la sandbox PUBLIÉE — la vérification qui regarde le produit fini,
+# à son URL réelle, et non le code du dépôt.
+#
+# Volontairement séparée de la CI : elle dépend du réseau et d'un déploiement,
+# deux choses qu'un push ne doit jamais exiger. Elle tourne à la demande (pour
+# vérifier une publication qu'on vient de faire) et une fois par semaine — une
+# démonstration publiée peut casser sans qu'aucun commit ne l'ait touchée :
+# expiration d'artefact, changement d'en-têtes chez l'hébergeur, branche
+# gh-pages écrasée.
+name: Vérifier la sandbox publiée
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: >-
+          URL de la sandbox à vérifier. Vide = la démonstration de référence
+          (https://pinfada.github.io/railsbox-demo/).
+        type: string
+        required: false
+        default: ""
+  schedule:
+    # Lundi 06:00 UTC : la semaine commence sur un verdict frais.
+    - cron: "0 6 * * 1"
+
+jobs:
+  recette:
+    runs-on: ubuntu-latest
+    # Boot de VM émulée derrière un GitHub Pages : large, sans être infini.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Installer Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Recette en ligne
+        env:
+          RAILSBOX_SANDBOX_URL: ${{ inputs.url }}
+        run: npm run test:live
+      - name: Captures d'écran des échecs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-recette
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

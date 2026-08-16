@@ -192,7 +192,7 @@ performance n°1) :
 wsl -e sh tools/extract-assets.sh   # → public/disks/assets/ + appstatic/
 ```
 
-Trois niveaux de tests, tous requis avant un commit :
+Trois niveaux de tests hors ligne, tous requis avant un commit :
 
 | Commande | Portée | Dépendances |
 |---|---|---|
@@ -203,6 +203,33 @@ Trois niveaux de tests, tous requis avant un commit :
 `npm run check` enchaîne lint (ESLint), format (Prettier), typecheck
 (`tsc --checkJs` sur trois cibles : navigateur, Service Worker, Node) et tests
 unitaires — c'est exactement ce que joue la CI (`.github/workflows/ci.yml`).
+
+### Vérifier une sandbox publiée
+
+Les trois niveaux ci-dessus testent le **code**. Un quatrième teste le
+**produit fini**, à son URL réelle :
+
+```bash
+npm run test:live                                   # la démonstration de référence
+RAILSBOX_SANDBOX_URL=https://compte.github.io/depot/ npm run test:live
+```
+
+Cette recette ouvre la sandbox publiée dans Chromium, attend que la VM boote
+(25–80 s), charge une page du scaffold à travers le proxy, et surveille tout le
+trafic réseau. Elle vérifie que la coquille ne référence **que des chemins
+relatifs** (un Pages de projet sert sous `/<depot>/` : une seule référence
+absolue et plus rien ne charge — le défaut s'est produit quatre fois, toujours
+invisible en local), qu'aucune requête ne finit en 404, qu'**aucune origine
+externe** n'est contactée, et qu'aucune requête d'artefact ne porte d'en-tête
+non safelisté ni ne déclenche de préflight OPTIONS (point de vigilance de
+l'[ADR 0001](docs/decisions/0001-distribution-artefacts.md) : GitHub Pages
+répond 405 aux préflights).
+
+Elle dépend du réseau et d'un déploiement : elle est donc **hors de `npm test`
+et de la CI**. Le workflow
+[`verifier-sandbox.yml`](.github/workflows/verifier-sandbox.yml) la joue à la
+demande — utile juste après une publication — et chaque lundi, parce qu'une
+démonstration en ligne peut casser sans qu'un seul commit l'ait touchée.
 
 La page hôte lit `public/disks/v86-config.json` : sans artefacts construits,
 elle le dit et s'arrête là.
@@ -440,7 +467,8 @@ public/
     └── v86-vm.js                  boot v86, instantané, horloge, pont série
 tests/                             200 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
-└── e2e/                           boot navigateur complet (Playwright)
+├── e2e/                           boot navigateur complet (Playwright)
+└── live/                          recette de la sandbox PUBLIÉE (réseau, hors CI)
 tools/
 ├── detect/                        auto-détection d'une app Rails → manifeste
 ├── build-v86-image/               Dockerfile paramétré, build.sh, make-snapshot,
