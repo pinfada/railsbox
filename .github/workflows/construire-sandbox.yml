@@ -137,6 +137,10 @@ jobs:
           cible="$IN_TARGET_REPO"
           [ -n "$cible" ] || cible="$GITHUB_REPOSITORY"
           echo "SB_PREFIXE=/${cible##*/}" >> "$GITHUB_ENV"
+          # Journal de l'étape en cours : chaque étape faillible y déverse sa
+          # sortie (tee), et l'étape de diagnostic le classe si le job échoue.
+          # Une seule et même fiche, réécrite : seule la dernière étape compte.
+          echo "SB_JOURNAL=${RUNNER_TEMP}/journal-etape.txt" >> "$GITHUB_ENV"
           echo "Sandbox « $nom » sur la base ${IN_BASE}" >> "$GITHUB_STEP_SUMMARY"
 
       # L'analyse est de toute façon rejouée par build-app-disk.sh : elle est
@@ -184,20 +188,30 @@ jobs:
       # capturé dessus embarquerait un cache de blocs divergeant du disque que
       # le visiteur lira (ADR 0002). C'est la condition de la restauration.
       # ------------------------------------------------------------------
+      # Toutes les étapes faillibles suivent le même gabarit : le nom de
+      # l'étape est publié dans l'environnement, et la sortie est dupliquée
+      # dans SB_JOURNAL par tee. C'est ce journal — et non les cinq cents
+      # lignes du runner — que l'étape de diagnostic classe en cas d'échec.
+      # pipefail est indispensable : sans lui, le code de retour serait celui
+      # de tee, toujours nul, et un échec passerait pour un succès.
       - name: Réassemblage du rootfs de base
         working-directory: railsbox
         run: |
           set -eu
-          racine="$SB_RACINE"
-          base="$SB_BASE"
-          mkdir -p public/disks
-          node tools/build-v86-image/assemble-artifact.mjs \
-            "${racine}/${base}.ext2.zst" --out "public/disks/${base}.ext2"
-          curl -sSfL "${racine}/${base}-vmlinuz" -o "public/disks/${base}-vmlinuz"
-          curl -sSfL "${racine}/${base}-initrd" -o "public/disks/${base}-initrd"
-          curl -sSfL "${racine}/${base}-state.bin.gz" -o "public/disks/${base}-state.bin.gz"
-          gunzip -kf "public/disks/${base}-state.bin.gz"
-          ls -la public/disks
+          set -o pipefail
+          echo "SB_ETAPE=Réassemblage du rootfs de base" >> "$GITHUB_ENV"
+          {
+            racine="$SB_RACINE"
+            base="$SB_BASE"
+            mkdir -p public/disks
+            node tools/build-v86-image/assemble-artifact.mjs \
+              "${racine}/${base}.ext2.zst" --out "public/disks/${base}.ext2"
+            curl -sSfL "${racine}/${base}-vmlinuz" -o "public/disks/${base}-vmlinuz"
+            curl -sSfL "${racine}/${base}-initrd" -o "public/disks/${base}-initrd"
+            curl -sSfL "${racine}/${base}-state.bin.gz" -o "public/disks/${base}-state.bin.gz"
+            gunzip -kf "public/disks/${base}-state.bin.gz"
+            ls -la public/disks
+          } 2>&1 | tee "$SB_JOURNAL"
 
       # Le script orchestre lui-même l'étage amd64 de précompilation des assets
       # quand l'application en a besoin (Tailwind, dart-sass, chaîne npm) : le
@@ -207,18 +221,22 @@ jobs:
         working-directory: railsbox
         run: |
           set -eu
-          docker pull -q "${IN_BASE_IMAGE}:${IN_BASE}"
-          # Tableau et non chaîne : une commande de seed contient des espaces,
-          # qu'une expansion non quotée découperait en arguments distincts.
-          extra=()
-          [ -z "$IN_SEED" ] || extra+=(--seed "$IN_SEED")
-          sudo -E env "PATH=$PATH" bash tools/build-v86-image/build-app-disk.sh \
-            "${GITHUB_WORKSPACE}/application/${IN_APP_PATH}" \
-            --name "$SB_NOM" \
-            --base "${IN_BASE_IMAGE}:${IN_BASE}" \
-            --mount-prefix "$SB_PREFIXE" \
-            "${extra[@]}"
-          sudo chown -R "$USER" public/disks
+          set -o pipefail
+          echo "SB_ETAPE=Construction du disque applicatif" >> "$GITHUB_ENV"
+          {
+            docker pull -q "${IN_BASE_IMAGE}:${IN_BASE}"
+            # Tableau et non chaîne : une commande de seed contient des espaces,
+            # qu'une expansion non quotée découperait en arguments distincts.
+            extra=()
+            [ -z "$IN_SEED" ] || extra+=(--seed "$IN_SEED")
+            sudo -E env "PATH=$PATH" bash tools/build-v86-image/build-app-disk.sh \
+              "${GITHUB_WORKSPACE}/application/${IN_APP_PATH}" \
+              --name "$SB_NOM" \
+              --base "${IN_BASE_IMAGE}:${IN_BASE}" \
+              --mount-prefix "$SB_PREFIXE" \
+              "${extra[@]}"
+            sudo chown -R "$USER" public/disks
+          } 2>&1 | tee "$SB_JOURNAL"
 
       # Boot base + application, exécution du démarrage applicatif (les seeds
       # ont déjà tourné à la construction du disque), puis gel de la mémoire.
@@ -227,68 +245,81 @@ jobs:
       - name: Capture du delta d'instantané
         working-directory: railsbox
         run: |
-          node tools/build-v86-image/make-delta-snapshot.mjs \
-            --name "$SB_NOM" \
-            --base "$SB_BASE" \
-            --mount-path "${SB_PREFIXE}/app" \
-            --base-url "$SB_RACINE" \
-            --base-chunk-size "${CHUNK_BYTES}" \
-            --app-chunk-size "${CHUNK_BYTES}" \
-            --state-suffix ".gz"
+          set -eu
+          set -o pipefail
+          echo "SB_ETAPE=Capture du delta d'instantané" >> "$GITHUB_ENV"
+          {
+            node tools/build-v86-image/make-delta-snapshot.mjs \
+              --name "$SB_NOM" \
+              --base "$SB_BASE" \
+              --mount-path "${SB_PREFIXE}/app" \
+              --base-url "$SB_RACINE" \
+              --base-chunk-size "${CHUNK_BYTES}" \
+              --app-chunk-size "${CHUNK_BYTES}" \
+              --state-suffix ".gz"
+          } 2>&1 | tee "$SB_JOURNAL"
 
       - name: Découpage des artefacts de l'application
         working-directory: railsbox
         run: |
           set -eu
-          nom="$SB_NOM"
-          node tools/build-v86-image/split-artifact.mjs \
-            "public/disks/${nom}-app.ext2" --zstd --out publication/disks
-          # L'instantané est téléchargé d'un bloc par le visiteur : gzippé il
-          # pèse environ le tiers, et la coquille le décompresse au vol.
-          gzip -kf "public/disks/${nom}-split-state.bin"
-          cp "public/disks/${nom}-split-state.bin.gz" publication/disks/
-          cp "public/disks/${nom}-split-config.json" publication/disks/v86-config.json
+          set -o pipefail
+          echo "SB_ETAPE=Découpage des artefacts de l'application" >> "$GITHUB_ENV"
+          {
+            nom="$SB_NOM"
+            node tools/build-v86-image/split-artifact.mjs \
+              "public/disks/${nom}-app.ext2" --zstd --out publication/disks
+            # L'instantané est téléchargé d'un bloc par le visiteur : gzippé il
+            # pèse environ le tiers, et la coquille le décompresse au vol.
+            gzip -kf "public/disks/${nom}-split-state.bin"
+            cp "public/disks/${nom}-split-state.bin.gz" publication/disks/
+            cp "public/disks/${nom}-split-config.json" publication/disks/v86-config.json
 
-          # Assets fingerprintés extraits du disque applicatif et servis
-          # STATIQUEMENT par le Service Worker : c'est le levier de performance
-          # n°1, ~90 % du trafic d'un chargement de page. Sans eux, chaque
-          # feuille de style traverserait le port série — quand elle arrive.
-          # La racine est vide : dans le disque découplé l'arbre applicatif est
-          # à la racine du système de fichiers, pas sous /app.
-          sudo sh tools/extract-assets.sh \
-            "public/disks/${nom}-app.ext2" publication/disks/assets ""
-          sudo chown -R "$USER" publication/disks
-          echo "assets extraits : $(find publication/disks/assets -type f | wc -l) fichiers"
+            # Assets fingerprintés extraits du disque applicatif et servis
+            # STATIQUEMENT par le Service Worker : c'est le levier de performance
+            # n°1, ~90 % du trafic d'un chargement de page. Sans eux, chaque
+            # feuille de style traverserait le port série — quand elle arrive.
+            # La racine est vide : dans le disque découplé l'arbre applicatif est
+            # à la racine du système de fichiers, pas sous /app.
+            sudo sh tools/extract-assets.sh \
+              "public/disks/${nom}-app.ext2" publication/disks/assets ""
+            sudo chown -R "$USER" publication/disks
+            echo "assets extraits : $(find publication/disks/assets -type f | wc -l) fichiers"
+          } 2>&1 | tee "$SB_JOURNAL"
 
       - name: Assemblage de la coquille
         working-directory: railsbox
         run: |
           set -eu
-          # Tout public/ SAUF disks/, qui contient les artefacts de travail
-          # (l'ext2 de base réassemblé pèse 1,4 Go et n'a rien à faire ici).
-          rsync -a --exclude 'disks/' public/ publication/
-          touch publication/.nojekyll
-          # La coquille du dépôt déclare `connect-src 'self'` : chez un
-          # mainteneur tiers, la base est cross-origin et la CSP bloquerait
-          # les XHR de v86 avant même le CORS. On autorise l'origine de la
-          # base — et rien d'autre — quand elle diffère du site cible.
-          cible="$IN_TARGET_REPO"
-          [ -n "$cible" ] || cible="$GITHUB_REPOSITORY"
-          proprietaire="$(echo "${cible%%/*}" | tr '[:upper:]' '[:lower:]')"
-          node tools/build-v86-image/autoriser-origine-base.mjs \
-            publication/index.html \
-            --base-url "$SB_RACINE" \
-            --site-origin "https://${proprietaire}.github.io"
-          du -sh publication
-          # Garde-fou de la limite Pages : mieux vaut refuser ici que publier
-          # une démonstration qui échouerait au chargement chez le visiteur.
-          trop_gros=$(find publication -type f -size +"$((MAX_FILE_BYTES / 1024))"k -printf '%f (%s octets)\n' || true)
-          if [ -n "$trop_gros" ]; then
-            echo "::error::Fichiers au-delà de la limite de GitHub Pages :"
-            echo "$trop_gros"
-            exit 1
-          fi
-          find publication -type f | wc -l
+          set -o pipefail
+          echo "SB_ETAPE=Assemblage de la coquille" >> "$GITHUB_ENV"
+          {
+            # Tout public/ SAUF disks/, qui contient les artefacts de travail
+            # (l'ext2 de base réassemblé pèse 1,4 Go et n'a rien à faire ici).
+            rsync -a --exclude 'disks/' public/ publication/
+            touch publication/.nojekyll
+            # La coquille du dépôt déclare `connect-src 'self'` : chez un
+            # mainteneur tiers, la base est cross-origin et la CSP bloquerait
+            # les XHR de v86 avant même le CORS. On autorise l'origine de la
+            # base — et rien d'autre — quand elle diffère du site cible.
+            cible="$IN_TARGET_REPO"
+            [ -n "$cible" ] || cible="$GITHUB_REPOSITORY"
+            proprietaire="$(echo "${cible%%/*}" | tr '[:upper:]' '[:lower:]')"
+            node tools/build-v86-image/autoriser-origine-base.mjs \
+              publication/index.html \
+              --base-url "$SB_RACINE" \
+              --site-origin "https://${proprietaire}.github.io"
+            du -sh publication
+            # Garde-fou de la limite Pages : mieux vaut refuser ici que publier
+            # une démonstration qui échouerait au chargement chez le visiteur.
+            trop_gros=$(find publication -type f -size +"$((MAX_FILE_BYTES / 1024))"k -printf '%f (%s octets)\n' || true)
+            if [ -n "$trop_gros" ]; then
+              echo "::error::Fichiers au-delà de la limite de GitHub Pages :"
+              echo "$trop_gros"
+              exit 1
+            fi
+            find publication -type f | wc -l
+          } 2>&1 | tee "$SB_JOURNAL"
 
       - name: Publication sur gh-pages
         if: ${{ inputs.publish }}
@@ -298,35 +329,43 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          cible="$IN_TARGET_REPO"
-          if [ -n "$cible" ]; then
-            if [ -z "${PUBLISH_KEY:-}" ]; then
-              echo "::error::target-repo exige le secret publish-key (clé de déploiement en écriture)."
-              exit 1
+          set -o pipefail
+          echo "SB_ETAPE=Publication sur gh-pages" >> "$GITHUB_ENV"
+          # Le journal de cette étape peut porter le jeton dans une URL de
+          # remote en erreur : contrairement à la sortie du runner, il n'est
+          # pas passé au masquage des secrets. Le classifieur caviarde donc
+          # l'extrait avant de l'écrire dans le résumé.
+          {
+            cible="$IN_TARGET_REPO"
+            if [ -n "$cible" ]; then
+              if [ -z "${PUBLISH_KEY:-}" ]; then
+                echo "::error::target-repo exige le secret publish-key (clé de déploiement en écriture)."
+                exit 1
+              fi
+              mkdir -p ~/.ssh && chmod 700 ~/.ssh
+              printf '%s\n' "$PUBLISH_KEY" > ~/.ssh/id_ed25519
+              chmod 600 ~/.ssh/id_ed25519
+              ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+              distant="git@github.com:${cible}.git"
+            else
+              cible="$GITHUB_REPOSITORY"
+              # Le jeton reste une variable d'environnement : jamais interpolé
+              # dans le texte du script, ni figé dans une URL de remote que git
+              # pourrait réémettre en cas d'erreur.
+              distant="https://x-access-token:${GH_TOKEN}@github.com/${cible}.git"
             fi
-            mkdir -p ~/.ssh && chmod 700 ~/.ssh
-            printf '%s\n' "$PUBLISH_KEY" > ~/.ssh/id_ed25519
-            chmod 600 ~/.ssh/id_ed25519
-            ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-            distant="git@github.com:${cible}.git"
-          else
-            cible="$GITHUB_REPOSITORY"
-            # Le jeton reste une variable d'environnement : jamais interpolé
-            # dans le texte du script, ni figé dans une URL de remote que git
-            # pourrait réémettre en cas d'erreur.
-            distant="https://x-access-token:${GH_TOKEN}@github.com/${cible}.git"
-          fi
 
-          git init -q -b gh-pages
-          git config user.email "actions@github.com"
-          git config user.name "railsbox"
-          git add -A
-          git commit -q -m "sandbox railsbox — ${SB_NOM} (${GITHUB_SHA})"
-          # Branche remise à plat : la sandbox est entièrement régénérée à
-          # chaque construction, conserver l'historique n'empilerait que des
-          # binaires morts.
-          git push -f "$distant" gh-pages
-          echo "CIBLE=$cible" >> "$GITHUB_ENV"
+            git init -q -b gh-pages
+            git config user.email "actions@github.com"
+            git config user.name "railsbox"
+            git add -A
+            git commit -q -m "sandbox railsbox — ${SB_NOM} (${GITHUB_SHA})"
+            # Branche remise à plat : la sandbox est entièrement régénérée à
+            # chaque construction, conserver l'historique n'empilerait que des
+            # binaires morts.
+            git push -f "$distant" gh-pages
+            echo "CIBLE=$cible" >> "$GITHUB_ENV"
+          } 2>&1 | tee "$SB_JOURNAL"
 
       - name: Récapitulatif
         if: ${{ inputs.publish }}
@@ -350,3 +389,27 @@ jobs:
             echo "Le rootfs mutualisé est servi par \`${IN_ASSETS_URL}\` :"
             echo "le dépôt n'héberge que l'application."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Symétrique des refus amont : un échec en AVAL laissait le mainteneur
+      # devant cinq cents lignes de journal Docker. Le classifieur en tire une
+      # catégorie, l'extrait qui la prouve et un remède, et les publie dans le
+      # résumé — le journal complet reste dans les traces du runner pour qui
+      # veut creuser. L'extrait est caviardé : le journal capturé par tee n'a
+      # pas traversé le masquage des secrets du runner.
+      - name: Pourquoi la construction a échoué
+        if: failure()
+        working-directory: railsbox
+        run: |
+          set -eu
+          if [ ! -s "${SB_JOURNAL:-}" ]; then
+            {
+              echo "### Pourquoi la construction a échoué"
+              echo ""
+              echo "Aucun journal d'étape n'a été capturé : l'échec précède la construction"
+              echo "proprement dite (voir le rapport d'analyse ci-dessus)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          node tools/build-v86-image/classifier-echec.mjs \
+            --etape "${SB_ETAPE:-inconnue}" \
+            --journal "$SB_JOURNAL" >> "$GITHUB_STEP_SUMMARY"
