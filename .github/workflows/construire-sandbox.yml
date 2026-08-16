@@ -29,12 +29,12 @@ on:
         default: ""
       base:
         description: >-
-          Version de la base railsbox à utiliser. « 3.3 » suffit à une
-          application sqlite3 ; PostgreSQL exige « 3.3-r2 » ou plus récent
-          (la révision où la base a gagné le serveur PostgreSQL). La
-          construction refuse explicitement une base trop ancienne.
+          Version de la base railsbox à utiliser. Le défaut convient à
+          sqlite3 comme à PostgreSQL ; « 3.3 » (sans PostgreSQL) reste
+          publiée pour les sandboxes qui l'épinglent, et la construction
+          refuse explicitement une base trop ancienne pour l'application.
         type: string
-        default: "3.3"
+        default: "3.3-r2"
       assets-url:
         description: "Racine du dépôt d'artefacts railsbox"
         type: string
