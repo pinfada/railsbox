@@ -206,8 +206,12 @@ jobs:
 
       - name: Publication sur GHCR
         if: ${{ inputs.push }}
+        env:
+          # Jamais interpolé dans le texte du script : le shell le lit comme
+          # une donnée, et il ne peut pas fuiter dans une ligne de commande.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "$IMAGE:${{ inputs.tag }}"
           echo "DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:${{ inputs.tag }}" 2>/dev/null || echo -)" >> "$GITHUB_ENV"
           digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:${{ inputs.tag }}" 2>/dev/null || echo "-")
@@ -224,11 +228,9 @@ jobs:
       # ------------------------------------------------------------------
       # Face navigateur : dépôt PUBLIC dédié aux artefacts.
       #
-      # Pourquoi un dépôt séparé : Pages n'est gratuit que sur un dépôt public,
-      # et railsbox reste privé le temps d'une revue d'historique sereine. Le
-      # découplage a sa valeur propre — le dépôt d'artefacts est un pur
-      # hébergeur statique, et les centaines de mégaoctets de binaires ne
-      # polluent pas l'historique du code.
+      # Pourquoi un dépôt séparé : le dépôt d'artefacts est un pur hébergeur
+      # statique, et les centaines de mégaoctets de binaires ne polluent pas
+      # l'historique du code.
       #
       # Publication ADDITIVE : on récupère l'état publié, on y ajoute (ou
       # remplace) le répertoire de CETTE version, puis on écrase l'historique
