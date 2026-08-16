@@ -14,8 +14,8 @@ on:
         default: true
       target-repo:
         description: >-
-          Dépôt PUBLIC où publier. railsbox étant privé, Pages n'y servirait
-          rien : la démonstration vit donc ailleurs.
+          Dépôt où publier. La démonstration vit dans son propre dépôt :
+          une origine par sandbox (ADR 0004), comme chez tout mainteneur.
         type: string
         default: "pinfada/railsbox-demo"
       railsbox-ref:

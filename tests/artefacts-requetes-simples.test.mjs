@@ -118,16 +118,34 @@ test("le code du navigateur n'écrit jamais d'en-tête de requête non safelist�
   }
 });
 
-test("le Service Worker laisse les artefacts au navigateur", () => {
-  // Relayer les artefacts par le SW les ferait repasser par un `fetch(request)`
-  // — donc par un objet Request dont les en-têtes ne sont plus les nôtres — en
-  // plus d'y faire transiter des centaines de Mo. Le préfixe des artefacts doit
-  // sortir du gestionnaire AVANT toute interception.
+test("le Service Worker réémet les requêtes d'artefacts telles quelles", () => {
+  // Le SW intercepte désormais les artefacts immuables pour les mettre en
+  // Cache Storage (cache-first, GitHub Pages plafonnant à max-age=600). C'est
+  // compatible avec l'ADR 0001 à trois conditions, verrouillées ici :
+  //   1. la requête d'origine est réémise TELLE QUELLE — `fetch(request)`,
+  //      jamais un Request reconstruit ni un init qui poserait des en-têtes
+  //      (`cache: "no-store"` suffirait à injecter Pragma/Cache-Control) ;
+  //   2. aucun `new Request(` dans le SW ;
+  //   3. les requêtes portant Range restent hors du chemin de cache : seuls
+  //      les GET nus du chargeur « fichiers-parties » sont resservis.
   const source = lire("public/sw-proxy.js");
+  for (const appel of appelsFetch(source)) {
+    assert.doesNotMatch(
+      appel,
+      /[{,]\s*headers|cache\s*:/,
+      `sw-proxy.js : ce fetch modifie la requête, il risque un préflight — ${appel}`,
+    );
+  }
+  assert.doesNotMatch(source, /new Request\(/, "sw-proxy.js ne doit jamais reconstruire un Request");
   assert.match(
     source,
-    /startsWith\(RAW_ASSET_PREFIX\)\)\s*return;/,
-    "sw-proxy.js doit rendre la main sur le préfixe des artefacts",
+    /await fetch\(request\)/,
+    "le chemin des artefacts doit réémettre la requête d'origine telle quelle",
+  );
+  assert.match(
+    source,
+    /rangeHeader/,
+    "le chemin des artefacts doit écarter les requêtes Range du cache",
   );
 });
 
