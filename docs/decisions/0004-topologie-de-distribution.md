@@ -22,6 +22,23 @@ Un premier essai a échoué sur `net::ERR_FAILED` : c'était la vérification
 « Local Network Access » de Chromium sur un trajet localhost → localhost, un
 artefact de banc de test sans rapport avec CORS.
 
+### Validation contre un vrai GitHub Pages
+
+Les 364 morceaux de la base, le noyau et l'initrd ont été publiés sur le dépôt
+jetable `pinfada/railsbox-spike-pages` (branche `gh-pages` orpheline), puis une
+coquille cross-origin isolée servie depuis une autre origine a booté dessus.
+
+| Observation | Résultat |
+|---|---|
+| Déploiement de 364 fichiers | `built`, sans erreur |
+| Type MIME d'un `.zst` | `application/octet-stream` — aucune altération |
+| En-têtes | `Access-Control-Allow-Origin: *`, `Accept-Ranges: bytes` |
+| Boot à froid, coquille en `crossOriginIsolated: true` | **succès en 80 s**, init atteint, Redis démarré, pont série actif |
+| Trafic | 54 requêtes, **toutes en 200**, 91 Mo (dont 31 Mo de noyau + initrd) |
+
+La topologie est donc vérifiée de bout en bout sur l'hébergement réel, pas
+seulement sur un simulateur.
+
 ## Le facteur déterminant
 
 `SECURITY.md` documente que l'iframe `/app` est **same-origin** : une
@@ -83,6 +100,10 @@ domaine nécessaire**. Toute la chaîne tient sur GitHub.
   technique — le jour où elle gêne, elle peut tomber sans casser v86.
 - La branche `gh-pages` doit être **orpheline et poussée en force** : sans
   cela, chaque reconstruction y empile une copie complète des artefacts.
-- Non mesuré à ce jour, à couvrir par le spike du chantier C2 : le
-  comportement d'un vrai gh-pages en HTTPS (type MIME des `.zst`, déploiement
-  de plusieurs centaines de fichiers), et les navigateurs autres que Chromium.
+- **GitHub Pages plafonne le cache à `max-age=600`.** Nos artefacts sont
+  pourtant immuables (une base publiée n'est jamais réécrite, ADR 0004). Un
+  visiteur qui revient le lendemain retélécharge donc tout, alors que rien n'a
+  changé. C'est le principal gisement d'optimisation du chantier C : mettre les
+  morceaux en cache côté client (Cache Storage ou IndexedDB, comme l'est déjà
+  l'instantané) plutôt que de compter sur le cache HTTP.
+- Reste non mesuré : les navigateurs autres que Chromium.
