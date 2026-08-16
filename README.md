@@ -9,7 +9,7 @@ Validé sur une vraie application de production — [jiyufit](https://github.com
 (Rails 7.2.3, Ruby 3.3.10, PostgreSQL 15, Redis, Sidekiq, Devise, Stripe,
 70 initializers) — qui rend ses pages, suit ses liens et traite ses POST — et
 sur une application `rails new` de démonstration (sqlite3 + importmap),
-construite et bootée automatiquement par le buildpack générique.
+construite, publiée et bootée automatiquement — **[essayez-la](https://pinfada.github.io/railsbox-demo/)**.
 
 ## La philosophie
 
@@ -54,33 +54,105 @@ Le modèle est **gratuit et sans dépendance tierce payante** : le build tourne
 dans les GitHub Actions du mainteneur, les artefacts vivent sur ses pages
 GitHub, la coquille est une page statique. Les décisions d'architecture qui
 rendent cela possible — et leurs limites mesurées — sont consignées dans
-[`docs/decisions/`](docs/decisions/). Ce dépôt en construit les fondations ;
-le badge lui-même n'est pas encore livré.
+[`docs/decisions/`](docs/decisions/).
+
+**Où en est-on** : la chaîne complète fonctionne et se voit —
+[une démonstration est en ligne](https://pinfada.github.io/railsbox-demo/),
+publiée par le workflow réutilisable, servie gratuitement. Ce qui manque au
+badge n'est plus technique : ouvrir ce dépôt, sans quoi aucun mainteneur tiers
+ne peut référencer le workflow.
+
+### Les dépôts
+
+| Dépôt | Rôle |
+|---|---|
+| **railsbox** (celui-ci) | le buildpack, la coquille, les workflows |
+| [**railsbox-assets**](https://github.com/pinfada/railsbox-assets) | hébergement statique des rootfs de base, versionnés et immuables |
+| [**railsbox-demo**](https://github.com/pinfada/railsbox-demo) | l'application de démonstration et sa sandbox publiée |
+
+Une **origine par démonstration** : chaque sandbox vit sur le domaine de son
+propre dépôt, si bien que l'isolation entre démonstrations est celle du
+navigateur et non une promesse de notre part (voir
+[ADR 0004](docs/decisions/0004-topologie-de-distribution.md)).
 
 ## 1. Démo
 
-> **État : pas encore déployée publiquement.** Les artefacts pèsent 4,2 Go
-> (image disque) plus 173 Mo (instantané mémoire compressé), et le dépôt est
-> privé. Il n'y a donc pas de lien à cliquer aujourd'hui — le dire clairement
-> vaut mieux qu'un lien mort.
+**→ [pinfada.github.io/railsbox-demo](https://pinfada.github.io/railsbox-demo/)**
 
-Ce qu'un hébergement statique doit fournir pour que le « 1 clic » fonctionne :
+Une application Rails `rails new` — scaffold Posts, SQLite, importmap, Turbo,
+Stimulus — peuplée de données de démonstration, servie par un GitHub Pages
+gratuit. Aucun serveur applicatif n'existe : Puma tourne dans votre onglet.
 
-| Exigence | Pourquoi |
+| Ce que fait le visiteur | Mesuré |
 |---|---|
-| En-têtes `Cross-Origin-Opener-Policy: same-origin` et `Cross-Origin-Embedder-Policy: require-corp` | `SharedArrayBuffer`, sans quoi aucun moteur ne démarre |
-| Requêtes `Range` sur le `.ext2` | le disque de 4 Go est lu par morceaux, jamais téléchargé en entier |
-| `Content-Encoding: gzip` sur l'instantané | 653 Mo bruts → 173 Mo transférés |
-| Chrome ou Edge | validé ; les webviews qui bloquent les Service Workers ne peuvent pas fonctionner |
+| Application affichée | **25 s** (instantané restauré) |
+| Téléchargé pour cela | ~32 Mo depuis le dépôt d'artefacts + l'instantané gzippé |
+| Navigation, formulaires, POST | normaux, servis par la VM |
 
-À défaut d'hébergeur posant ces en-têtes, le Service Worker les réinjecte
-lui-même — mais le tout premier chargement doit déjà être isolé.
+Le rootfs mutualisé de 1,45 Go n'est jamais téléchargé en entier : v86 en lit
+les morceaux qu'il touche, une trentaine sur 363.
 
-**Ce que verrait le visiteur** : l'application disponible en **26 secondes**
-(instantané téléchargé puis restauré), puis une navigation normale — page
-d'accueil stylée en 1,1 s, formulaires, redirections.
+**Ce que l'hébergeur doit fournir** — et GitHub Pages le fournit : CORS `*`,
+requêtes `Range`, et rien d'autre. Les en-têtes d'isolation `COOP`/`COEP`,
+qu'un hébergement statique ne pose pas, sont réinjectés par le Service Worker.
+
+Navigateurs : validé sur Chromium. Les webviews qui bloquent les Service
+Workers ne peuvent pas fonctionner, par construction.
 
 ## 2. Guide d'utilisation
+
+### Publier la sandbox de votre application
+
+C'est la voie principale, et elle tient en un fichier. Dans votre dépôt Rails,
+`.github/workflows/sandbox.yml` :
+
+```yaml
+name: Sandbox railsbox
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sandbox:
+    uses: pinfada/railsbox/.github/workflows/construire-sandbox.yml@main
+    permissions:
+      contents: write
+```
+
+Activez ensuite GitHub Pages sur la branche `gh-pages`. Chaque construction
+publie votre démonstration sur `https://<compte>.github.io/<depot>/`.
+
+Ce que fait le workflow, en ~9 minutes : il réassemble le rootfs mutualisé
+depuis le dépôt d'artefacts, construit le disque de votre application depuis
+l'image de base, capture un instantané mémoire post-démarrage, découpe le tout
+en morceaux compressés et publie la coquille avec. Votre dépôt héberge environ
+130 Mo ; le rootfs de 1,45 Go reste chez railsbox.
+
+Entrées utiles : `app-path` si l'application n'est pas à la racine, `seed` pour
+forcer une commande d'amorçage, `base` pour épingler une version de base,
+`target-repo` pour publier ailleurs que dans le dépôt applicatif.
+
+> **Prérequis actuel** : `railsbox` est un dépôt privé, ce qui empêche un dépôt
+> tiers de référencer ce workflow. Cette voie ne sera ouverte qu'avec le dépôt.
+
+### Déclarer ce que la détection ne devine pas
+
+Un fichier **`railsbox.yml`** à la racine complète ou corrige l'auto-détection :
+
+```yaml
+ruby: 3.3.12
+database: sqlite3
+seed:
+  command: "bin/rails db:seed"
+  auto_login: "demo@example.com"   # le visiteur arrive connecté
+env:
+  APP_HOST: "http://localhost:8080"
+```
+
+`auto_login` accepte un identifiant — résolu strictement, sans repli
+silencieux — ou `true` pour le premier utilisateur. Pour une authentification
+exotique, `auto_login_code` reçoit un fragment Ruby avec `env` dans sa portée.
 
 ### Tester en local
 
@@ -121,7 +193,11 @@ elle le dit et s'arrête là.
 | `http://localhost:8080` | votre application Rails, restaurée depuis l'instantané |
 | `http://localhost:8080/?fresh=1` | idem, en ignorant l'instantané (boot à froid) |
 
-### Packager votre application Rails
+### Construire à la main (voie monolithique héritée)
+
+Antérieure au découpage base/application, cette voie produit une image unique
+et reste la seule à couvrir PostgreSQL, Tailwind et les chaînes npm — son
+Dockerfile précompile les assets sur un étage amd64.
 
 Le build est **piloté par auto-détection** : `build.sh` inspecte l'application
 (version de Ruby via `.ruby-version`/Gemfile, adaptateur de base via
@@ -310,22 +386,22 @@ obligatoires) ; `tmp/`, `log/` et `storage/` sont souvent exclus par le
 
 ### Limites connues
 
-- **ActionCable / WebSockets** : hors périmètre, incompatibles avec un pont
-  requête/réponse. Piste : long-polling ou flux dédié multiplexé.
-- **Débit** : le pont est un tuyau étroit et partagé, suffisant pour du
-  Turbo/HTML. Les assets précompilés ne l'empruntent plus : extraits de
-  l'image (`tools/extract-assets.sh`), ils sont servis statiquement par le
-  Service Worker, avec repli VM transparent.
-- **Réseau sortant** (APIs tierces, `bundle install` en ligne) : nécessiterait
-  l'option Tailscale, non câblée ici. C'est aussi une propriété du modèle de
-  démonstration — voir [`SECURITY.md`](SECURITY.md).
-- **Généricité** : le runtime est agnostique et la recette de build l'est
-  désormais aussi (auto-détection + `railsbox.yml`), validée sur un
-  `rails new` sqlite3 en plus de jiyufit. Le panel de validation reste à
-  élargir (PostgreSQL générique, apps à npm) avant d'annoncer « toute app ».
-- **Sécurité** : tout s'exécute côté client. Le modèle de menace — ce qui est
-  défendu, ce qui ne l'est pas, et pourquoi il ne faut jamais embarquer de
-  vrais secrets — est décrit dans [`SECURITY.md`](SECURITY.md).
+Ce qui est **validé de bout en bout** : `rails new` avec SQLite, Propshaft et
+importmap, publié et bootant en ligne. Le reste, honnêtement :
+
+| Limite | État |
+|---|---|
+| **PostgreSQL** | refusé par la construction. Le crochet existe dans `guest-init.sh` (le cluster ne démarrerait qu'après montage du disque applicatif) mais n'est pas branché. SQLite est la voie nominale. |
+| **Tailwind, dart-sass** | refusés par la construction : `tailwindcss-ruby` et `dartsass-ruby` ne publient aucun binaire i386. La sortie est identifiée — précompiler sur l'étage amd64, comme le fait déjà le build monolithique — mais pas encore portée sur la voie découplée. |
+| **Chaînes npm** (esbuild, cssbundling) | même cause, même sortie. |
+| **ActionCable / WebSockets** | hors périmètre : incompatibles avec un pont requête/réponse. Piste : long-polling ou flux dédié. |
+| **Réseau sortant** | inexistant. C'est aussi une propriété du modèle de démonstration — voir [`SECURITY.md`](SECURITY.md). |
+| **Débit du pont** | tuyau étroit et partagé, suffisant pour du Turbo/HTML. Les assets précompilés ne l'empruntent pas : extraits de l'image, ils sont servis statiquement par le Service Worker. |
+| **Persistance** | aucune, par conception. Chaque visiteur écrit dans sa copie, qui disparaît avec l'onglet. |
+
+**Sécurité** : tout s'exécute côté client. Ce qui est défendu, ce qui ne l'est
+pas, et pourquoi il ne faut jamais embarquer de vrais secrets :
+[`SECURITY.md`](SECURITY.md).
 
 ## Arborescence
 
@@ -343,7 +419,7 @@ public/
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
     └── v86-vm.js                  boot v86, instantané, horloge, pont série
-tests/                             150 tests unitaires + intégration (VM réelle) + E2E
+tests/                             200 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
 └── e2e/                           boot navigateur complet (Playwright)
 tools/
