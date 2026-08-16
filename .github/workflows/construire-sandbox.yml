@@ -246,6 +246,17 @@ jobs:
           # (l'ext2 de base réassemblé pèse 1,4 Go et n'a rien à faire ici).
           rsync -a --exclude 'disks/' public/ publication/
           touch publication/.nojekyll
+          # La coquille du dépôt déclare `connect-src 'self'` : chez un
+          # mainteneur tiers, la base est cross-origin et la CSP bloquerait
+          # les XHR de v86 avant même le CORS. On autorise l'origine de la
+          # base — et rien d'autre — quand elle diffère du site cible.
+          cible="${{ inputs.target-repo }}"
+          [ -n "$cible" ] || cible="${{ github.repository }}"
+          proprietaire="$(echo "${cible%%/*}" | tr '[:upper:]' '[:lower:]')"
+          node tools/build-v86-image/autoriser-origine-base.mjs \
+            publication/index.html \
+            --base-url "${{ steps.parametres.outputs.racine }}" \
+            --site-origin "https://${proprietaire}.github.io"
           du -sh publication
           # Garde-fou de la limite Pages : mieux vaut refuser ici que publier
           # une démonstration qui échouerait au chargement chez le visiteur.
