@@ -6,6 +6,11 @@ visiteur. Ce modèle inverse les hypothèses habituelles d'une application web �
 ce document explicite ce qui est protégé, ce qui ne l'est pas, et ce qu'il ne
 faut jamais faire.
 
+Le cadrage vaut pour tout ce qui suit : railsbox sert à **montrer et faire
+essayer**, jamais à opérer un service — ni paiements live, ni base partagée
+entre clients, ni données qui doivent survivre à l'onglet (voir « Ce que
+railsbox n'est PAS » dans le [README](README.md)).
+
 ## Principe fondamental : il n'y a pas de serveur à protéger
 
 Tout ce qui est embarqué dans les artefacts (image disque, instantané mémoire)
