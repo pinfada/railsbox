@@ -152,7 +152,7 @@ COPY --from=assets /app/app/assets/builds ./app/assets/builds
 RUN bundle lock --add-platform x86-linux ruby && bundle check
 
 ########################################################################
-# Fichiers du pont série et de l'init (voir rails-in-browser/public/vm)
+# Fichiers du pont série et de l'init (voir railsbox/public/vm)
 ########################################################################
 
 # Démon du pont : lit des trames "@RIB1 REQ <id> <b64>" sur ttyS0, exécute la

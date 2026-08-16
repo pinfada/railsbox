@@ -1,5 +1,5 @@
 {
-  "name": "rails-in-browser",
+  "name": "railsbox",
   "version": "0.1.0",
   "description": "Rails complet dans le navigateur : VM Linux x86 (CheerpX) + pont HTTP Service Worker + persistance IndexedDB",
   "type": "module",

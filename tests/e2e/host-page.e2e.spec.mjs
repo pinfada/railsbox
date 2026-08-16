@@ -33,7 +33,7 @@ test.describe("Page hôte", () => {
   });
 
   test("expose son titre et les quatre badges de démarrage", async ({ page }) => {
-    await expect(page, "le titre doit identifier le projet").toHaveTitle(/Rails-in-Browser/);
+    await expect(page, "le titre doit identifier le projet").toHaveTitle(/railsbox/);
     for (const id of BADGE_IDS) {
       await expect(page.locator(`#${id}`), `le badge #${id} doit être présent`).toHaveCount(1);
     }

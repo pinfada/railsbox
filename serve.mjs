@@ -145,5 +145,5 @@ async function handleRequest(request, response) {
 }
 
 createServer(handleRequest).listen(PORT, () => {
-  console.log(`Rails-in-Browser servi sur http://localhost:${PORT} (COOP/COEP + Range actifs)`);
+  console.log(`railsbox servi sur http://localhost:${PORT} (COOP/COEP + Range actifs)`);
 });

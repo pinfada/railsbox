@@ -26,7 +26,7 @@ cat <<EOF
 ✓ ${OUTPUT} prêt.
 
 Déploiement :
-  1. Copiez ${OUTPUT} dans public/disks/ du projet rails-in-browser.
+  1. Copiez ${OUTPUT} dans public/disks/ du projet railsbox.
   2. Dans public/main.js, passez l'URL à bootVm :
        bootVm({ diskImageUrl: "/disks/${OUTPUT}", onConsole: logLine })
      (une URL non-wss:// est montée via HttpBytesDevice, avec requêtes Range).

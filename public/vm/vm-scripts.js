@@ -143,7 +143,7 @@ from http.server import BaseHTTPRequestHandler
 SOCKET_PATH = os.environ.get("APP_SOCKET", "/tmp/app.sock")
 
 PAGE = """<!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><title>Rails-in-Browser : pont OK</title>
+<html lang="fr"><head><meta charset="utf-8"><title>railsbox : pont OK</title>
 <style>
   body {{ font-family: ui-monospace, monospace; background: #0d1117; color: #d8e1ea;
          display: grid; place-items: center; min-height: 90vh; }}
@@ -248,7 +248,7 @@ end
 def html_page(req)
   <<~HTML
     <!doctype html>
-    <html lang="fr"><head><meta charset="utf-8"><title>Rails-in-Browser : pont OK</title>
+    <html lang="fr"><head><meta charset="utf-8"><title>railsbox : pont OK</title>
     <style>
       body { font-family: ui-monospace, monospace; background: #0d1117; color: #d8e1ea;
              display: grid; place-items: center; min-height: 90vh; }
