@@ -19,6 +19,18 @@ ARG RUBY_VERSION=3.3.12
 
 FROM i386/debian:bookworm-slim AS base
 
+# Personnalité 32 bits pour TOUTE la construction. Docker ne la pose pas sur
+# une image linux/386 : `uname -m` y renvoie « x86_64 » (le noyau de l'hôte),
+# alors que le userland est bien en 32 bits. Les autoconf s'y trompent — sans
+# ce correctif, Ruby se compile en binaires ELF32/i386 corrects mais s'étiquette
+# `x86_64-linux-x32`, un triplet qui n'existe pas. RubyGems raisonne alors sur
+# une plateforme fantôme, et seule la présence de BUNDLE_FORCE_RUBY_PLATFORM
+# empêche la sélection d'une gem précompilée amd64 injouable dans la VM.
+# `linux32` appelle personality(PER_LINUX32) : `uname -m` renvoie i686 et la
+# chaîne de construction retrouve son triplet officiel i686-pc-linux-gnu.
+# (util-linux est essentiel dans Debian : linux32 est présent dès l'image nue.)
+SHELL ["linux32", "/bin/sh", "-c"]
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Socle commun : noyau bootable par v86 (bzImage direct, sans bootloader),

@@ -1,0 +1,109 @@
+# Construit et publie l'image de BASE railsbox sur GHCR.
+#
+# La base est un artefact central, immuable et versionné (ADR 0004) : elle est
+# partagée par toutes les sandboxes, et le runner de chaque mainteneur la tire
+# de GHCR pour construire son disque applicatif. On ne réécrit donc jamais un
+# tag déjà consommé — une correction produit une nouvelle version.
+#
+# Mesuré le 2026-08-16 : ~4 min sur un runner ubuntu-latest. L'i386 n'est pas
+# émulé (le CPU x86-64 exécute nativement un userland 32 bits), la construction
+# tourne donc à pleine vitesse.
+name: Publier la base
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version publiée sur GHCR (jamais réécrire un tag déjà consommé)"
+        required: true
+        default: "3.3"
+      ruby:
+        description: "Version exacte de Ruby compilée dans la base"
+        required: true
+        default: "3.3.12"
+      push:
+        description: "Publier sur GHCR (sinon construction et vérifications seules)"
+        type: boolean
+        default: true
+
+jobs:
+  publier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/railsbox-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construction de la base i386
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          docker build --platform linux/386 --progress=plain \
+            --build-arg "RUBY_VERSION=${{ inputs.ruby }}" \
+            --build-arg "BASE_NAME=base-${{ inputs.tag }}" \
+            --build-arg "WITH_REDIS=1" \
+            -f tools/build-v86-image/base/Dockerfile \
+            -t "$IMAGE:${{ inputs.tag }}" \
+            tools/build-v86-image/base 2>&1 | tee /tmp/base.log | tail -25
+          echo "## Base construite en $(( ($(date +%s) - start) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+
+      # Garde-fou du correctif linux32 : sans la personnalité 32 bits, les
+      # binaires restent corrects mais Ruby s'étiquette « x86_64-linux-x32 »,
+      # une plateforme fantôme qui fausse la résolution de RubyGems. On refuse
+      # de publier une base dans cet état.
+      - name: Vérification de l'architecture déclarée
+        run: |
+          plateforme=$(docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" \
+            ruby -e 'print RUBY_PLATFORM')
+          classe=$(docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" \
+            readelf -h /usr/local/bin/ruby | grep -E '^ +(Class|Machine):' | cut -d: -f2 | tr -s ' \n' ' ')
+          {
+            echo "| Contrôle | Valeur |"
+            echo "|---|---|"
+            echo "| \`RUBY_PLATFORM\` | \`${plateforme}\` |"
+            echo "| ELF de \`/usr/local/bin/ruby\` | \`${classe}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$plateforme" != "i686-linux" ]; then
+            echo "::error::RUBY_PLATFORM vaut « ${plateforme} », attendu « i686-linux » — la personnalité linux32 n'a pas pris."
+            exit 1
+          fi
+          case "$classe" in
+            ELF32*80386*) echo "Binaire ELF32 / Intel 80386 : exécutable par le CPU émulé de v86." ;;
+            *) echo "::error::Binaire inattendu (${classe}) : v86 émule un i386, il lui faut de l'ELF32."; exit 1 ;;
+          esac
+
+      - name: Vérification du contenu attendu de la base
+        run: |
+          docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" sh -c '
+            set -eu
+            ruby -v
+            test -x /opt/rib/guest-init.sh
+            test -x /opt/rib/start-app.sh
+            test -f /opt/rib/serial-bridge.py
+            test -f /opt/rib/config.ru
+            test -d /app
+            ls /boot/vmlinuz-* >/dev/null
+            python3 --version
+            redis-server --version | head -1
+          '
+
+      - name: Publication sur GHCR
+        if: ${{ inputs.push }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:${{ inputs.tag }}"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:${{ inputs.tag }}" 2>/dev/null || echo "-")
+          {
+            echo "## Publiée"
+            echo ""
+            echo "\`$IMAGE:${{ inputs.tag }}\`"
+            echo ""
+            echo "Empreinte : \`${digest}\`"
+            echo ""
+            echo "Le workflow du mainteneur épingle cette empreinte plutôt que le tag."
+          } >> "$GITHUB_STEP_SUMMARY"

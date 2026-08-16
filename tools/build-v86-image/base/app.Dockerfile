@@ -12,6 +12,12 @@
 ARG BASE_IMAGE=railsbox-base-3.3
 FROM ${BASE_IMAGE} AS appbuild
 
+# La base pose déjà cette personnalité et l'image en hérite ; on la redéclare
+# pour que ce Dockerfile reste correct même construit sur une base ancienne.
+# Sans elle, les gems natives se compilent en s'étiquetant `x86_64-linux-x32`
+# — binaires bons, plateforme fantôme (voir base/Dockerfile).
+SHELL ["linux32", "/bin/sh", "-c"]
+
 ARG MOUNT_PATH=/app
 # Clés jetables : ce build ne sert qu'à peupler /app (bundle, assets, base). Les
 # vraies clés de session vivent dans l'env.sh figé de la base. BUNDLE_PATH pointe
