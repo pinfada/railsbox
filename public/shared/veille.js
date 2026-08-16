@@ -21,8 +21,8 @@ export const DELAI_VEILLE_MS = 15_000;
  *   pause: () => void,
  *   resume: () => void,
  *   delayMs?: number,
- *   setTimer?: typeof setTimeout,
- *   clearTimer?: typeof clearTimeout,
+ *   setTimer?: (fn: () => void, ms: number) => any,
+ *   clearTimer?: (id: any) => void,
  * }} options
  * @returns {{ hidden: () => void, visible: () => void, isPaused: () => boolean }}
  */
