@@ -72,11 +72,17 @@ test("index.html charge ses ressources relativement", () => {
   assert.match(html, /src="main\.js"/);
 });
 
-test("le moteur par défaut est v86, pas le CheerpX historique", () => {
-  // Défaut resté sur « cheerpx » après la bascule : la sandbox publiée
-  // téléchargeait un runtime tiers et servait un serveur de démonstration
-  // minimal au lieu de l'application. Invisible en local, où les suites de
-  // bout en bout passent explicitement ?engine=v86.
-  const main = readFileSync(join(PUBLIC_DIR, "main.js"), "utf8");
-  assert.match(main, /params\.get\("engine"\)\s*\?\?\s*"v86"/);
+test("la coquille ne dépend d'aucune origine externe", () => {
+  // Le moteur CheerpX historique téléchargeait son runtime depuis un CDN
+  // tiers, contraire à la contrainte « GitHub seule dépendance » — et il avait
+  // silencieusement repris la main sur une sandbox publiée. Il est retiré ;
+  // cette garde empêche toute réintroduction d'une origine externe.
+  for (const resource of collectResources()) {
+    const contents = readFileSync(join(PUBLIC_DIR, resource), "utf8");
+    assert.doesNotMatch(
+      contents,
+      /https?:\/\/(?!localhost|127\.0\.0\.1)[a-z0-9-]+\.[a-z]/i,
+      `${resource} référence une origine externe`,
+    );
+  }
 });

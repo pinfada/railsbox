@@ -124,7 +124,7 @@ test.describe("VM v86 : application Rails servie via le pont série", () => {
     const startedAt = Date.now();
     // La page se recharge une fois pour laisser le Service Worker prendre le
     // contrôle ; waitForApplicationReady survit à cette navigation.
-    await page.goto("/?engine=v86");
+    await page.goto("/");
     await waitForApplicationReady(page);
     const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     console.log(`[e2e] VM prête (badge HTTP ok) en ${seconds} s`);

@@ -1,6 +1,6 @@
 // Serveur statique de développement, sans dépendance. Deux rôles :
 //  1. Poser les en-têtes COOP/COEP exigés par SharedArrayBuffer
-//     (CheerpX ne démarre pas sans isolation cross-origin).
+//     (SharedArrayBuffer et l'isolation exigés par la coquille).
 //  2. Supporter les requêtes Range, indispensables pour streamer une image
 //     disque ext2 (HttpBytesDevice lit le disque par morceaux).
 import { createServer } from "node:http";

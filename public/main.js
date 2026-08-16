@@ -1,6 +1,5 @@
 // Orchestrateur de la page hôte : Service Worker proxy, isolation
-// cross-origin, boot de la VM (CheerpX ou v86), puis câblage du pont HTTP.
-// Choix du moteur : ?engine=v86 (image jiyufit) ou défaut cheerpx (démo).
+// cross-origin, boot de la VM v86, puis câblage du pont HTTP.
 
 import { createEnvironmentRegistry } from "./shared/env-detector.js";
 import { createEnvironmentDrawer } from "./env-drawer.js";
@@ -96,7 +95,7 @@ async function start() {
 }
 
 // L'inspecteur n'a de sens que si la VM sait recevoir des variables : le
-// moteur CheerpX n'expose pas cette capacité, on ne l'affiche donc pas.
+// moteur ne l'expose pas, on ne l'affiche donc pas.
 function installInspector(vm) {
   if (typeof vm.applyEnvironment !== "function") return;
   const registry = createEnvironmentRegistry();
@@ -137,36 +136,21 @@ async function waitForApplication(vm, repairAttempt = 0) {
 
 async function bootSelectedEngine() {
   const params = new URLSearchParams(location.search);
-  // v86 par défaut. CheerpX est le moteur historique, conservé derrière
-  // `?engine=cheerpx` : il télécharge son runtime depuis un CDN tiers, ne sait
-  // pas monter le disque applicatif découplé et se rabat sur un serveur de
-  // démonstration minimal. Un visiteur qui arrive sur une sandbox publiée doit
-  // obtenir l'application, pas ce repli.
-  const engine = params.get("engine") ?? "v86";
-  const badge = document.getElementById("badge-vm");
-  badge.textContent = `VM ${engine}`;
-  if (engine === "v86") {
-    logLine("Boot de la VM Linux i386 (v86, open source)…");
-    logLine(
-      "Premier boot à froid : plusieurs minutes. Boots suivants : restaurés depuis l'instantané.",
-    );
-    const configResponse = await fetch(V86_CONFIG_URL);
-    if (!configResponse.ok) {
-      throw new Error(
-        "v86-config.json introuvable — lancez tools/build-v86-image/build.sh d'abord",
-      );
-    }
-    const { bootVm } = await import("./vm/v86-vm.js");
-    return bootVm({
-      onConsole: logLine,
-      config: await configResponse.json(),
-      fresh: params.get("fresh") === "1",
-    });
+  document.getElementById("badge-vm").textContent = "VM v86";
+  logLine("Boot de la VM Linux i386 (v86, open source)…");
+  logLine(
+    "Premier boot à froid : plusieurs minutes. Boots suivants : restaurés depuis l'instantané.",
+  );
+  const configResponse = await fetch(V86_CONFIG_URL);
+  if (!configResponse.ok) {
+    throw new Error("v86-config.json introuvable — construisez d'abord la sandbox");
   }
-  logLine("Boot de la VM Linux x86 (CheerpX 1.2.8)…");
-  logLine("Premier lancement : le disque Debian est streamé puis mis en cache — patience.");
-  const { bootVm } = await import("./vm/rails-vm.js");
-  return bootVm({ onConsole: logLine });
+  const { bootVm } = await import("./vm/v86-vm.js");
+  return bootVm({
+    onConsole: logLine,
+    config: await configResponse.json(),
+    fresh: params.get("fresh") === "1",
+  });
 }
 
 function sendBridgePort(vm) {

@@ -8,8 +8,7 @@ const BADGE_IDS = ["badge-sw", "badge-coi", "badge-vm", "badge-http"];
 const SERVICE_WORKER_TIMEOUT_MS = 30_000;
 
 /**
- * Coupe tout le trafic hors localhost. Sans `?engine=v86`, la page hôte boote
- * CheerpX, qui streame une image Debian distante : dépendance réseau externe
+ * Coupe tout le trafic hors localhost : aucune dépendance réseau externe
  * qui n'a rien à faire dans un test. La VM échoue donc volontairement ici —
  * ce que ces tests n'observent pas — pendant que le reste reste vérifiable.
  * @param {import("@playwright/test").Page} page

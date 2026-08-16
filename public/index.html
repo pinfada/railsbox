@@ -3,16 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- CSP de la page hôte. 'wasm-unsafe-eval' : requis par v86/CheerpX
-         (WebAssembly). cxrtnc.leaningtech.com : module CheerpX (démo).
+    <!-- CSP de la page hôte. 'wasm-unsafe-eval' : requis par v86
          wss://disks.webvm.io : image Debian publique du mode démo.
-         blob:/workers : CheerpX instancie ses workers internes ainsi. -->
+         blob:/workers : v86 instancie ses workers internes ainsi. -->
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self';
-               script-src 'self' 'wasm-unsafe-eval' https://cxrtnc.leaningtech.com;
+               script-src 'self' 'wasm-unsafe-eval';
                style-src 'self' 'unsafe-inline';
-               connect-src 'self' wss://disks.webvm.io https://cxrtnc.leaningtech.com;
+               connect-src 'self';
                worker-src 'self' blob:;
                img-src 'self' data:;
                frame-src 'self';
@@ -131,7 +130,7 @@
         <span id="env-slot"></span>
         <span class="badge pending" id="badge-sw">Service Worker</span>
         <span class="badge pending" id="badge-coi">Isolation COI</span>
-        <span class="badge pending" id="badge-vm">VM CheerpX</span>
+        <span class="badge pending" id="badge-vm">VM v86</span>
         <span class="badge pending" id="badge-http">Serveur HTTP</span>
       </div>
     </header>

@@ -113,15 +113,13 @@ Trois niveaux de tests, tous requis avant un commit :
 (`tsc --checkJs` sur trois cibles : navigateur, Service Worker, Node) et tests
 unitaires — c'est exactement ce que joue la CI (`.github/workflows/ci.yml`).
 
-Sans image applicative, le moteur par défaut (CheerpX) boote une image Debian
-publique et sert une mini-application de démonstration : la chaîne complète
-navigateur → VM → serveur HTTP est vérifiable en une trentaine de secondes.
+La page hôte lit `public/disks/v86-config.json` : sans artefacts construits,
+elle le dit et s'arrête là.
 
-| URL | Moteur | Ce qui tourne |
-|---|---|---|
-| `http://localhost:8080` | CheerpX | mini-app de démonstration |
-| `http://localhost:8080/?engine=v86` | v86 | votre application Rails |
-| `…/?engine=v86&fresh=1` | v86 | idem, en ignorant l'instantané (boot à froid) |
+| URL | Ce qui tourne |
+|---|---|
+| `http://localhost:8080` | votre application Rails, restaurée depuis l'instantané |
+| `http://localhost:8080/?fresh=1` | idem, en ignorant l'instantané (boot à froid) |
 
 ### Packager votre application Rails
 
@@ -183,20 +181,6 @@ la VM et relance l'application à chaud** — sans reconstruire l'image.
 
 ## 3. Architecture
 
-### Comparatif des moteurs
-
-Les deux backends implémentent la même façade ; seul le transport diffère.
-
-| | **v86** (recommandé) | **CheerpX** |
-|---|---|---|
-| Licence | BSD-2-Clause | propriétaire (gratuit en usage personnel) |
-| Émulation | PC i386 complet, **vrai noyau Linux** | user-mode x86 32 bits, JIT |
-| Réseau invité | loopback TCP natif (`127.0.0.1:3000`) | **pas de TCP sans Tailscale** → socket Unix |
-| Transport du pont | port série `ttyS0` | fichiers via `DataDevice` / `IDBDevice` |
-| Instantané mémoire | oui (`save_state`) → boot en 26 s | aucune API publique |
-| Vitesse d'exécution | plus lente | JIT plus rapide |
-| Usage dans ce projet | applications réelles | mini-app de démonstration |
-
 ### Schéma de flux
 
 ```
@@ -230,7 +214,7 @@ par `Rack::URLMap`.
 Vingt-deux itérations de build ont été nécessaires. Les obstacles n'étaient
 presque jamais où on les attend — voici ceux qui ont coûté le plus cher.
 
-### Le loopback TCP n'existe pas sous CheerpX
+### Le loopback TCP n'existait pas sous le moteur historique
 
 `bind()` sur `127.0.0.1` échoue avec un `EADDRINUSE` fantôme : toute la pile
 TCP passe par Tailscale. Puma écoute donc sur un **socket Unix**, purement
@@ -339,9 +323,6 @@ obligatoires) ; `tmp/`, `log/` et `storage/` sont souvent exclus par le
   désormais aussi (auto-détection + `railsbox.yml`), validée sur un
   `rails new` sqlite3 en plus de jiyufit. Le panel de validation reste à
   élargir (PostgreSQL générique, apps à npm) avant d'annoncer « toute app ».
-- **Licence CheerpX** : usage commercial soumis à licence Leaning Technologies.
-  Le moteur v86 (BSD-2-Clause) porte seul la promesse du projet ; CheerpX sera
-  rétrogradé en démonstration optionnelle ou retiré.
 - **Sécurité** : tout s'exécute côté client. Le modèle de menace — ce qui est
   défendu, ce qui ne l'est pas, et pourquoi il ne faut jamais embarquer de
   vrais secrets — est décrit dans [`SECURITY.md`](SECURITY.md).
@@ -361,8 +342,7 @@ public/
 │   ├── env-detector.js            détection des variables manquantes
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
-    ├── v86-vm.js                  boot v86, instantané, horloge, pont série
-    └── rails-vm.js · vm-scripts.js  backend CheerpX
+    └── v86-vm.js                  boot v86, instantané, horloge, pont série
 tests/                             150 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
 └── e2e/                           boot navigateur complet (Playwright)

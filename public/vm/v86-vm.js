@@ -1,5 +1,4 @@
 // Backend v86 : vrai noyau Linux i386 émulé (JIT open source, BSD-2-Clause).
-// Même façade que rails-vm.js (CheerpX) — le SW et main.js ne changent pas.
 // Le pont HTTP passe par le port série ttyS0 (voir shared/serial-codec.js et
 // le démon /opt/rib/serial-bridge.py embarqué dans l'image disque).
 import { parseCurlHeaders } from "../shared/request-codec.js";

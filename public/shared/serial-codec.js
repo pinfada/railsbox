@@ -2,7 +2,7 @@
 //
 // v86 fait tourner un vrai noyau Linux : le pont passe par le port série
 // émulé (ttyS0), un canal fiable et ordonné, sans les pièges de persistance
-// du pont fichiers CheerpX. Protocole ligne à ligne, multiplexé par id :
+// Protocole ligne à ligne, multiplexé par id :
 //   navigateur -> VM : "@RIB1 REQ <id> <b64(json)>"
 //   VM -> navigateur : "@RIB1 RSB <id> <taille>" puis "DAT <id> <tranche>"*
 //                      puis "END <id>" — ou "ERR <id> <code>" (codes curl :

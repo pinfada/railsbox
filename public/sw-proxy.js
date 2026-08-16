@@ -1,6 +1,6 @@
 // Service Worker unique du projet, deux rôles :
 //  1. Proxy HTTP : intercepte /app/* et relaie vers la VM via un MessagePort
-//     fourni par la page hôte (qui elle-même parle au module CheerpX).
+//     fourni par la page hôte (qui elle-même pilote la VM v86).
 //  2. Spoofing COI : ré-injecte les en-têtes COOP/COEP sur les réponses
 //     same-origin pour les hébergeurs statiques qui ne les posent pas
 //     (équivalent intégré de coi-serviceworker).
@@ -14,6 +14,7 @@
 import { sanitizeMethod } from "./shared/request-codec.js";
 import {
   appPrefix,
+  normalizeBasePath,
   errorPage,
   prepareProxyHeaders,
   responseBodyFor,
@@ -38,6 +39,8 @@ const sw = /** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (
 // de projet — le cas de chaque démonstration depuis l'ADR 0004. Tout chemin
 // écrit en dur casserait dans le second cas.
 const BASE_PATH = new URL(sw.registration.scope).pathname;
+/** Racine de publication sans barre oblique finale : «  » à la racine, « /depot » ailleurs. */
+const BASE_PREFIX = normalizeBasePath(BASE_PATH);
 const APP_PREFIX = appPrefix(BASE_PATH);
 const RAW_ASSET_PREFIX = `${BASE_PATH.replace(/\/+$/, "")}/disks/`;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -178,14 +181,23 @@ async function proxyToVm(request, url) {
     const method = sanitizeMethod(request.method);
     const hasBody = method !== "GET" && method !== "HEAD";
     const body = hasBody ? await request.arrayBuffer() : null;
-    // Le préfixe est conservé de bout en bout : l'application est montée sous
-    // /app par Rack::URLMap dans la VM (voir tools/build-v86-image). Elle
+    // Le préfixe /app est conservé de bout en bout : l'application est montée
+    // sous /app par Rack::URLMap dans la VM (voir tools/build-v86-image). Elle
     // reçoit donc SCRIPT_NAME=/app et génère des liens déjà préfixés, qui
     // repassent naturellement par ce proxy.
+    //
+    // La racine de PUBLICATION, elle, s'arrête à la porte du guest : celui-ci
+    // ne sait rien du sous-répertoire où la coquille est déployée. Sans ce
+    // retrait, Rack recevait « /depot/app/ » et répondait « Not Found », alors
+    // même que l'application tournait — panne invisible à la racine, où le
+    // préfixe est vide.
+    const cheminGuest = url.pathname.startsWith(BASE_PREFIX)
+      ? url.pathname.slice(BASE_PREFIX.length)
+      : url.pathname;
     const descriptor = {
       id: state.nextId++,
       method,
-      path: url.pathname + url.search,
+      path: cheminGuest + url.search,
       // X-Forwarded-Proto https : les apps en `force_ssl` (jiyufit) verraient
       // sinon une requête http et boucleraient en redirection. Chrome accepte
       // les cookies Secure sur localhost, donc les sessions fonctionnent.

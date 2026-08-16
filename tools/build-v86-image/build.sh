@@ -212,6 +212,6 @@ echo "✓ Artefacts prêts dans public/disks/ :"
 ls -lh "$OUTPUT_DIR/$NAME".* "$OUTPUT_DIR/$NAME-"* 2>/dev/null | sort -u
 echo "Valider le boot :  node tools/build-v86-image/validate-boot.mjs $CONFIG_NAME"
 if [ "$SET_DEFAULT" -eq 1 ]; then
-  echo "Ouvrir ensuite : http://localhost:8080/?engine=v86"
+  echo "Ouvrir ensuite : http://localhost:8080/"
 fi
 exit 0
