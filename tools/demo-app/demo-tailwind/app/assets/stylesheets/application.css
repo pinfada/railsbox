@@ -1,0 +1,24 @@
+/*
+ * Variante Tailwind : cette feuille est volontairement RÉDUITE.
+ *
+ * La démo sqlite3 y met tout son style à la main (aucun outil à binaire, donc
+ * précompilation dans le guest i386). Ici, c'est Tailwind qui l'apporte, depuis
+ * app/assets/tailwind/application.css compilé sur l'étage amd64. Garder les
+ * deux jeux de règles rendrait indécidable ce qui a produit l'affichage — donc
+ * inutile comme preuve.
+ *
+ * Elle n'est pas vide pour autant : le layout la référence par
+ * « stylesheet_link_tag :app », et l'on veut que ce chemin Propshaft classique
+ * reste exercé à côté de la feuille Tailwind.
+ */
+
+:root {
+  color-scheme: light;
+}
+
+/* Le scaffold Rails enveloppe chaque enregistrement dans un div#post_N. */
+[id^="post_"] strong {
+  display: inline-block;
+  min-width: 5.5rem;
+  font-weight: 600;
+}
