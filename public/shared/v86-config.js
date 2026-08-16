@@ -34,21 +34,43 @@ export function isSplitConfig(config) {
 }
 
 /**
+ * Descripteur d'un disque pour v86.
+ *
+ * Un disque peut être servi d'un seul tenant (lecture par requêtes Range) ou
+ * DÉCOUPÉ EN FICHIERS-PARTIES quand l'hébergeur plafonne la taille des fichiers
+ * — le cas de GitHub Pages, 100 Mo maximum (ADR 0001). Dans ce second cas v86
+ * dérive lui-même le nom du morceau contenant l'offset demandé
+ * (`tools/build-v86-image/artifact-parts.mjs` produit la même convention) et ne
+ * télécharge que celui-là : pas de réassemblage, et le visiteur ne paie que les
+ * blocs réellement lus.
+ * @param {string} url
+ * @param {number|undefined} size
+ * @param {number|undefined} chunkSize taille de morceau, absente si non découpé
+ * @returns {{ url: string, async: true, size?: number, use_parts?: true, fixed_chunk_size?: number }}
+ */
+function diskImage(url, size, chunkSize) {
+  const image = { url, async: /** @type {true} */ (true), size };
+  if (!chunkSize) return image;
+  return { ...image, use_parts: /** @type {true} */ (true), fixed_chunk_size: chunkSize };
+}
+
+/**
  * Construit les descripteurs de disques pour le constructeur v86 : hda
  * (rootfs) toujours, hdb (disque applicatif) si la configuration est en mode
  * base + application. Les deux sont chargés en `async` (lecture par blocs,
  * jamais téléchargés en entier).
- * @param {{ disk: string, diskSize?: number, appDisk?: string, appDiskSize?: number }} config
- * @returns {{ hda: { url: string, async: true, size?: number }, hdb?: { url: string, async: true, size?: number } }}
+ * @param {{
+ *   disk: string, diskSize?: number, diskChunkSize?: number,
+ *   appDisk?: string, appDiskSize?: number, appDiskChunkSize?: number,
+ * }} config
+ * @returns {{ hda: ReturnType<typeof diskImage>, hdb?: ReturnType<typeof diskImage> }}
  */
 export function buildDiskImages(config) {
-  const images = {
-    hda: { url: config.disk, async: /** @type {true} */ (true), size: config.diskSize },
-  };
+  const images = { hda: diskImage(config.disk, config.diskSize, config.diskChunkSize) };
   if (config.appDisk) {
     return {
       ...images,
-      hdb: { url: config.appDisk, async: /** @type {true} */ (true), size: config.appDiskSize },
+      hdb: diskImage(config.appDisk, config.appDiskSize, config.appDiskChunkSize),
     };
   }
   return images;

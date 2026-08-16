@@ -24,7 +24,12 @@ import {
   createResponseAssembler,
   splitHttpResponse,
 } from "../public/shared/serial-codec.js";
-import { isBootableConfig, isSplitConfig, memoryBytes } from "../public/shared/v86-config.js";
+import {
+  buildDiskImages,
+  isBootableConfig,
+  isSplitConfig,
+  memoryBytes,
+} from "../public/shared/v86-config.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_READY_ATTEMPTS = 240;
@@ -74,10 +79,28 @@ export async function bootHarness({
   }
 
   // hda (rootfs) toujours ; hdb (disque applicatif) en mode base + application.
-  const diskImages = { hda: { url: toFile(config.disk), async: true, size: config.diskSize } };
+  // Même construction que le navigateur (découpage en fichiers-parties compris)
+  // sur des chemins résolus localement : ce qui boote ici boote dans l'onglet.
+  // L'assertion couvre le seul écart avec le type de v86 : il déclare `size`
+  // obligatoire sur un disque asynchrone, alors que buildDiskImages recopie ce
+  // que porte la configuration — que le format mono-disque hérité peut omettre.
+  const diskImages = /** @type {{ hda: import("v86").V86Image, hdb?: import("v86").V86Image }} */ (
+    /** @type {unknown} */ (
+      buildDiskImages({
+        ...config,
+        disk: toFile(config.disk),
+        ...(config.appDisk ? { appDisk: toFile(config.appDisk) } : {}),
+      })
+    )
+  );
   if (isSplitConfig(config)) {
-    diskImages.hdb = { url: toFile(config.appDisk), async: true, size: config.appDiskSize };
     onLog(`[harness] montage base + application : ${config.disk} + hdb ${config.appDisk}`);
+  }
+  for (const [slot, chunkSize] of [
+    ["hda", config.diskChunkSize],
+    ["hdb", config.appDiskChunkSize],
+  ]) {
+    if (chunkSize) onLog(`[harness] ${slot} servi en morceaux de ${chunkSize} octets`);
   }
 
   const emulator = new V86({
