@@ -65,7 +65,8 @@ export function coquilleAutorisantBase(html, baseUrl, siteOrigin) {
 
 // --- CLI -------------------------------------------------------------------
 // node autoriser-origine-base.mjs <index.html> --base-url <url> --site-origin <origine>
-if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {
+const { pathToFileURL } = await import("node:url");
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { readFileSync, writeFileSync } = await import("node:fs");
   const args = process.argv.slice(2);
   const chemin = args[0];
@@ -85,7 +86,9 @@ if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {
   if (modifie) {
     writeFileSync(chemin, html);
     console.log(`CSP : connect-src autorise ${origineDe(baseUrl)} (base cross-origin)`);
-  } else {
+  } else if (origineDe(baseUrl) === origineDe(siteOrigin)) {
     console.log("CSP : base same-origin, coquille inchangée");
+  } else {
+    console.log("CSP : origine de la base déjà autorisée, coquille inchangée");
   }
 }
