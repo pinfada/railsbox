@@ -136,7 +136,11 @@ test("le Service Worker réémet les requêtes d'artefacts telles quelles", () =
       `sw-proxy.js : ce fetch modifie la requête, il risque un préflight — ${appel}`,
     );
   }
-  assert.doesNotMatch(source, /new Request\(/, "sw-proxy.js ne doit jamais reconstruire un Request");
+  assert.doesNotMatch(
+    source,
+    /new Request\(/,
+    "sw-proxy.js ne doit jamais reconstruire un Request",
+  );
   assert.match(
     source,
     /await fetch\(request\)/,
