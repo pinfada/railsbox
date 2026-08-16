@@ -54,6 +54,20 @@ export function checkAppDiskFit(contentBytes) {
 /**
  * Construit l'objet de configuration v86 en mode base + application, consommé
  * par tools/vm-harness.mjs et public/shared/v86-config.js.
+ *
+ * Deux répartitions coexistent (ADR 0004).
+ *
+ * SANS `baseUrl` — tout est local, sous `/disks/` : le développement, le
+ * harnais Node, et l'ancien format mono-dépôt.
+ *
+ * AVEC `baseUrl` — la répartition de production. Le rootfs mutualisé, son
+ * noyau et son initrd vivent sur le dépôt d'artefacts de railsbox, donc en
+ * **URL absolue cross-origin** ; le disque applicatif et l'instantané, eux,
+ * sont publiés à côté de la coquille et restent en chemins **relatifs**. Ce
+ * détail n'est pas cosmétique : un Pages de projet sert sous
+ * `https://compte.github.io/depot/`, où un chemin absolu `/disks/x` pointerait
+ * hors du site. Un chemin relatif se résout contre la page, à la racine comme
+ * dans un sous-répertoire.
  * @param {{
  *   name: string,
  *   baseName: string,
@@ -65,6 +79,9 @@ export function checkAppDiskFit(contentBytes) {
  *   cmdline?: string,
  *   statePath?: string | null,
  *   builtAt?: string,
+ *   baseUrl?: string | null,
+ *   baseChunkBytes?: number | null,
+ *   appChunkBytes?: number | null,
  * }} options
  * @returns {Record<string, any>}
  */
@@ -79,15 +96,24 @@ export function buildSplitConfig({
   cmdline = "root=/dev/sda rw console=ttyS0 init=/opt/rib/guest-init.sh net.ifnames=0 quiet loglevel=4",
   statePath = null,
   builtAt = new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+  baseUrl = null,
+  baseChunkBytes = null,
+  appChunkBytes = null,
 }) {
+  const racine = baseUrl ? baseUrl.replace(/\/+$/, "") : "/disks";
+  // Le rootfs publié porte le suffixe .zst : v86 en dérive le nom des morceaux
+  // et les décompresse à la volée.
+  const suffixeBase = baseUrl && baseChunkBytes ? ".zst" : "";
   const config = {
     name,
     baseName,
-    kernel: `/disks/${baseName}-vmlinuz`,
-    initrd: `/disks/${baseName}-initrd`,
-    disk: `/disks/${baseName}.ext2`,
+    kernel: `${racine}/${baseName}-vmlinuz`,
+    initrd: `${racine}/${baseName}-initrd`,
+    disk: `${racine}/${baseName}.ext2${suffixeBase}`,
     diskSize: baseDiskBytes,
-    appDisk: `/disks/${name}-app.ext2`,
+    appDisk: baseUrl
+      ? `disks/${name}-app.ext2${appChunkBytes ? ".zst" : ""}`
+      : `/disks/${name}-app.ext2`,
     appDiskSize: appDiskBytes,
     cmdline,
     memoryMb,
@@ -95,6 +121,8 @@ export function buildSplitConfig({
     database,
     builtAt,
   };
+  if (baseChunkBytes) config.diskChunkSize = baseChunkBytes;
+  if (appChunkBytes) config.appDiskChunkSize = appChunkBytes;
   if (statePath) config.state = statePath;
   return config;
 }

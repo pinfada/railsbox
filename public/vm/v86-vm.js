@@ -19,10 +19,11 @@ import {
   memoryBytes,
 } from "../shared/v86-config.js";
 
-const V86_LIB_URL = "/vendor/v86/libv86.js";
-const V86_WASM_PATH = "/vendor/v86/v86.wasm";
-const BIOS_URL = "/vendor/v86/seabios.bin";
-const VGA_BIOS_URL = "/vendor/v86/vgabios.bin";
+// Relatifs à la page : voir main.js.
+const V86_LIB_URL = new URL("vendor/v86/libv86.js", document.baseURI).href;
+const V86_WASM_PATH = new URL("vendor/v86/v86.wasm", document.baseURI).href;
+const BIOS_URL = new URL("vendor/v86/seabios.bin", document.baseURI).href;
+const VGA_BIOS_URL = new URL("vendor/v86/vgabios.bin", document.baseURI).href;
 const VGA_MEMORY_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
 const PROBE_TIMEOUT_MS = 10_000;

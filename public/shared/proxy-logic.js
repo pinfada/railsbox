@@ -3,7 +3,32 @@
 // en-têtes d'isolation, pages d'erreur. Le SW ne garde que le câblage
 // événementiel (fetch/message/ports), intestable en dehors du navigateur.
 
+// Frontière du proxy quand la coquille est servie À LA RACINE d'une origine.
+// Ce n'est plus toujours le cas : depuis l'ADR 0004, chaque démonstration est
+// publiée sur un Pages de projet, donc sous « /<depot>/ ». Les fonctions
+// ci-dessous acceptent donc un chemin de base, dont « / » reste le défaut.
 export const APP_PREFIX = "/app";
+
+/**
+ * Normalise un chemin de base en une forme sans barre oblique finale : « / »
+ * devient «  » (chaîne vide), « /depot/ » devient « /depot ». Concaténer
+ * ensuite « /app » donne la frontière du proxy dans les deux cas.
+ * @param {string} basePath
+ * @returns {string}
+ */
+export function normalizeBasePath(basePath) {
+  const trimmed = String(basePath ?? "/").replace(/\/+$/, "");
+  return trimmed === "" ? "" : trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+/**
+ * Frontière du proxy pour un chemin de base donné.
+ * @param {string} [basePath]
+ * @returns {string}
+ */
+export function appPrefix(basePath = "/") {
+  return `${normalizeBasePath(basePath)}/app`;
+}
 
 // Racine des assets extraits de l'image disque (tools/extract-assets.sh).
 // Servis en statique : ils ne traversent jamais le pont série.
@@ -16,14 +41,16 @@ export const STATIC_ASSETS_ROOT = "/disks/assets/";
  * ~90 % du trafic série d'un chargement de page est constitué d'assets
  * immuables que la VM n'a aucune raison de servir elle-même.
  * @param {string} pathname
+ * @param {string} [basePath] racine de publication de la coquille
  * @returns {string | null}
  */
-export function staticAssetPath(pathname) {
-  const prefix = `${APP_PREFIX}/assets/`;
+export function staticAssetPath(pathname, basePath = "/") {
+  const base = normalizeBasePath(basePath);
+  const prefix = `${base}/app/assets/`;
   if (!pathname.startsWith(prefix)) return null;
   const rest = pathname.slice(prefix.length);
   if (rest === "" || rest.includes("..")) return null;
-  return `${STATIC_ASSETS_ROOT}${rest}`;
+  return `${base}${STATIC_ASSETS_ROOT}${rest}`;
 }
 
 // Fichiers statiques que Rails référence EN DUR à la racine, sans préfixe
@@ -48,13 +75,16 @@ const ROOT_STATIC_FILES = new Set([
 
 /**
  * @param {string} pathname
+ * @param {string} [basePath] racine de publication de la coquille
  * @returns {string | null}
  */
-export function rootStaticPath(pathname) {
-  const bare = pathname.startsWith(`${APP_PREFIX}/`)
-    ? pathname.slice(APP_PREFIX.length + 1)
-    : pathname.replace(/^\//, "");
-  return ROOT_STATIC_FILES.has(bare) ? `${ROOT_STATIC_ROOT}${bare}` : null;
+export function rootStaticPath(pathname, basePath = "/") {
+  const base = normalizeBasePath(basePath);
+  const prefix = `${base}/app`;
+  const bare = pathname.startsWith(`${prefix}/`)
+    ? pathname.slice(prefix.length + 1)
+    : pathname.slice(base.length).replace(/^\//, "");
+  return ROOT_STATIC_FILES.has(bare) ? `${base}${ROOT_STATIC_ROOT}${bare}` : null;
 }
 
 // Codes pour lesquels le constructeur Response interdit un corps.
@@ -81,9 +111,10 @@ export function responseBodyFor(status, body) {
  * Les redirections externes sont laissées intactes.
  * @param {string} location
  * @param {{ origin: string, host: string }} self - origine/hôte de la page
+ * @param {string} [basePath] racine de publication de la coquille
  * @returns {string}
  */
-export function rewriteLocation(location, self) {
+export function rewriteLocation(location, self, basePath = "/") {
   let target;
   try {
     target = new URL(location, self.origin);
@@ -93,10 +124,11 @@ export function rewriteLocation(location, self) {
   const isSelf =
     target.host === self.host || target.hostname === "localhost" || target.hostname === "127.0.0.1";
   if (!isSelf) return location; // redirection externe : ne pas y toucher
+  const prefix = appPrefix(basePath);
   const path =
-    target.pathname.startsWith(`${APP_PREFIX}/`) || target.pathname === APP_PREFIX
+    target.pathname.startsWith(`${prefix}/`) || target.pathname === prefix
       ? target.pathname
-      : `${APP_PREFIX}${target.pathname}`;
+      : `${prefix}${target.pathname}`;
   return `${path}${target.search}${target.hash}`;
 }
 
@@ -128,13 +160,14 @@ const APP_DOCUMENT_CSP = [
  * apportent pas déjà une (celle de l'application prime si elle existe).
  * @param {Array<[string, string]> | undefined} rawHeaders
  * @param {{ origin: string, host: string }} self
+ * @param {string} [basePath] racine de publication de la coquille
  * @returns {Headers}
  */
-export function prepareProxyHeaders(rawHeaders, self) {
+export function prepareProxyHeaders(rawHeaders, self, basePath = "/") {
   const headers = new Headers(rawHeaders ?? []);
   const location = headers.get("location");
   if (location) {
-    headers.set("location", rewriteLocation(location, self));
+    headers.set("location", rewriteLocation(location, self, basePath));
   }
   headers.set("Cross-Origin-Embedder-Policy", "require-corp");
   headers.set("Cross-Origin-Resource-Policy", "same-origin");

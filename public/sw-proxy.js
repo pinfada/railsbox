@@ -13,7 +13,7 @@
 // d'erreur) vit dans shared/proxy-logic.js, testée unitairement.
 import { sanitizeMethod } from "./shared/request-codec.js";
 import {
-  APP_PREFIX,
+  appPrefix,
   errorPage,
   prepareProxyHeaders,
   responseBodyFor,
@@ -33,7 +33,13 @@ const sw = /** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (
 // serveur pose déjà CORP — et forcerait un flux de plusieurs centaines de Mo
 // à traverser le worker, au prix d'une latence et d'une pression mémoire
 // inutiles (observé : téléchargement bloqué plusieurs minutes).
-const RAW_ASSET_PREFIX = "/disks/";
+// Racine de publication de la coquille, déduite de la portée du Service
+// Worker : « / » quand le site est servi à la racine, « /depot/ » sur un Pages
+// de projet — le cas de chaque démonstration depuis l'ADR 0004. Tout chemin
+// écrit en dur casserait dans le second cas.
+const BASE_PATH = new URL(sw.registration.scope).pathname;
+const APP_PREFIX = appPrefix(BASE_PATH);
+const RAW_ASSET_PREFIX = `${BASE_PATH.replace(/\/+$/, "")}/disks/`;
 const REQUEST_TIMEOUT_MS = 120_000;
 const PORT_RECOVERY_TIMEOUT_MS = 10_000;
 
@@ -105,7 +111,8 @@ sw.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith(RAW_ASSET_PREFIX)) return;
   // /favicon.ico, /site.webmanifest… : écrits en dur par Rails sans préfixe,
   // ils échappaient au proxy et finissaient en 404 silencieux.
-  const staticUrl = staticAssetPath(url.pathname) ?? rootStaticPath(url.pathname);
+  const staticUrl =
+    staticAssetPath(url.pathname, BASE_PATH) ?? rootStaticPath(url.pathname, BASE_PATH);
   if (event.request.method === "GET" && staticUrl !== null) {
     event.respondWith(serveStaticFirst(event.request, url, staticUrl));
     return;
@@ -209,7 +216,7 @@ function buildResponse(reply) {
   return new Response(responseBodyFor(reply.status, reply.body), {
     status: reply.status,
     statusText: reply.statusText ?? "",
-    headers: prepareProxyHeaders(reply.headers, sw.location),
+    headers: prepareProxyHeaders(reply.headers, sw.location, BASE_PATH),
   });
 }
 

@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   APP_PREFIX,
+  appPrefix,
+  normalizeBasePath,
   errorPage,
   escapeHtml,
   prepareProxyHeaders,
@@ -150,4 +152,56 @@ test("staticAssetPath refuse tout ce qui n'est pas un asset sûr", () => {
   assert.equal(staticAssetPath("/app/assets/"), null, "chemin vide");
   assert.equal(staticAssetPath("/app/assets/../secrets"), null, "traversée");
   assert.equal(staticAssetPath("/autre/assets/x.js"), null, "hors préfixe /app");
+});
+
+// ── Publication sous un sous-répertoire (Pages de projet, ADR 0004) ────────
+// Chaque démonstration est servie sous https://compte.github.io/<depot>/ :
+// la frontière du proxy et les racines statiques doivent suivre, sinon la
+// coquille cherche ses ressources hors du site.
+
+test("normalizeBasePath ramène les formes équivalentes à une seule", () => {
+  assert.equal(normalizeBasePath("/"), "");
+  assert.equal(normalizeBasePath(""), "");
+  assert.equal(normalizeBasePath("/depot/"), "/depot");
+  assert.equal(normalizeBasePath("/depot"), "/depot");
+  assert.equal(normalizeBasePath("depot"), "/depot");
+});
+
+test("appPrefix suit la racine de publication", () => {
+  assert.equal(appPrefix("/"), "/app");
+  assert.equal(appPrefix("/ma-demo/"), "/ma-demo/app");
+});
+
+test("rewriteLocation préfixe sous le sous-répertoire de publication", () => {
+  assert.equal(rewriteLocation("/users/sign_in", SELF, "/ma-demo/"), "/ma-demo/app/users/sign_in");
+  // Déjà préfixé : laissé tel quel.
+  assert.equal(rewriteLocation("/ma-demo/app/posts", SELF, "/ma-demo/"), "/ma-demo/app/posts");
+  // Une redirection externe reste intacte quelle que soit la racine.
+  assert.equal(
+    rewriteLocation("https://accounts.google.com/o/oauth2/auth", SELF, "/ma-demo/"),
+    "https://accounts.google.com/o/oauth2/auth",
+  );
+});
+
+test("staticAssetPath résout les assets sous le sous-répertoire", () => {
+  assert.equal(
+    staticAssetPath("/ma-demo/app/assets/application-abc123.css", "/ma-demo/"),
+    "/ma-demo/disks/assets/application-abc123.css",
+  );
+  // Le chemin racine ne doit plus correspondre une fois la coquille déplacée.
+  assert.equal(staticAssetPath("/app/assets/application-abc123.css", "/ma-demo/"), null);
+  // Traversée toujours refusée.
+  assert.equal(staticAssetPath("/ma-demo/app/assets/../secret", "/ma-demo/"), null);
+});
+
+test("rootStaticPath résout les fichiers racine sous le sous-répertoire", () => {
+  assert.equal(
+    rootStaticPath("/ma-demo/app/favicon.ico", "/ma-demo/"),
+    "/ma-demo/disks/appstatic/favicon.ico",
+  );
+  assert.equal(
+    rootStaticPath("/ma-demo/favicon.ico", "/ma-demo/"),
+    "/ma-demo/disks/appstatic/favicon.ico",
+  );
+  assert.equal(rootStaticPath("/ma-demo/inconnu.txt", "/ma-demo/"), null);
 });

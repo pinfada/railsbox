@@ -62,7 +62,14 @@ export async function bootHarness({
   }
   // Les chemins de la config sont des URL web (/disks/x) : on les résout vers
   // le système de fichiers pour le boot sous Node.
-  const toFile = (webPath) => join(disksDir, webPath.replace(/^\/disks\//, ""));
+  // Les chemins de la configuration sont des URL web. Depuis l'ADR 0004 ils
+  // prennent trois formes : absolue depuis la racine (`/disks/x`, hérité),
+  // relative à la coquille (`disks/x`, publication sous un sous-répertoire),
+  // ou URL complète (le rootfs mutualisé, cross-origin). Les deux premières se
+  // résolvent vers le disque local ; la troisième est laissée telle quelle et
+  // doit avoir été réassemblée en amont par assemble-artifact.
+  const toFile = (webPath) =>
+    /^https?:\/\//.test(webPath) ? webPath : join(disksDir, webPath.replace(/^\/?disks\//, ""));
 
   // L'instantané par défaut suit le nom de la config (demo-config → demo-state),
   // avec repli sur le champ `state` de la config, puis sur l'ancien nom jiyufit.

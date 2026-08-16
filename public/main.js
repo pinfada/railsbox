@@ -5,8 +5,11 @@
 import { createEnvironmentRegistry } from "./shared/env-detector.js";
 import { createEnvironmentDrawer } from "./env-drawer.js";
 
-const APP_URL = "/app/";
-const V86_CONFIG_URL = "/disks/v86-config.json";
+// Tout est relatif à la page : la coquille est publiée à la racine en
+// développement, mais sous « /<depot>/ » sur le Pages de projet de chaque
+// démonstration (ADR 0004). Un chemin absolu y sortirait du site.
+const APP_URL = new URL("app/", document.baseURI).pathname;
+const V86_CONFIG_URL = new URL("disks/v86-config.json", document.baseURI).href;
 // Deuxième chance après réparation : l'application vient d'être relancée
 // avec les nouvelles variables, elle doit rebooter (plusieurs minutes).
 const MAX_REPAIR_RETRIES = 2;
@@ -39,7 +42,9 @@ function setBadge(id, ok) {
 
 async function start() {
   logLine("Enregistrement du Service Worker proxy…");
-  await navigator.serviceWorker.register("/sw-proxy.js", { type: "module" });
+  await navigator.serviceWorker.register(new URL("sw-proxy.js", document.baseURI), {
+    type: "module",
+  });
   await navigator.serviceWorker.ready;
   await ensureControlled();
   setBadge("sw", true);
