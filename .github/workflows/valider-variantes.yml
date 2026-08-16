@@ -181,7 +181,14 @@ jobs:
       # LE verdict : une vraie VM v86 sous Node, l'instantané restauré, et des
       # requêtes HTTP réelles à travers le pont série.
       - name: Test d'intégration sur VM réelle
-        run: node --test "$VB_INTEGRATION"
+        run: |
+          set -eu
+          # Les suites d'intégration s'IGNORENT quand les artefacts manquent —
+          # comportement voulu en local, piège mortel ici : un test ignoré
+          # ressemble trait pour trait à un test réussi. On exige donc la
+          # présence de la configuration, qui EST leur condition d'exécution.
+          test -f "public/disks/${VB_NOM}-split-config.json"
+          node --test "$VB_INTEGRATION"
 
       # Sans cela, un échec ne laisse qu'un journal : la configuration et la
       # fiche du disque disent en trois lignes quelle base, quelle image et
