@@ -27,12 +27,28 @@ function log(message) {
 }
 
 function parseArgs(argv) {
-  const options = { name: "demo", base: "base-3.3", memoryMb: 1024, mountPath: "/app" };
+  const options = {
+    name: "demo",
+    base: "base-3.3",
+    memoryMb: 1024,
+    mountPath: "/app",
+    // Options de PUBLICATION : elles ne changent rien au boot de capture, qui
+    // se fait toujours sur des fichiers locaux. Elles ne décrivent que la
+    // configuration finale, celle que le visiteur consommera (ADR 0004).
+    /** @type {string|null} */ baseUrl: null,
+    /** @type {number|null} */ baseChunkBytes: null,
+    /** @type {number|null} */ appChunkBytes: null,
+    stateSuffix: "",
+  };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--name") options.name = argv[++i];
     else if (argv[i] === "--base") options.base = argv[++i].replace(/^railsbox-/, "");
     else if (argv[i] === "--memory-mb") options.memoryMb = Number(argv[++i]);
     else if (argv[i] === "--mount-path") options.mountPath = argv[++i];
+    else if (argv[i] === "--base-url") options.baseUrl = argv[++i];
+    else if (argv[i] === "--base-chunk-size") options.baseChunkBytes = Number(argv[++i]);
+    else if (argv[i] === "--app-chunk-size") options.appChunkBytes = Number(argv[++i]);
+    else if (argv[i] === "--state-suffix") options.stateSuffix = argv[++i];
   }
   return options;
 }
@@ -127,9 +143,25 @@ async function main() {
     const compressed = await stat(`${statePath}.gz`);
     log(`écrit ${stateName}.gz (${Math.round(compressed.size / 1048576)} Mo)`);
 
-    // La config référence désormais le delta : le visiteur restaure CE delta
-    // avec le MÊME disque applicatif.
-    const finalConfig = { ...configNoState, state: `/disks/${stateName}` };
+    // La config finale référence le delta : le visiteur restaure CE delta avec
+    // le MÊME disque applicatif. En mode publication, elle décrit en plus la
+    // répartition de l'ADR 0004 — base cross-origin, application relative.
+    const finalConfig = options.baseUrl
+      ? {
+          ...buildSplitConfig({
+            name,
+            baseName: base,
+            baseDiskBytes,
+            appDiskBytes,
+            memoryMb: options.memoryMb,
+            mountPath: options.mountPath,
+            baseUrl: options.baseUrl,
+            baseChunkBytes: options.baseChunkBytes,
+            appChunkBytes: options.appChunkBytes,
+          }),
+          state: `disks/${stateName}${options.stateSuffix}`,
+        }
+      : { ...configNoState, state: `/disks/${stateName}` };
     await writeFile(configPath, `${JSON.stringify(finalConfig, null, 2)}\n`);
     log(`${configName} référence désormais le delta pré-calculé`);
 

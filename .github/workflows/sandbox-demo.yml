@@ -1,0 +1,29 @@
+# Appelle le workflow réutilisable sur l'application de démonstration du dépôt.
+#
+# C'est le banc d'essai de « Construire la sandbox » : railsbox joue ici le rôle
+# d'un mainteneur ordinaire, avec sa propre application Rails. Ce qui casse ici
+# casserait chez lui.
+name: Sandbox de démonstration
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publier sur gh-pages (le dépôt étant privé, Pages n'y servira pas)"
+        type: boolean
+        default: false
+      railsbox-ref:
+        description: "Version de railsbox utilisée pour construire"
+        type: string
+        default: "main"
+
+jobs:
+  demo:
+    uses: ./.github/workflows/construire-sandbox.yml
+    permissions:
+      contents: write
+    with:
+      app-path: tools/demo-app/demo
+      name: demo
+      railsbox-ref: ${{ inputs.railsbox-ref }}
+      publish: ${{ inputs.publish }}

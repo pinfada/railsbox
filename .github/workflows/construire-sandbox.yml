@@ -1,0 +1,212 @@
+# Construit la sandbox railsbox d'une application Rails et la publie sur le
+# gh-pages de SON dépôt.
+#
+# Workflow réutilisable : un mainteneur l'appelle depuis son propre dépôt, et
+# obtient une démonstration jouable dans le navigateur, sans serveur.
+#
+#   jobs:
+#     sandbox:
+#       uses: pinfada/railsbox/.github/workflows/construire-sandbox.yml@main
+#       permissions:
+#         contents: write
+#
+# Répartition (ADR 0004) : le rootfs mutualisé est tiré du dépôt d'artefacts de
+# railsbox, la coquille et le disque applicatif sont publiés côte à côte sur le
+# gh-pages du mainteneur. Une origine par démonstration, donc une isolation
+# assurée par le navigateur plutôt que promise par nous.
+name: Construire la sandbox
+
+on:
+  workflow_call:
+    inputs:
+      app-path:
+        description: "Chemin de l'application Rails dans le dépôt appelant"
+        type: string
+        default: "."
+      name:
+        description: "Nom court de la sandbox (défaut : nom du dépôt)"
+        type: string
+        default: ""
+      base:
+        description: "Version de la base railsbox à utiliser"
+        type: string
+        default: "3.3"
+      assets-url:
+        description: "Racine du dépôt d'artefacts railsbox"
+        type: string
+        default: "https://pinfada.github.io/railsbox-assets"
+      base-image:
+        description: "Image de construction (doit correspondre à `base`)"
+        type: string
+        default: "ghcr.io/pinfada/railsbox-base"
+      railsbox-ref:
+        description: "Version de railsbox utilisée pour construire"
+        type: string
+        default: "main"
+      seed:
+        description: "Commande de seed (vide = celle détectée)"
+        type: string
+        default: ""
+      publish:
+        description: "Publier sur gh-pages (sinon construction seule)"
+        type: boolean
+        default: true
+
+# Limite de GitHub Pages : 95 Mo par fichier. Le disque applicatif et le rootfs
+# sont découpés, l'instantané est gzippé — au-delà, on refuse explicitement
+# plutôt que de publier une démonstration qui échouerait au chargement.
+env:
+  CHUNK_BYTES: 4194304
+  MAX_FILE_BYTES: 99614720
+
+jobs:
+  construire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Récupération de l'application
+        uses: actions/checkout@v4
+        with:
+          path: application
+
+      - name: Récupération de railsbox
+        uses: actions/checkout@v4
+        with:
+          repository: pinfada/railsbox
+          ref: ${{ inputs.railsbox-ref }}
+          path: railsbox
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: railsbox/package-lock.json
+      - run: npm ci
+        working-directory: railsbox
+
+      - name: Paramètres de la construction
+        id: parametres
+        run: |
+          nom="${{ inputs.name }}"
+          [ -n "$nom" ] || nom="$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
+          echo "nom=$nom" >> "$GITHUB_OUTPUT"
+          echo "base=base-${{ inputs.base }}" >> "$GITHUB_OUTPUT"
+          echo "racine=${{ inputs.assets-url }}/base-${{ inputs.base }}" >> "$GITHUB_OUTPUT"
+          echo "Sandbox « $nom » sur la base ${{ inputs.base }}" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------
+      # Le rootfs est RÉASSEMBLÉ depuis les octets publiés, jamais reconstruit.
+      # Un ext2 refabriqué ici aurait d'autres UUID et horodatages : le delta
+      # capturé dessus embarquerait un cache de blocs divergeant du disque que
+      # le visiteur lira (ADR 0002). C'est la condition de la restauration.
+      # ------------------------------------------------------------------
+      - name: Réassemblage du rootfs de base
+        working-directory: railsbox
+        run: |
+          set -eu
+          racine="${{ steps.parametres.outputs.racine }}"
+          base="${{ steps.parametres.outputs.base }}"
+          mkdir -p public/disks
+          node tools/build-v86-image/assemble-artifact.mjs \
+            "${racine}/${base}.ext2.zst" --out "public/disks/${base}.ext2"
+          curl -sSfL "${racine}/${base}-vmlinuz" -o "public/disks/${base}-vmlinuz"
+          curl -sSfL "${racine}/${base}-initrd" -o "public/disks/${base}-initrd"
+          curl -sSfL "${racine}/${base}-state.bin.gz" -o "public/disks/${base}-state.bin.gz"
+          gunzip -kf "public/disks/${base}-state.bin.gz"
+          ls -la public/disks
+
+      - name: Construction du disque applicatif
+        working-directory: railsbox
+        run: |
+          set -eu
+          docker pull -q "${{ inputs.base-image }}:${{ inputs.base }}"
+          # Tableau et non chaîne : une commande de seed contient des espaces,
+          # qu'une expansion non quotée découperait en arguments distincts.
+          extra=()
+          [ -z "${{ inputs.seed }}" ] || extra+=(--seed "${{ inputs.seed }}")
+          sudo -E env "PATH=$PATH" bash tools/build-v86-image/build-app-disk.sh \
+            "${GITHUB_WORKSPACE}/application/${{ inputs.app-path }}" \
+            --name "${{ steps.parametres.outputs.nom }}" \
+            --base "${{ inputs.base-image }}:${{ inputs.base }}" \
+            "${extra[@]}"
+          sudo chown -R "$USER" public/disks
+
+      # Boot base + application, exécution du démarrage applicatif (les seeds
+      # ont déjà tourné à la construction du disque), puis gel de la mémoire.
+      # L'auto-connexion, elle, s'exécute chez le visiteur : elle dépend de SA
+      # session, qu'aucun instantané ne peut contenir.
+      - name: Capture du delta d'instantané
+        working-directory: railsbox
+        run: |
+          node tools/build-v86-image/make-delta-snapshot.mjs \
+            --name "${{ steps.parametres.outputs.nom }}" \
+            --base "${{ steps.parametres.outputs.base }}" \
+            --base-url "${{ steps.parametres.outputs.racine }}" \
+            --base-chunk-size "${CHUNK_BYTES}" \
+            --app-chunk-size "${CHUNK_BYTES}" \
+            --state-suffix ".gz"
+
+      - name: Découpage des artefacts de l'application
+        working-directory: railsbox
+        run: |
+          set -eu
+          nom="${{ steps.parametres.outputs.nom }}"
+          node tools/build-v86-image/split-artifact.mjs \
+            "public/disks/${nom}-app.ext2" --zstd --out publication/disks
+          # L'instantané est téléchargé d'un bloc par le visiteur : gzippé il
+          # pèse environ le tiers, et la coquille le décompresse au vol.
+          gzip -kf "public/disks/${nom}-split-state.bin"
+          cp "public/disks/${nom}-split-state.bin.gz" publication/disks/
+          cp "public/disks/${nom}-split-config.json" publication/disks/v86-config.json
+
+      - name: Assemblage de la coquille
+        working-directory: railsbox
+        run: |
+          set -eu
+          # Tout public/ SAUF disks/, qui contient les artefacts de travail
+          # (l'ext2 de base réassemblé pèse 1,4 Go et n'a rien à faire ici).
+          rsync -a --exclude 'disks/' public/ publication/
+          touch publication/.nojekyll
+          du -sh publication
+          # Garde-fou de la limite Pages : mieux vaut refuser ici que publier
+          # une démonstration qui échouerait au chargement chez le visiteur.
+          trop_gros=$(find publication -type f -size +"$((MAX_FILE_BYTES / 1024))"k -printf '%f (%s octets)\n' || true)
+          if [ -n "$trop_gros" ]; then
+            echo "::error::Fichiers au-delà de la limite de GitHub Pages :"
+            echo "$trop_gros"
+            exit 1
+          fi
+          find publication -type f | wc -l
+
+      - name: Publication sur gh-pages
+        if: ${{ inputs.publish }}
+        working-directory: railsbox/publication
+        run: |
+          set -eu
+          git init -q -b gh-pages
+          git config user.email "actions@github.com"
+          git config user.name "railsbox"
+          git add -A
+          git commit -q -m "sandbox railsbox — ${{ steps.parametres.outputs.nom }} (${{ github.sha }})"
+          # Branche remise à plat : la sandbox est entièrement régénérée à
+          # chaque construction, conserver l'historique n'empilerait que des
+          # binaires morts.
+          git push -f \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            gh-pages
+
+      - name: Récapitulatif
+        if: ${{ inputs.publish }}
+        run: |
+          adresse="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          {
+            echo "## Sandbox publiée"
+            echo ""
+            echo "[$adresse]($adresse)"
+            echo ""
+            echo "Activez GitHub Pages sur la branche \`gh-pages\` si ce n'est pas déjà fait."
+            echo "Le rootfs mutualisé est servi par \`${{ inputs.assets-url }}\` :"
+            echo "le dépôt n'héberge que l'application."
+          } >> "$GITHUB_STEP_SUMMARY"
