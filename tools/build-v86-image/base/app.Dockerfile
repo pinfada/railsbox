@@ -18,7 +18,11 @@ FROM ${BASE_IMAGE} AS appbuild
 # — binaires bons, plateforme fantôme (voir base/Dockerfile).
 SHELL ["linux32", "/bin/sh", "-c"]
 
-ARG MOUNT_PATH=/app
+# Racine PUBLIQUE de la sandbox (« /depot » sur un Pages de projet, vide à la
+# racine d'un domaine). Déclarée ici parce que la précompilation des assets en
+# a besoin : les URL d'assets figées dans le CSS et le JS doivent porter le
+# même préfixe que celles générées à l'exécution.
+ARG MOUNT_PREFIX=""
 # Clés jetables : ce build ne sert qu'à peupler /app (bundle, assets, base). Les
 # vraies clés de session vivent dans l'env.sh figé de la base. BUNDLE_PATH pointe
 # dans l'arbre app pour que le bundle soit exporté avec lui.
@@ -31,7 +35,7 @@ ENV RAILS_ENV=production \
     BUNDLE_PATH=/app/vendor/bundle \
     BUNDLE_GEMFILE=/app/Gemfile \
     NOKOGIRI_USE_SYSTEM_LIBRARIES=true \
-    RAILS_RELATIVE_URL_ROOT=${MOUNT_PATH} \
+    RAILS_RELATIVE_URL_ROOT=${MOUNT_PREFIX}/app \
     RAILS_SERVE_STATIC_FILES=true \
     RAILS_LOG_TO_STDOUT=1 \
     SECRET_KEY_BASE=appdisk-build-throwaway \
@@ -118,7 +122,14 @@ RIB_DB
 # d'auto-connexion s'en sert comme garde et reste inerte partout ailleurs. Il
 # est posé ici, sur le disque applicatif, plutôt que dans l'env.sh de la base —
 # celle-ci est publiée et immuable, la toucher imposerait une nouvelle version.
+#
+# MOUNT_PREFIX : racine PUBLIQUE de la sandbox, « /depot » sur un Pages de
+# projet, vide à la racine d'un domaine. L'application est montée sur
+# « <préfixe>/app » et non sur « /app » : sans cela Rails générerait ses liens
+# et ses URL d'assets à la racine du domaine, hors du site — et hors de la
+# portée du Service Worker, qui ne pourrait même pas les rattraper.
 ARG APP_ENV_MANIFEST=""
 RUN mkdir -p /app/.railsbox \
-    && printf 'export RAILSBOX_SANDBOX=1\n%s\n' "${APP_ENV_MANIFEST}" > /app/.railsbox/app-env.sh \
+    && printf 'export RAILSBOX_SANDBOX=1\nexport RAILS_RELATIVE_URL_ROOT=%s/app\n%s\n' \
+       "${MOUNT_PREFIX}" "${APP_ENV_MANIFEST}" > /app/.railsbox/app-env.sh \
     && chmod 600 /app/.railsbox/app-env.sh

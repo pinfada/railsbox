@@ -264,19 +264,24 @@ export async function bootHarness({
   /**
    * Sonde l'application jusqu'à obtenir une réponse HTTP, en recalant
    * l'horloge à chaque tour (le démon peut ne pas être prêt au premier).
-   * @param {{ maxAttempts?: number, intervalMs?: number, onAttempt?: (attempt: number, error: string | null) => void }} [options]
+   * @param {{ maxAttempts?: number, intervalMs?: number, mountPath?: string, onAttempt?: (attempt: number, error: string | null) => void }} [options]
    */
   async function waitUntilReady({
     maxAttempts = DEFAULT_READY_ATTEMPTS,
     intervalMs = DEFAULT_READY_INTERVAL_MS,
     onAttempt = () => {},
+    // Chemin de montage réel : « /app » en développement, mais
+    // « /<depot>/app » pour une sandbox publiée sous un sous-répertoire, où
+    // l'application est montée sur son chemin PUBLIC complet. Sonder « /app/ »
+    // y récolterait un 404 de Rack, et la capture expirerait sans raison
+    // apparente.
+    mountPath = config.mountPath ?? "/app",
   } = {}) {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       syncClock();
       try {
-        // Chemin réel de l'application (montée sous /app via Rack::URLMap).
         const response = await request(
-          { method: "GET", path: "/app/", headers: [] },
+          { method: "GET", path: `${mountPath.replace(/\/$/, "")}/`, headers: [] },
           null,
           PROBE_TIMEOUT_MS,
         );

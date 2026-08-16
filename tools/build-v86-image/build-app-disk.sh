@@ -16,6 +16,8 @@
 #   --seed <cmd>        commande de seed ("" pour aucune)
 #   --seed-optional     un seed en échec n'arrête pas la construction
 #   --no-cache          reconstruction complète de l'image Docker
+#   --mount-prefix <p>  racine PUBLIQUE de la sandbox (« /depot » sur un Pages
+#                       de projet) : l'application y est montée sur <p>/app
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,6 +33,7 @@ SEED_OVERRIDE=""
 SEED_OVERRIDE_SET=0
 SEED_OPTIONAL=0
 NO_CACHE=""
+MOUNT_PREFIX=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +42,7 @@ while [ $# -gt 0 ]; do
     --seed) SEED_OVERRIDE="$2"; SEED_OVERRIDE_SET=1; shift 2 ;;
     --seed-optional) SEED_OPTIONAL=1; shift ;;
     --no-cache) NO_CACHE="--no-cache"; shift ;;
+    --mount-prefix) MOUNT_PREFIX="$2"; shift 2 ;;
     -h|--help) sed -n '2,25p' "$0" >&2; exit 2 ;;
     -*) echo "Option inconnue : $1" >&2; exit 2 ;;
     *) [ -z "$APP_DIR" ] || { echo "Un seul dossier d'application attendu" >&2; exit 2; }
@@ -106,6 +110,7 @@ fi
 ENV_COUNT="$(printf '%s' "${APP_ENV_MANIFEST:-}" | grep -c '^export ' || true)"
 echo "  Base $BASE_IMAGE · Ruby $RUBY_VERSION · db $DATABASE · seed ${SEED_COMMAND:-aucun}"
 echo "  Environnement déclaré : $ENV_COUNT variable(s)"
+echo "  Montée sous : ${MOUNT_PREFIX}/app"
 if [ -n "${AUTO_LOGIN_INITIALIZER:-}" ]; then
   echo "  Auto-connexion : activée"
 else
@@ -126,6 +131,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "AUTO_LOGIN_INITIALIZER=$AUTO_LOGIN_INITIALIZER" \
+  --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
   "$APP_DIR"
 
 echo "→ Export de l'arbre /app…"

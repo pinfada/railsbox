@@ -14,7 +14,6 @@
 import { sanitizeMethod } from "./shared/request-codec.js";
 import {
   appPrefix,
-  normalizeBasePath,
   errorPage,
   prepareProxyHeaders,
   responseBodyFor,
@@ -39,8 +38,6 @@ const sw = /** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (
 // de projet — le cas de chaque démonstration depuis l'ADR 0004. Tout chemin
 // écrit en dur casserait dans le second cas.
 const BASE_PATH = new URL(sw.registration.scope).pathname;
-/** Racine de publication sans barre oblique finale : «  » à la racine, « /depot » ailleurs. */
-const BASE_PREFIX = normalizeBasePath(BASE_PATH);
 const APP_PREFIX = appPrefix(BASE_PATH);
 const RAW_ASSET_PREFIX = `${BASE_PATH.replace(/\/+$/, "")}/disks/`;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -186,18 +183,18 @@ async function proxyToVm(request, url) {
     // reçoit donc SCRIPT_NAME=/app et génère des liens déjà préfixés, qui
     // repassent naturellement par ce proxy.
     //
-    // La racine de PUBLICATION, elle, s'arrête à la porte du guest : celui-ci
-    // ne sait rien du sous-répertoire où la coquille est déployée. Sans ce
-    // retrait, Rack recevait « /depot/app/ » et répondait « Not Found », alors
-    // même que l'application tournait — panne invisible à la racine, où le
-    // préfixe est vide.
-    const cheminGuest = url.pathname.startsWith(BASE_PREFIX)
-      ? url.pathname.slice(BASE_PREFIX.length)
-      : url.pathname;
+    // La racine de publication est transmise TELLE QUELLE, délibérément. On
+    // avait d'abord essayé de la retirer, pour que le guest ignore tout du
+    // sous-répertoire de déploiement : Rack répondait bien, mais Rails générait
+    // alors ses liens et ses URL d'assets en « /app/… », donc à la racine du
+    // domaine — hors du dépôt, et hors de la portée de ce Service Worker, qui
+    // ne pouvait même pas les rattraper. L'application doit être montée sur le
+    // chemin PUBLIC complet (RAILS_RELATIVE_URL_ROOT, posé à la construction) :
+    // c'est la seule façon qu'elle produise des URL qui fonctionnent.
     const descriptor = {
       id: state.nextId++,
       method,
-      path: cheminGuest + url.search,
+      path: url.pathname + url.search,
       // X-Forwarded-Proto https : les apps en `force_ssl` (jiyufit) verraient
       // sinon une requête http et boucleraient en redirection. Chrome accepte
       // les cookies Secure sur localhost, donc les sessions fonctionnent.

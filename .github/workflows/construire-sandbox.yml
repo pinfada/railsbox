@@ -105,6 +105,12 @@ jobs:
           echo "nom=$nom" >> "$GITHUB_OUTPUT"
           echo "base=base-${{ inputs.base }}" >> "$GITHUB_OUTPUT"
           echo "racine=${{ inputs.assets-url }}/base-${{ inputs.base }}" >> "$GITHUB_OUTPUT"
+          # Racine publique de la sandbox : « /depot » sur un Pages de projet.
+          # L'application doit être montée dessus, sinon elle génère ses liens
+          # et ses assets à la racine du domaine, hors du site.
+          cible="${{ inputs.target-repo }}"
+          [ -n "$cible" ] || cible="${{ github.repository }}"
+          echo "prefixe=/${cible##*/}" >> "$GITHUB_OUTPUT"
           echo "Sandbox « $nom » sur la base ${{ inputs.base }}" >> "$GITHUB_STEP_SUMMARY"
 
       # ------------------------------------------------------------------
@@ -141,6 +147,7 @@ jobs:
             "${GITHUB_WORKSPACE}/application/${{ inputs.app-path }}" \
             --name "${{ steps.parametres.outputs.nom }}" \
             --base "${{ inputs.base-image }}:${{ inputs.base }}" \
+            --mount-prefix "${{ steps.parametres.outputs.prefixe }}" \
             "${extra[@]}"
           sudo chown -R "$USER" public/disks
 
@@ -154,6 +161,7 @@ jobs:
           node tools/build-v86-image/make-delta-snapshot.mjs \
             --name "${{ steps.parametres.outputs.nom }}" \
             --base "${{ steps.parametres.outputs.base }}" \
+            --mount-path "${{ steps.parametres.outputs.prefixe }}/app" \
             --base-url "${{ steps.parametres.outputs.racine }}" \
             --base-chunk-size "${CHUNK_BYTES}" \
             --app-chunk-size "${CHUNK_BYTES}" \
