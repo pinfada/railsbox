@@ -48,6 +48,17 @@ disque par morceaux), le tout sous `COEP: require-corp`.
 - Le preflight OPTIONS répond 405 partout, mais un `Range: bytes=a-b`
   simple est **CORS-safelisted** (spec Fetch) : pas de preflight tant que
   la coquille n'ajoute aucun en-tête non listé sur ces requêtes.
-  À verrouiller par un test E2E navigateur en phase C.
+  **Verrouillé** (phase C) par deux tests complémentaires :
+  - `tests/artefacts-requetes-simples.test.mjs` (statique) suit la chaîne
+    entière — le workflow passe `--base-chunk-size`, la configuration porte
+    donc `diskChunkSize`, `buildDiskImages` en tire `use_parts`, et v86
+    emprunte son chargeur « fichiers-parties », qui télécharge chaque morceau
+    par un GET nu. Le mesuré qui justifie tout : sur son **autre** chemin, la
+    lecture par `Range`, v86 pose `X-Accept-Encoding: identity` — un en-tête
+    non safelisté, donc un preflight, donc un 405. Un artefact cross-origin
+    non découpé casserait la sandbox, et seulement une fois publiée ;
+  - `tests/live/sandbox-publiee.live.spec.mjs` (dynamique) inspecte les
+    en-têtes réellement émis par la sandbox en ligne et vérifie qu'aucun
+    OPTIONS ne part vers les origines d'artefacts.
 - Ce choix supprime toute dépendance à un compte de stockage par
   mainteneur : la chaîne reste « GitHub seulement » côté utilisateur.
