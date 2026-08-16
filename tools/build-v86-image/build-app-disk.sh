@@ -82,6 +82,16 @@ if [ "${NPM_ASSETS:-0}" = 1 ]; then
   echo "✗ Applications à chaîne npm hors périmètre du MVP B2 (importmap seulement)." >&2
   exit 1
 fi
+# La base est mutualisée : son jeu de bibliothèques système est figé à sa
+# construction et le disque applicatif ne peut rien y ajouter. Une gem native
+# réclamant autre chose échouerait à la compilation, loin de la cause — on
+# refuse ici, avec le nom des paquets et le remède.
+MISSING="$(node "$SCRIPT_DIR/split-config.mjs" --check-packages "${EXTRA_PACKAGES:-}")" || {
+  echo "✗ La base ne fournit pas les bibliothèques système : $MISSING" >&2
+  echo "  Ajoutez ces paquets à tools/build-v86-image/base/Dockerfile puis reconstruisez" >&2
+  echo "  la base (base-build.sh) — le disque applicatif ne peut pas les installer." >&2
+  exit 1
+}
 
 SERIES="$(echo "$RUBY_VERSION" | cut -d. -f1,2)"
 [ -n "$BASE_IMAGE" ] || BASE_IMAGE="railsbox-base-$SERIES"
@@ -91,7 +101,11 @@ if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Le nombre de variables est affiché : un bloc `env:` silencieusement ignoré
+# est une panne très difficile à diagnostiquer depuis le navigateur.
+ENV_COUNT="$(printf '%s' "${APP_ENV_MANIFEST:-}" | grep -c '^export ' || true)"
 echo "  Base $BASE_IMAGE · Ruby $RUBY_VERSION · db $DATABASE · seed ${SEED_COMMAND:-aucun}"
+echo "  Environnement déclaré : $ENV_COUNT variable(s)"
 
 ########################################################################
 # Build de l'image applicative (FROM base) et export de /app
@@ -105,6 +119,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "DB_PREPARE_COMMAND=$DB_PREPARE_COMMAND" \
   --build-arg "SEED_COMMAND=$SEED_COMMAND" \
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
+  --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   "$APP_DIR"
 
 echo "→ Export de l'arbre /app…"

@@ -19,6 +19,15 @@ dans sa propre VM. En conséquence :
 - Les secrets générés au build (`SECRET_KEY_BASE`, clés de chiffrement) sont
   des **valeurs jetables propres à la sandbox** : ils ne protègent rien et ne
   doivent être réutilisés nulle part.
+- Depuis le découpage base / application (ADR 0002), ces clés sont figées dans
+  l'**image de base mutualisée**, pas par application : toutes les sandboxes
+  bâties sur une même base partagent la même `SECRET_KEY_BASE` et les mêmes
+  clés ActiveRecord Encryption, et cette base est un artefact public
+  téléchargeable. C'est sans effet ici — la session d'un visiteur n'a de sens
+  que dans sa propre VM, dont il est déjà root — mais l'hypothèse tombe dès
+  qu'une sandbox cesse d'être publique et jetable (previews privées de la
+  phase 2) : ce jour-là, les clés devront redescendre au niveau du disque
+  applicatif.
 - Les valeurs saisies dans l'inspecteur d'environnement sont stockées dans le
   navigateur du visiteur (localStorage, et l'instantané IndexedDB capture
   l'état de la VM). Elles ne quittent jamais sa machine — mais quiconque a

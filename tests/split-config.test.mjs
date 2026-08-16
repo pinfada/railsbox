@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   APP_DISK_BYTES,
+  BASE_SYSTEM_PACKAGES,
   buildSplitConfig,
   checkAppDiskFit,
+  unsupportedPackages,
 } from "../tools/build-v86-image/split-config.mjs";
 import { isBootableConfig, isSplitConfig } from "../public/shared/v86-config.js";
 
@@ -41,6 +43,26 @@ test("buildSplitConfig émet une config split valide et bootable", () => {
   assert.equal(config.initrd, "/disks/base-3.3-initrd");
   assert.equal(config.state, "/disks/demo-split-state.bin");
   assert.equal(config.mountPath, "/app");
+});
+
+test("unsupportedPackages accepte ce que la base fournit déjà", () => {
+  assert.deepEqual(unsupportedPackages("libsqlite3-dev libxml2-dev libxslt1-dev"), []);
+  assert.deepEqual(unsupportedPackages(BASE_SYSTEM_PACKAGES), []);
+});
+
+test("unsupportedPackages signale les bibliothèques absentes de la base", () => {
+  assert.deepEqual(unsupportedPackages("libsqlite3-dev libvips-dev libvips42"), [
+    "libvips-dev",
+    "libvips42",
+  ]);
+});
+
+test("unsupportedPackages tolère une liste vide ou mal espacée", () => {
+  assert.deepEqual(unsupportedPackages(""), []);
+  assert.deepEqual(unsupportedPackages("   "), []);
+  assert.deepEqual(unsupportedPackages([]), []);
+  // Doublons repliés : le message d'erreur ne doit pas répéter un paquet.
+  assert.deepEqual(unsupportedPackages("libpq-dev  libpq-dev"), ["libpq-dev"]);
 });
 
 test("buildSplitConfig omet state quand aucun instantané n'est fourni", () => {

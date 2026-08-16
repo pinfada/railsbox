@@ -78,6 +78,14 @@ if [ "${WITH_REDIS}" = 1 ]; then redis-cli shutdown nosave || true; fi
 rm -rf log/* tmp/* 2>/dev/null || true
 RIB_DB
 
-# Environnement propre à l'application, sourcé par start-app.sh après montage.
-# Vide pour le MVP sqlite/importmap ; un futur PostgreSQL y fixerait PGDATA.
-RUN mkdir -p /app/.railsbox && : > /app/.railsbox/app-env.sh
+# Environnement propre à l'application, sourcé par start-app.sh après montage
+# du disque applicatif (un futur PostgreSQL y fixerait PGDATA).
+#
+# SÉCURITÉ : APP_ENV_MANIFEST provient de railsbox.yml, donc de code TIERS. Il
+# est écrit VERBATIM, jamais évalué ici : les valeurs sont déjà single-quotées
+# par manifest-to-args.mjs (un `$(commande)` reste une chaîne littérale) et les
+# noms de variables sont validés à l'analyse du manifeste (invalid-env-name).
+ARG APP_ENV_MANIFEST=""
+RUN mkdir -p /app/.railsbox \
+    && printf '%s\n' "${APP_ENV_MANIFEST}" > /app/.railsbox/app-env.sh \
+    && chmod 600 /app/.railsbox/app-env.sh
