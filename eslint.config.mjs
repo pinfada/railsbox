@@ -8,6 +8,8 @@ export default [
   {
     ignores: [
       "node_modules/**",
+      // Worktrees d'agents et état de session : hors du périmètre du dépôt.
+      ".claude/**",
       "public/vendor/**",
       "public/disks/**",
       "tools/build-v86-image/build.log",
