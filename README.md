@@ -591,14 +591,17 @@ des logiciels libres (Linux, Ruby, Rails…) sous leurs licences respectives.
 serve.mjs                          serveur de dev : COOP/COEP, Range, gzip, cache
 public/
 ├── index.html · main.js           page hôte : orchestration, badges, CSP, sandbox
-├── sw-proxy.js                    SW unique : proxy /app/*, assets statiques, COI,
-│                                  cache des artefacts immuables
+├── sw-proxy.js                    SW unique : proxy /app/*, bocal à cookies,
+│                                  assets statiques, COI, cache des artefacts
 ├── env-drawer.js · .css           inspecteur d'environnement (secrets session-only)
 ├── shared/
 │   ├── request-codec.js           validation HTTP (frontière de sécurité)
 │   ├── serial-codec.js            trames @RIB1, contrôle de flux montant
 │   ├── proxy-logic.js             logique pure du SW (réécriture, CSP, assets)
 │   ├── artifact-cache.js          logique pure du cache (URL cacheables, nom, purge)
+│   ├── cookie-jar.js              magasin de cookies du proxy (un SW ne peut pas
+│                                  faire poser de cookie : sans lui, pas de session
+│                                  Rails, donc 422 CSRF sur toute écriture)
 │   ├── env-detector.js            détection des variables manquantes
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/

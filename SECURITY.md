@@ -47,6 +47,33 @@ dans sa propre VM. En conséquence :
 | Page hôte | Content-Security-Policy (`index.html`), `X-Content-Type-Options: nosniff` |
 | Serveur de dev | anti-traversée de répertoire (`resolveSafePath`, testée) |
 | Redirections | réécrites sous `/app` uniquement si same-origin ; les externes ne sont pas suivies par le proxy |
+| Cookies de l'application | tenus par le Service Worker (`shared/cookie-jar.js`), jamais rendus au document : `document.cookie` reste vide et un cookie `HttpOnly` est **réellement** hors de portée du script, y compris d'un XSS dans l'application |
+
+### Cookies et protection CSRF
+
+Un Service Worker ne peut pas faire poser de cookie : `Set-Cookie` est un
+en-tête interdit sur une `Response` construite, silencieusement filtré. Le
+proxy tient donc lui-même le magasin — sans quoi la session Rails n'existe
+pas, et **toute écriture est refusée en 422 `InvalidAuthenticityToken`**.
+
+Deux conséquences côté sécurité :
+
+- **L'isolation y gagne.** Les cookies vivent dans le Service Worker, pas dans
+  le magasin du navigateur : rien ne les expose au script de l'application.
+- **L'en-tête `Origin` n'est plus relayé au guest** (`request-codec.js`).
+  Rails le compare à `request.base_url` (`forgery_protection_origin_check`) ;
+  or le guest ne peut pas connaître de façon fiable l'origine publique
+  (schéma forcé à `https` pour les applications en `force_ssl`, port de
+  développement, sous-répertoire de publication), et le moindre écart produit
+  un 422 opaque sur une application **non modifiée**. Rails traite une origine
+  absente comme valide, et la protection CSRF reste entièrement portée par le
+  jeton de session. C'est sûr ici parce que le Service Worker est le **seul**
+  chemin jusqu'à la VM : il n'intercepte que les requêtes de ses propres
+  clients same-origin (une page tierce n'est pas un client — ses requêtes vers
+  notre origine ne le traversent jamais), et les documents applicatifs sont
+  servis sous `form-action 'self'` et `frame-ancestors 'self'`. Forger une
+  requête inter-origine vers la VM supposerait déjà un XSS **dans**
+  l'application, qui lirait de toute façon le jeton CSRF de la page.
 
 ## Hors périmètre (assumé)
 
