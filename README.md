@@ -159,8 +159,9 @@ les repère et bascule seule la précompilation sur un **étage amd64** (voir
 « Où sont précompilés les assets » plus bas). Le résumé de la construction
 affiche l'étage retenu.
 
-> **Prérequis actuel** : `railsbox` est un dépôt privé, ce qui empêche un dépôt
-> tiers de référencer ce workflow. Cette voie ne sera ouverte qu'avec le dépôt.
+Le dépôt est public : n'importe quel dépôt peut référencer
+`pinfada/railsbox/.github/workflows/construire-sandbox.yml@main` directement —
+épinglez un tag ou un SHA si vous préférez figer la version.
 
 ### Déclarer ce que la détection ne devine pas
 
@@ -519,6 +520,15 @@ importmap, publié et bootant en ligne. Le reste, honnêtement :
 pas, et pourquoi il ne faut jamais embarquer de vrais secrets :
 [`SECURITY.md`](SECURITY.md).
 
+### Licences tierces
+
+railsbox est sous licence MIT ([`LICENSE`](LICENSE)). Il vendorise l'émulateur
+[v86](https://github.com/copy/v86) (BSD 2-Clause,
+[`public/vendor/v86/LICENSE`](public/vendor/v86/LICENSE)) et les firmwares
+qu'il embarque : SeaBIOS (`seabios.bin`, LGPLv3) et le VGABIOS de Bochs
+(`vgabios.bin`, LGPL). Les rootfs publiés dans `railsbox-assets` contiennent
+des logiciels libres (Linux, Ruby, Rails…) sous leurs licences respectives.
+
 ## Arborescence
 
 ```
@@ -537,7 +547,7 @@ public/
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
     └── v86-vm.js                  boot v86, instantané, horloge, pont série
-tests/                             200 tests unitaires + intégration (VM réelle) + E2E
+tests/                             ~250 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
 ├── e2e/                           boot navigateur complet (Playwright)
 └── live/                          recette de la sandbox PUBLIÉE (réseau, hors CI)

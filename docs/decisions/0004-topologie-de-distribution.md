@@ -100,10 +100,16 @@ domaine nécessaire**. Toute la chaîne tient sur GitHub.
   technique — le jour où elle gêne, elle peut tomber sans casser v86.
 - La branche `gh-pages` doit être **orpheline et poussée en force** : sans
   cela, chaque reconstruction y empile une copie complète des artefacts.
-- **GitHub Pages plafonne le cache à `max-age=600`.** Nos artefacts sont
-  pourtant immuables (une base publiée n'est jamais réécrite, ADR 0004). Un
-  visiteur qui revient le lendemain retélécharge donc tout, alors que rien n'a
-  changé. C'est le principal gisement d'optimisation du chantier C : mettre les
-  morceaux en cache côté client (Cache Storage ou IndexedDB, comme l'est déjà
-  l'instantané) plutôt que de compter sur le cache HTTP.
+- **GitHub Pages plafonne le cache à `max-age=600`** alors que nos artefacts
+  sont immuables. **Traité** : le Service Worker met les morceaux, le noyau et
+  l'initrd en Cache Storage, « cache d'abord », sous un nom de cache dérivé de
+  la configuration complète — une reconstruction invalide l'ancien cache (voir
+  « Le cache des artefacts » du README et `public/shared/artifact-cache.js`).
+- **La CSP de la coquille doit s'ouvrir à l'origine de la base.** Chez un
+  mainteneur tiers, la base est cross-origin et le `connect-src 'self'` de la
+  coquille bloquerait les XHR de v86 avant même le CORS — un défaut invisible
+  sur la démonstration de référence, dont la base est same-origin. **Traité** :
+  l'assemblage réécrit la CSP publiée quand l'origine de la base diffère du
+  site cible (`tools/build-v86-image/autoriser-origine-base.mjs`), et rien
+  d'autre ne s'ouvre.
 - Reste non mesuré : les navigateurs autres que Chromium.
