@@ -59,8 +59,10 @@ jobs:
         run: |
           plateforme=$(docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" \
             ruby -e 'print RUBY_PLATFORM')
+          # xargs replie les espaces multiples ET retire ceux des extrémités :
+          # sans cela la valeur garde une espace de tête et aucun motif ne colle.
           classe=$(docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" \
-            readelf -h /usr/local/bin/ruby | grep -E '^ +(Class|Machine):' | cut -d: -f2 | tr -s ' \n' ' ')
+            readelf -h /usr/local/bin/ruby | grep -E '^ +(Class|Machine):' | cut -d: -f2 | xargs)
           {
             echo "| Contrôle | Valeur |"
             echo "|---|---|"
@@ -73,7 +75,7 @@ jobs:
             exit 1
           fi
           case "$classe" in
-            ELF32*80386*) echo "Binaire ELF32 / Intel 80386 : exécutable par le CPU émulé de v86." ;;
+            *ELF32*80386*) echo "Binaire ELF32 / Intel 80386 : exécutable par le CPU émulé de v86." ;;
             *) echo "::error::Binaire inattendu (${classe}) : v86 émule un i386, il lui faut de l'ELF32."; exit 1 ;;
           esac
 
