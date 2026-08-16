@@ -26,6 +26,10 @@ import { DEFAULT_CHUNK_BYTES, planParts, partName, splitArtifactName } from "./a
 
 const decompress = promisify(zstdDecompress);
 
+/** Tentatives par morceau, et attente initiale doublée à chaque échec. */
+const RETRY_ATTEMPTS = 5;
+const RETRY_BASE_MS = 500;
+
 function log(message) {
   process.stdout.write(`[assemble-artifact] ${message}\n`);
 }
@@ -52,9 +56,28 @@ export function parseArgs(argv) {
  */
 async function readPart(location) {
   if (!/^https?:\/\//.test(location)) return readFile(location);
-  const response = await fetch(location);
-  if (!response.ok) throw new Error(`${response.status} sur ${location}`);
-  return Buffer.from(await response.arrayBuffer());
+
+  // Plusieurs centaines de requêtes consécutives : GitHub Pages finit par
+  // répondre 503. Observé au douzième morceau sur 363, depuis un runner. Ce
+  // n'est pas une erreur de fond mais du bridage, et l'artefact réassemblé
+  // conditionne toute la construction — on réessaie, en espaçant.
+  let derniere = null;
+  for (let essai = 0; essai < RETRY_ATTEMPTS; essai += 1) {
+    if (essai > 0) await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** (essai - 1)));
+    try {
+      const response = await fetch(location);
+      if (response.ok) return Buffer.from(await response.arrayBuffer());
+      // 4xx : le morceau n'existe pas, réessayer n'y changera rien.
+      if (response.status < 500 && response.status !== 429) {
+        throw new Error(`${response.status} sur ${location}`);
+      }
+      derniere = new Error(`${response.status} sur ${location}`);
+    } catch (error) {
+      if (/^\d{3} sur /.test(error.message)) throw error;
+      derniere = error;
+    }
+  }
+  throw new Error(`${derniere?.message ?? "échec"} — après ${RETRY_ATTEMPTS} tentatives`);
 }
 
 /**
