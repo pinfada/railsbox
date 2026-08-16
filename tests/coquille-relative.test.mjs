@@ -71,3 +71,12 @@ test("index.html charge ses ressources relativement", () => {
   assert.match(html, /href="env-drawer\.css"/);
   assert.match(html, /src="main\.js"/);
 });
+
+test("le moteur par défaut est v86, pas le CheerpX historique", () => {
+  // Défaut resté sur « cheerpx » après la bascule : la sandbox publiée
+  // téléchargeait un runtime tiers et servait un serveur de démonstration
+  // minimal au lieu de l'application. Invisible en local, où les suites de
+  // bout en bout passent explicitement ?engine=v86.
+  const main = readFileSync(join(PUBLIC_DIR, "main.js"), "utf8");
+  assert.match(main, /params\.get\("engine"\)\s*\?\?\s*"v86"/);
+});

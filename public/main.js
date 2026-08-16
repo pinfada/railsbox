@@ -137,7 +137,12 @@ async function waitForApplication(vm, repairAttempt = 0) {
 
 async function bootSelectedEngine() {
   const params = new URLSearchParams(location.search);
-  const engine = params.get("engine") ?? "cheerpx";
+  // v86 par défaut. CheerpX est le moteur historique, conservé derrière
+  // `?engine=cheerpx` : il télécharge son runtime depuis un CDN tiers, ne sait
+  // pas monter le disque applicatif découplé et se rabat sur un serveur de
+  // démonstration minimal. Un visiteur qui arrive sur une sandbox publiée doit
+  // obtenir l'application, pas ce repli.
+  const engine = params.get("engine") ?? "v86";
   const badge = document.getElementById("badge-vm");
   badge.textContent = `VM ${engine}`;
   if (engine === "v86") {
