@@ -44,6 +44,51 @@ test("buildRequestFrames sépare le descripteur du corps (une seule couche base6
   assert.equal(tail, "@RIB1 FIN 42\n");
 });
 
+test("buildRequestFrames injecte le cookie du bocal et ignore celui du navigateur", () => {
+  // Le trajet complet : le Service Worker passe l'en-tête que son bocal a
+  // sérialisé, et TOUT `Cookie:` venu des en-têtes du navigateur est écarté —
+  // le magasin du proxy reste la source unique.
+  const { head } = buildRequestFrames("3", {
+    method: "POST",
+    path: "/depot/app/posts",
+    headers: [
+      ["Cookie", "_demo_session=forge"],
+      ["Origin", "https://pinfada.github.io"],
+      ["Content-Type", "application/x-www-form-urlencoded"],
+    ],
+    forwardHost: "pinfada.github.io",
+    cookie: "_demo_session=vrai; railsbox_auto_login=1",
+    bodyBytes: new TextEncoder().encode("post%5Btitle%5D=x"),
+  });
+  const descriptor = JSON.parse(new TextDecoder().decode(base64ToBytes(head.trim().split(" ")[3])));
+  const noms = descriptor.headers.map(([nom]) => nom);
+  assert.deepEqual(noms, ["host", "cookie", "content-type"]);
+  assert.deepEqual(descriptor.headers[1], ["cookie", "_demo_session=vrai; railsbox_auto_login=1"]);
+  assert.equal(noms.includes("origin"), false, "Origin ne doit jamais atteindre le guest");
+});
+
+test("buildRequestFrames n'ajoute aucun cookie quand le bocal est vide", () => {
+  const { head } = buildRequestFrames("4", {
+    method: "GET",
+    path: "/app/posts",
+    headers: [["Accept", "text/html"]],
+    cookie: null,
+  });
+  const descriptor = JSON.parse(new TextDecoder().decode(base64ToBytes(head.trim().split(" ")[3])));
+  assert.deepEqual(descriptor.headers, [["accept", "text/html"]]);
+});
+
+test("buildRequestFrames refuse un cookie porteur d'une injection d'en-tête", () => {
+  const { head } = buildRequestFrames("5", {
+    method: "GET",
+    path: "/app/posts",
+    headers: [],
+    cookie: `a=1${String.fromCharCode(13)}${String.fromCharCode(10)}X-Injecte: oui`,
+  });
+  const descriptor = JSON.parse(new TextDecoder().decode(base64ToBytes(head.trim().split(" ")[3])));
+  assert.deepEqual(descriptor.headers, []);
+});
+
 test("buildRequestFrames découpe un gros corps en tranches acquittables", () => {
   const corps = new Uint8Array(200 * 1024).map((_, index) => index % 256);
   const { bodyChunks } = buildRequestFrames("7", {

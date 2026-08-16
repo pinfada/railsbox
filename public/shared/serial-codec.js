@@ -11,6 +11,7 @@
 import {
   filterRequestHeaders,
   sanitizeAppPath,
+  sanitizeCookieHeader,
   sanitizeForwardHost,
   sanitizeMethod,
 } from "./request-codec.js";
@@ -75,15 +76,23 @@ export function decodeBase64Into(base64, target, offset) {
  *   path: string,
  *   headers: Array<[string, string]>,
  *   forwardHost?: string,
+ *   cookie?: string | null,
  *   bodyBytes?: Uint8Array | null,
  * }} request
  * @returns {{ head: string, bodyChunks: string[], tail: string }}
  */
-export function buildRequestFrames(id, { method, path, headers, forwardHost, bodyBytes }) {
+export function buildRequestFrames(id, { method, path, headers, forwardHost, cookie, bodyBytes }) {
   const finalHeaders = [];
   const safeHost = sanitizeForwardHost(forwardHost);
   if (safeHost !== null) {
     finalHeaders.push(["host", safeHost]);
+  }
+  // Canal DÉDIÉ pour le cookie, comme pour l'hôte : il ne vient pas du
+  // navigateur (qui n'en a aucun) mais du bocal du Service Worker, et
+  // filterRequestHeaders retire justement tout `Cookie:` venu d'ailleurs.
+  const safeCookie = sanitizeCookieHeader(cookie);
+  if (safeCookie !== null) {
+    finalHeaders.push(["cookie", safeCookie]);
   }
   finalHeaders.push(...filterRequestHeaders(headers));
   const body = bodyBytes ?? new Uint8Array(0);

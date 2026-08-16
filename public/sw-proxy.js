@@ -1,6 +1,10 @@
-// Service Worker unique du projet, trois rôles :
+// Service Worker unique du projet, quatre rôles :
 //  1. Proxy HTTP : intercepte /app/* et relaie vers la VM via un MessagePort
 //     fourni par la page hôte (qui elle-même pilote la VM v86).
+//  1 bis. Magasin de cookies : un Service Worker ne PEUT PAS faire poser de
+//     cookie (Set-Cookie est un en-tête interdit sur une Response construite),
+//     donc le proxy tient lui-même le bocal — sans quoi la session Rails, et
+//     avec elle le jeton CSRF, n'existe tout simplement pas.
 //  2. Spoofing COI : ré-injecte les en-têtes COOP/COEP sur les réponses
 //     same-origin pour les hébergeurs statiques qui ne les posent pas
 //     (équivalent intégré de coi-serviceworker).
@@ -35,6 +39,7 @@ import {
   obsoleteCacheNames,
   staleFormatCacheNames,
 } from "./shared/artifact-cache.js";
+import { createCookieJar, extractSetCookie } from "./shared/cookie-jar.js";
 
 // lib.webworker type `self` en WorkerGlobalScope générique : ce fichier est
 // un Service Worker, on le déclare une fois pour bénéficier des types
@@ -67,6 +72,17 @@ const QUOTA_HEADROOM = 0.9;
 const STORAGE_ESTIMATE_TTL_MS = 5_000;
 // Intervalle minimal entre deux demandes de configuration à la page hôte.
 const CONFIG_REQUEST_INTERVAL_MS = 2_000;
+// Magasin de cookies du visiteur (voir shared/cookie-jar.js) : le navigateur
+// ne peut pas le tenir pour nous, un Service Worker ne pouvant pas faire poser
+// de cookie. Persisté en IndexedDB sous une clé dérivée de la portée — le SW
+// est tué dès qu'il est inactif, et perdre le magasin en cours de parcours
+// reviendrait à perdre la session Rails du visiteur (donc son jeton CSRF).
+// La page hôte, elle, ne peut PAS nous le rendre comme elle rend le port du
+// pont : elle n'a jamais vu ces cookies, et c'est exactement l'intérêt du
+// dispositif (les HttpOnly le restent vraiment).
+const COOKIE_DB_NAME = "railsbox-cookies";
+const COOKIE_STORE = "jars";
+const COOKIE_KEY = new URL(sw.registration.scope).pathname;
 
 const state = {
   bridgePort: null,
@@ -79,7 +95,13 @@ const state = {
   lastConfigRequest: 0,
   storageEstimate: null, // { at, estimate }
   warned: new Set(), // motifs déjà journalisés, pour ne pas inonder la console
+  // Restauration du bocal depuis IndexedDB : tentée une seule fois par vie du
+  // Service Worker, avant la première requête relayée.
+  cookiesRestored: null,
+  cookieDb: null, // connexion IndexedDB du bocal, ouverte à la demande
 };
+
+const cookieJar = createCookieJar();
 
 sw.addEventListener("install", () => sw.skipWaiting());
 sw.addEventListener("activate", (event) =>
@@ -422,6 +444,7 @@ async function withIsolationHeaders(request) {
 async function proxyToVm(request, url) {
   try {
     const bridgePort = await ensureBridgePort();
+    await ensureCookiesRestored();
     const method = sanitizeMethod(request.method);
     const hasBody = method !== "GET" && method !== "HEAD";
     const body = hasBody ? await request.arrayBuffer() : null;
@@ -448,12 +471,37 @@ async function proxyToVm(request, url) {
       headers: [...request.headers.entries(), ["x-forwarded-proto", "https"]],
       hasBody: hasBody && body !== null,
       forwardHost: url.host,
+      // Le navigateur n'a aucun cookie de l'application à nous donner : c'est
+      // le bocal du proxy qui les tient, et lui seul (shared/cookie-jar.js).
+      cookie: cookieJar.headerFor(url.pathname),
     };
     const reply = await sendToBridge(bridgePort, descriptor, body);
-    return buildResponse(reply);
+    const headers = await harvestCookies(reply.headers, url.pathname);
+    return buildResponse(reply, headers);
   } catch (error) {
     return errorResponse(502, `Pont HTTP en erreur: ${error.message}`);
   }
+}
+
+/**
+ * Retire les `Set-Cookie` de la réponse de la VM, les range dans le bocal et
+ * persiste celui-ci s'il a changé. Les rendre au document ne servirait à rien
+ * — le constructeur `Response` filtre `Set-Cookie` — et les garder ici est ce
+ * qui rend les cookies HttpOnly réellement inaccessibles au script.
+ * @param {Array<[string, string]> | undefined} rawHeaders
+ * @param {string} requestPath chemin de la requête, sans chaîne de recherche
+ * @returns {Promise<Array<[string, string]>>} en-têtes à rendre au document
+ */
+async function harvestCookies(rawHeaders, requestPath) {
+  const { setCookies, headers } = extractSetCookie(rawHeaders);
+  if (cookieJar.ingest(setCookies, requestPath)) {
+    // Écriture attendue, pas différée : une réponse rendue dont le cookie
+    // n'aurait pas été persisté laisserait le visiteur sans session si le
+    // navigateur tuait le worker dans la foulée. Le coût (quelques centaines
+    // d'octets) est sans commune mesure avec l'aller-retour série qui précède.
+    await persistCookies();
+  }
+  return headers;
 }
 
 function sendToBridge(bridgePort, descriptor, body) {
@@ -468,12 +516,80 @@ function sendToBridge(bridgePort, descriptor, body) {
   });
 }
 
-function buildResponse(reply) {
+/**
+ * @param {{ status: number, statusText?: string, body?: ArrayBuffer | null }} reply
+ * @param {Array<[string, string]>} headers en-têtes déjà débarrassés des cookies
+ */
+function buildResponse(reply, headers) {
   return new Response(responseBodyFor(reply.status, reply.body), {
     status: reply.status,
     statusText: reply.statusText ?? "",
-    headers: prepareProxyHeaders(reply.headers, sw.location, BASE_PATH),
+    headers: prepareProxyHeaders(headers, sw.location, BASE_PATH),
   });
+}
+
+// --- Persistance du bocal à cookies (IndexedDB, un enregistrement) ---------
+
+/**
+ * Connexion IndexedDB, ouverte une seule fois et réutilisée : le bocal est
+ * écrit à chaque réponse porteuse d'un cookie, et rouvrir la base à chaque
+ * fois accumulerait les connexions pour rien. La promesse est oubliée en cas
+ * d'échec, pour que la tentative suivante reparte proprement.
+ * @returns {Promise<IDBDatabase>}
+ */
+function openCookieDb() {
+  state.cookieDb ??= new Promise((resolve, reject) => {
+    const request = indexedDB.open(COOKIE_DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(COOKIE_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  }).catch((error) => {
+    state.cookieDb = null;
+    throw error;
+  });
+  return state.cookieDb;
+}
+
+/**
+ * Restaure le bocal une seule fois par vie du Service Worker. Toute défaillance
+ * du stockage (mode privé, quota, stockage refusé) est sans appel : on repart
+ * d'un bocal vide, ce qui est exactement l'état d'un premier visiteur.
+ * @returns {Promise<void>}
+ */
+function ensureCookiesRestored() {
+  state.cookiesRestored ??= restoreCookies();
+  return state.cookiesRestored;
+}
+
+async function restoreCookies() {
+  try {
+    const db = await openCookieDb();
+    const saved = await new Promise((resolve, reject) => {
+      const request = db.transaction(COOKIE_STORE).objectStore(COOKIE_STORE).get(COOKIE_KEY);
+      request.onsuccess = () => resolve(request.result ?? null);
+      request.onerror = () => reject(request.error);
+    });
+    if (Array.isArray(saved)) cookieJar.load(saved);
+  } catch (error) {
+    warnOnce("cookies-lecture", `bocal à cookies non restauré (${error.message}) — session neuve`);
+  }
+}
+
+/** @returns {Promise<void>} */
+async function persistCookies() {
+  try {
+    const db = await openCookieDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(COOKIE_STORE, "readwrite");
+      transaction.objectStore(COOKIE_STORE).put(cookieJar.snapshot(), COOKIE_KEY);
+      transaction.oncomplete = () => resolve(undefined);
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } catch (error) {
+    // Le bocal en mémoire reste valide : seule sa survie au redémarrage du
+    // worker est perdue. La requête en cours, elle, aboutit normalement.
+    warnOnce("cookies-ecriture", `bocal à cookies non persisté (${error.message})`);
+  }
 }
 
 /**
