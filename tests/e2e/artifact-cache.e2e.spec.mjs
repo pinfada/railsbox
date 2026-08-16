@@ -16,6 +16,10 @@ import { fileURLToPath } from "node:url";
 import { cacheNameFor } from "../../public/shared/artifact-cache.js";
 
 const DISKS_DIR = fileURLToPath(new URL("../../public/disks/", import.meta.url));
+// Un « dépôt d'artefacts » same-origin HORS de /disks/ : la topologie de la
+// démonstration de référence, où railsbox-assets est un autre Pages du même
+// hôte github.io. Un prédicat de zone fondé sur l'origine l'a déjà manquée.
+const HORS_ZONE_DIR = fileURLToPath(new URL("../../public/e2e-autre-depot/", import.meta.url));
 const CHUNK_BYTES = 4 * 1024 * 1024;
 // Page hôte volontairement inexistante : elle sert de document dans la portée
 // du Service Worker sans déclencher main.js, donc sans tenter de booter une
@@ -33,6 +37,7 @@ const TEMOIN = "disks/e2e-temoin-0-4194304.ext2.zst";
 const FIXTURES = [
   { path: `${DISKS_DIR}e2e-cache-0-4194304.ext2.zst`, byte: 0x42 },
   { path: `${DISKS_DIR}e2e-temoin-0-4194304.ext2.zst`, byte: 0x17 },
+  { path: `${HORS_ZONE_DIR}e2e-hors-zone-0-4194304.ext2.zst`, byte: 0x99 },
 ];
 
 /** @param {string} builtAt */
@@ -125,6 +130,7 @@ test.describe("Cache des artefacts immuables", () => {
 
   test.beforeAll(async ({ browser }) => {
     await mkdir(DISKS_DIR, { recursive: true });
+    await mkdir(HORS_ZONE_DIR, { recursive: true });
     for (const fixture of FIXTURES) {
       await writeFile(fixture.path, Buffer.alloc(1024, fixture.byte));
     }
@@ -135,6 +141,7 @@ test.describe("Cache des artefacts immuables", () => {
   test.afterAll(async () => {
     await page?.close();
     for (const fixture of FIXTURES) await rm(fixture.path, { force: true });
+    await rm(HORS_ZONE_DIR, { recursive: true, force: true });
   });
 
   test("resert un morceau depuis Cache Storage alors qu'il a disparu du serveur", async () => {
@@ -188,5 +195,40 @@ test.describe("Cache des artefacts immuables", () => {
 
     const apres = await readFromPage(page, PART);
     expect(apres.status, "les morceaux de la construction précédente sont abandonnés").toBe(404);
+  });
+
+  test("met en cache un artefact same-origin hors de /disks/", async () => {
+    // La topologie de la démonstration de référence : le dépôt d'artefacts est
+    // un AUTRE Pages du même hôte github.io — same-origin, mais hors du site
+    // et de son dossier /disks/. Le cache la manquait en production alors que
+    // tous les tests locaux étaient verts : ce test fige la leçon.
+    const config = {
+      name: "e2e-hors-zone",
+      baseName: "e2e-base",
+      builtAt: "2026-08-16T12:00:00Z",
+      disk: "e2e-autre-depot/e2e-hors-zone.ext2.zst",
+      diskSize: CHUNK_BYTES,
+      diskChunkSize: CHUNK_BYTES,
+    };
+    await declareConfig(page, config);
+
+    const PART_HORS_ZONE = "e2e-autre-depot/e2e-hors-zone-0-4194304.ext2.zst";
+    const premiere = await readFromPage(page, PART_HORS_ZONE);
+    expect(premiere.status, "le premier passage doit venir du réseau en 200").toBe(200);
+    expect(premiere.first).toBe(0x99);
+
+    await page.waitForFunction(
+      async ({ name, url }) => {
+        const cache = await /** @type {any} */ (globalThis).caches.open(name);
+        return Boolean(await cache.match(url));
+      },
+      { name: cacheNameFor(config), url: PART_HORS_ZONE },
+      { timeout: CACHE_TIMEOUT_MS },
+    );
+
+    await rm(`${HORS_ZONE_DIR}e2e-hors-zone-0-4194304.ext2.zst`, { force: true });
+    const seconde = await readFromPage(page, PART_HORS_ZONE);
+    expect(seconde.status, "le morceau hors zone doit être resservi depuis le cache").toBe(200);
+    expect(seconde.first).toBe(0x99);
   });
 });

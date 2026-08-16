@@ -340,14 +340,20 @@ function warnOnce(reason, message) {
 
 sw.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  // Zone des artefacts : tout le cross-origin (le rootfs mutualisé vit sur le
-  // Pages du dépôt d'artefacts, ADR 0004) et le dossier /disks/ same-origin.
-  // Elle est traitée en premier et sort du gestionnaire : ni le proxy /app/*
-  // ni la ré-injection COOP/COEP n'ont rien à y faire.
+  // Zone des artefacts, décidée par la FORME de la requête et non par son
+  // origine : le rootfs mutualisé peut vivre cross-origin (mainteneur tiers,
+  // ADR 0004) mais aussi sur un autre chemin du MÊME hôte — le cas de la
+  // démonstration de référence, dont le dépôt d'artefacts est un autre Pages
+  // de github.io. Un prédicat d'origine y laissait le cache vide, défaut
+  // invisible en local. Le verdict définitif reste rendu dans serveArtifact.
+  if (isArtifactCandidate(event.request, url)) {
+    event.respondWith(serveArtifact(event));
+    return;
+  }
+  // Le reste du cross-origin et du dossier /disks/ (config, instantané,
+  // assets extraits hors serveStaticFirst) est laissé au navigateur : ni le
+  // proxy /app/* ni la ré-injection COOP/COEP n'ont rien à y faire.
   if (url.origin !== sw.location.origin || url.pathname.startsWith(RAW_ASSET_PREFIX)) {
-    if (isArtifactCandidate(event.request, url)) {
-      event.respondWith(serveArtifact(event));
-    }
     return;
   }
   // /favicon.ico, /site.webmanifest… : écrits en dur par Rails sans préfixe,
