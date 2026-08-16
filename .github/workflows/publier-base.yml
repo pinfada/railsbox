@@ -21,20 +21,29 @@ on:
         description: "Version exacte de Ruby compilée dans la base"
         required: true
         default: "3.3.12"
+      assets-repo:
+        description: "Dépôt PUBLIC hébergeant les artefacts (Pages y est gratuit)"
+        required: true
+        default: "pinfada/railsbox-assets"
       push:
-        description: "Publier sur GHCR (sinon construction et vérifications seules)"
+        description: "Publier (sinon construction et vérifications seules)"
         type: boolean
         default: true
+      overwrite:
+        description: "Réécrire une version DÉJÀ publiée — des sandboxes peuvent l'épingler"
+        type: boolean
+        default: false
 
 jobs:
   publier:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      # contents: write — la branche gh-pages porte les artefacts navigateur.
-      contents: write
+      # Les artefacts partent vers un AUTRE dépôt, par clé de déploiement :
+      # le jeton du workflow n'a besoin que de lire ce dépôt-ci et d'écrire
+      # sur GHCR.
+      contents: read
       packages: write
-      pages: write
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/railsbox-base
     steps:
@@ -121,34 +130,34 @@ jobs:
       - name: Capture de l'instantané de base
         run: node tools/build-v86-image/make-base-snapshot.mjs --base "base-${{ inputs.tag }}"
 
+      # Un répertoire PAR VERSION : c'est ce qui rend l'immutabilité de l'ADR
+      # 0004 réelle. Une démonstration épinglée sur base-3.3 continue de
+      # fonctionner le jour où base-3.4 paraît, puisqu'elles coexistent.
       - name: Découpage en morceaux zstd
         run: |
+          version="base-${{ inputs.tag }}"
           node tools/build-v86-image/split-artifact.mjs \
-            "public/disks/base-${{ inputs.tag }}.ext2" --zstd --out publication/disks/parts-base
-          cp "public/disks/base-${{ inputs.tag }}-vmlinuz" publication/disks/
-          cp "public/disks/base-${{ inputs.tag }}-initrd" publication/disks/
+            "public/disks/${version}.ext2" --zstd --out "publication/${version}"
+          cp "public/disks/${version}-vmlinuz" "publication/${version}/"
+          cp "public/disks/${version}-initrd" "publication/${version}/"
           # L'instantané de base ne sert PAS au visiteur (il restaure le delta
           # de l'application) : il n'est consommé que par la CI d'un mainteneur,
           # au moment de capturer ce delta. Un seul fichier gzippé suffit donc,
           # sous la limite de 95 Mo de Pages.
-          cp "public/disks/base-${{ inputs.tag }}-state.bin.gz" publication/disks/
-          touch publication/.nojekyll
+          cp "public/disks/${version}-state.bin.gz" "publication/${version}/"
           # L'ext2 pèse 1,4 Go : inutile de le garder sur le disque du runner.
-          rm -f "public/disks/base-${{ inputs.tag }}.ext2"
-          du -sh publication
-          find publication -type f | wc -l
+          rm -f "public/disks/${version}.ext2"
+          du -sh "publication/${version}"
+          find "publication/${version}" -type f | wc -l
 
       # Preuve que les morceaux publiés reconstituent bien l'artefact d'origine.
       # Sans elle, une corruption ne se verrait qu'au boot d'un visiteur.
       - name: Vérification du réassemblage
         run: |
+          version="base-${{ inputs.tag }}"
           node tools/build-v86-image/assemble-artifact.mjs \
-            "publication/disks/parts-base/base-${{ inputs.tag }}.ext2.zst" \
-            --out /tmp/verif.ext2
-          attendu=$(node -e "
-            const m = require('./publication/disks/parts-base/base-${{ inputs.tag }}.ext2-parts.json');
-            process.stdout.write(String(m.totalBytes));
-          ")
+            "publication/${version}/${version}.ext2.zst" --out /tmp/verif.ext2
+          attendu=$(node -p "require('./publication/${version}/${version}.ext2-parts.json').totalBytes")
           obtenu=$(stat -c%s /tmp/verif.ext2)
           echo "réassemblé : ${obtenu} octets, attendu ${attendu}"
           [ "$obtenu" = "$attendu" ] || { echo "::error::Réassemblage incohérent."; exit 1; }
@@ -172,39 +181,71 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ------------------------------------------------------------------
-      # Face navigateur : branche gh-pages du dépôt railsbox (ADR 0004).
-      # Branche ORPHELINE poussée en force — elle ne contient jamais qu'un
-      # commit, sinon chaque publication y empilerait 333 Mo d'objets.
-      # Corollaire : cette branche est dédiée aux artefacts de base, rien
-      # d'autre ne doit y vivre, ce serait écrasé.
+      # Face navigateur : dépôt PUBLIC dédié aux artefacts.
+      #
+      # Pourquoi un dépôt séparé : Pages n'est gratuit que sur un dépôt public,
+      # et railsbox reste privé le temps d'une revue d'historique sereine. Le
+      # découplage a sa valeur propre — le dépôt d'artefacts est un pur
+      # hébergeur statique, et les centaines de mégaoctets de binaires ne
+      # polluent pas l'historique du code.
+      #
+      # Publication ADDITIVE : on récupère l'état publié, on y ajoute (ou
+      # remplace) le répertoire de CETTE version, puis on écrase l'historique
+      # par un commit unique contenant TOUT. Les versions coexistent — condition
+      # de l'immutabilité promise par l'ADR 0004 — et l'historique ne grossit
+      # jamais, alors qu'une branche orpheline naïve effacerait les versions
+      # précédentes et casserait les démonstrations qui les épinglent.
       # ------------------------------------------------------------------
-      - name: Publication des artefacts navigateur sur gh-pages
+      - name: Publication des artefacts sur le dépôt d'assets
         if: ${{ inputs.push }}
-        working-directory: publication
+        env:
+          DEPLOY_KEY: ${{ secrets.ASSETS_DEPLOY_KEY }}
+          ASSETS_REPO: ${{ inputs.assets-repo }}
         run: |
-          git init -q -b gh-pages
+          set -eu
+          version="base-${{ inputs.tag }}"
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+          distant="git@github.com:${ASSETS_REPO}.git"
+          git clone --depth 1 --branch gh-pages "$distant" publie 2>/dev/null || {
+            echo "Aucune branche gh-pages : première publication."
+            mkdir -p publie && git -C publie init -q -b gh-pages
+            git -C publie remote add origin "$distant"
+          }
+
+          # Garde d'immutabilité : une version déjà publiée ne se réécrit pas,
+          # des sandboxes l'épinglent peut-être déjà.
+          if [ -d "publie/$version" ] && [ "${{ inputs.overwrite }}" != "true" ]; then
+            echo "::error::$version est déjà publiée. Utilisez une nouvelle version, ou cochez overwrite en connaissance de cause."
+            exit 1
+          fi
+
+          rm -rf "publie/$version"
+          cp -r "publication/$version" "publie/$version"
+          touch publie/.nojekyll
+          node tools/build-v86-image/ecrire-index-assets.mjs publie > publie/index.html
+
+          cd publie
           git config user.email "actions@github.com"
           git config user.name "railsbox CI"
+          # Commit unique : l'arbre complet est reposé à chaque publication, donc
+          # l'historique reste plat tout en conservant toutes les versions.
+          git checkout -q --orphan publication-plate
           git add -A
-          git commit -q -m "base ${{ inputs.tag }} — artefacts navigateur (${{ github.sha }})"
-          git push -f \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-            gh-pages
-
-      - name: Activation de GitHub Pages
-        if: ${{ inputs.push }}
-        continue-on-error: true
-        run: |
-          gh api -X POST "repos/${{ github.repository }}/pages" \
-            -f "source[branch]=gh-pages" -f "source[path]=/" \
-            || echo "Pages déjà actif."
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git commit -q -m "artefacts railsbox — ${version} (railsbox@${{ github.sha }})"
+          git branch -M gh-pages
+          git push -f origin gh-pages
+          echo "versions publiées : $(ls -d */ 2>/dev/null | tr -d / | tr '\n' ' ')"
 
       - name: Récapitulatif
         if: ${{ inputs.push }}
         run: |
-          racine="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/disks"
+          proprietaire="${{ inputs.assets-repo }}"
+          racine="https://${proprietaire%%/*}.github.io/${proprietaire##*/}/base-${{ inputs.tag }}"
           {
             echo "## Base ${{ inputs.tag }} publiée"
             echo ""
@@ -212,11 +253,12 @@ jobs:
             echo "|---|---|"
             echo "| Image de construction | \`$IMAGE:${{ inputs.tag }}\` |"
             echo "| Empreinte | \`${DIGEST:--}\` |"
-            echo "| Rootfs (morceaux zstd) | \`${racine}/parts-base/base-${{ inputs.tag }}.ext2.zst\` |"
+            echo "| Rootfs (morceaux zstd) | \`${racine}/base-${{ inputs.tag }}.ext2.zst\` |"
             echo "| Noyau | \`${racine}/base-${{ inputs.tag }}-vmlinuz\` |"
             echo "| Initrd | \`${racine}/base-${{ inputs.tag }}-initrd\` |"
             echo "| Instantané de base (CI mainteneur) | \`${racine}/base-${{ inputs.tag }}-state.bin.gz\` |"
             echo ""
-            echo "Le visiteur ne lit que les morceaux, le noyau et l'initrd."
+            echo "Le visiteur ne lit que les morceaux, le noyau et l'initrd —"
+            echo "v86 dérive le nom du morceau contenant l'offset demandé."
             echo "L'instantané de base ne sert qu'à capturer un delta applicatif."
           } >> "$GITHUB_STEP_SUMMARY"
