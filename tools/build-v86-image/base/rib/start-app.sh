@@ -27,13 +27,23 @@ if ! mountpoint -q /app; then
 fi
 
 # 2. Environnement déclaré par l'application (bloc `env:` de railsbox.yml),
-#    écrit sur le disque applicatif par build-app-disk.sh. Vide pour le
-#    sqlite/importmap de démo ; un futur PostgreSQL y fixerait DATABASE_URL.
+#    écrit sur le disque applicatif par build-app-disk.sh. Y figurent aussi les
+#    réglages de la base : RAILSBOX_DATABASE, et pour PostgreSQL PGDATA +
+#    DATABASE_URL.
 [ -f /app/.railsbox/app-env.sh ] && . /app/.railsbox/app-env.sh
 
 # 3. Surcharge écrite à chaud par le pont (inspecteur d'environnement) : en
 #    dernier, sinon les valeurs de railsbox.yml annuleraient la saisie.
 [ -f /opt/rib/env.local.sh ] && . /opt/rib/env.local.sh
+
+# Cluster PostgreSQL : ici et nulle part ailleurs. Le datadir est sur le disque
+# applicatif qu'on vient de monter, et l'environnement qui en fixe le chemin
+# vient d'être sourcé. Un échec n'arrête pas le lancement : Puma démarrera et
+# l'erreur ActiveRecord sera visible dans la page plutôt que dans un silence.
+if [ "${RAILSBOX_DATABASE:-sqlite3}" = postgresql ]; then
+  sh /opt/rib/postgres.sh start ||
+    echo "[start-app] PostgreSQL n'a pas demarre — voir /var/log/postgres.log"
+fi
 
 cd /app
 # Le .dockerignore des applications exclut souvent tmp/*, log/*, storage/* :

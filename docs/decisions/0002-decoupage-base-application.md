@@ -40,10 +40,19 @@ Deux disques v86 :
 
 ## Points durs identifiés d'avance
 
-- **PostgreSQL dans le disque app** : le cluster doit être initialisé au
-  build avec la même version binaire que la base ; chemin de données fixé
-  par variable (`PGDATA=/app/var/pg`). L'init de la base ne démarre
-  PostgreSQL qu'après montage de hdb.
+- **PostgreSQL dans le disque app** — **implémenté (2026-08-16)** : le cluster
+  est initialisé au build du disque applicatif avec les binaires de la base
+  (donc la même version), dans `PGDATA=/app/var/pg`, migré, seedé, puis
+  **arrêté en mode `fast`** — c'est ce checkpoint qui rend le datadir cohérent
+  avant le `mkfs` de l'ext2. L'init de la base ne démarre jamais PostgreSQL :
+  le cluster est lancé par `start-app.sh`, après le montage de hdb. Un
+  postmaster démarré à l'init serait figé par l'instantané de base avec des
+  descripteurs ouverts sur un datadir inexistant, et se réveillerait chez tous
+  les visiteurs — y compris ceux dont l'application n'utilise pas PostgreSQL.
+  Le cycle de vie complet tient dans un seul script (`base/rib/postgres.sh`),
+  appelé aux deux bouts : ce qui tourne dans la VM est exactement ce qui a été
+  préparé au build. Le serveur entre dans la base à la révision `3.3-r2` ;
+  aucun cluster n'y subsiste (celui que crée le postinst Debian est supprimé).
 - **Instantané et hdb** — **tranché par spike (2026-08-16)** : v86 REFUSE de
   restaurer un état capturé sans hdb quand la configuration en attache un
   (`set_state` lève pendant `restore_state`, vérifié sur l'instantané

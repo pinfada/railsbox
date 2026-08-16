@@ -31,6 +31,9 @@ export const REMEDIES = Object.freeze({
     "Créez config/database.yml, ou déclarez database: dans railsbox.yml (sqlite3 est supposé).",
   "missing-database-adapter":
     "Ajoutez une clé adapter: dans config/database.yml, ou déclarez database: dans railsbox.yml.",
+  "missing-pg-gem":
+    'Ajoutez `gem "pg"` au Gemfile puis relancez `bundle install`, ou déclarez ' +
+    "database: sqlite3 dans railsbox.yml si l'application n'utilise pas PostgreSQL.",
   "heavy-native-gem":
     "Prévoyez une compilation longue, ou excluez la gem du groupe installé dans la VM.",
   "invalid-package-json":

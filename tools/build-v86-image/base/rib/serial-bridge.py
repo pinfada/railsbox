@@ -12,7 +12,9 @@ import time
 MAGIC = "@RIB1"
 CHUNK = 8000  # multiple de 4 : chaque tranche base64 est decodable seule
 HTTP_TIMEOUT = 120
-LOG_FILES = ["/var/log/puma.log", "/var/log/bridge-err.log"]
+# postgres.log y figure meme pour une sandbox sqlite3 : le fichier reste vide,
+# et un cluster qui refuse de demarrer est sinon invisible depuis le navigateur.
+LOG_FILES = ["/var/log/puma.log", "/var/log/bridge-err.log", "/var/log/postgres.log"]
 LOG_POLL_SECONDS = 1.0
 ENV_OVERRIDE_FILE = "/opt/rib/env.local.sh"
 APP_PID_FILE = "/run/rib-app.pid"

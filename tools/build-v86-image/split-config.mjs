@@ -21,9 +21,14 @@ export const APP_DISK_BYTES = 512 * 1024 * 1024;
  * cause. On compare donc en amont, pour refuser avec un message utile.
  */
 export const BASE_SYSTEM_PACKAGES = Object.freeze([
+  "libpq-dev",
   "libsqlite3-dev",
   "libxml2-dev",
   "libxslt1-dev",
+  // PostgreSQL est présent depuis la base 3.3-r2 : serveur et client, mais
+  // AUCUN cluster (celui de la sandbox vit sur le disque applicatif).
+  "postgresql",
+  "postgresql-client",
   "redis-server",
 ]);
 

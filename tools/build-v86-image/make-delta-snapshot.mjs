@@ -9,7 +9,7 @@
 //
 // Cible ADR : delta capturé en < 3 min (contre ~12 min pour l'image monolithique).
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { dirname, join, resolve } from "node:path";
@@ -39,6 +39,9 @@ function parseArgs(argv) {
     /** @type {number|null} */ baseChunkBytes: null,
     /** @type {number|null} */ appChunkBytes: null,
     stateSuffix: "",
+    // Renseignée par la fiche du disque applicatif quand elle existe ; l'option
+    // --database ne sert qu'à forcer la valeur à la main.
+    /** @type {string|null} */ database: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--name") options.name = argv[++i];
@@ -49,8 +52,27 @@ function parseArgs(argv) {
     else if (argv[i] === "--base-chunk-size") options.baseChunkBytes = Number(argv[++i]);
     else if (argv[i] === "--app-chunk-size") options.appChunkBytes = Number(argv[++i]);
     else if (argv[i] === "--state-suffix") options.stateSuffix = argv[++i];
+    else if (argv[i] === "--database") options.database = argv[++i];
   }
   return options;
+}
+
+/**
+ * Lit la fiche écrite par build-app-disk.sh à côté du disque applicatif. Elle
+ * porte le seul renseignement que la capture ne peut pas deviner : la base de
+ * données de l'application. Absente (disque fabriqué à la main), on retombe sur
+ * sqlite3 — le défaut historique.
+ * @param {string} path chemin de la fiche `<nom>-app.json`
+ * @returns {Promise<{database?: string}>} fiche analysée, objet vide si absente
+ */
+async function readDiskCard(path) {
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    log(`fiche du disque illisible (${error.message}) — réglages par défaut`);
+    return {};
+  }
 }
 
 async function gzipFile(source, destination) {
@@ -80,6 +102,9 @@ async function main() {
   const stateName = `${name}-split-state.bin`;
   const configName = `${name}-split-config.json`;
   const configPath = join(DISKS_DIR, configName);
+  const card = await readDiskCard(join(DISKS_DIR, `${name}-app.json`));
+  const database = options.database ?? card.database ?? "sqlite3";
+  log(`base de données de la sandbox : ${database}`);
 
   // Config SANS state : le harnais boote dessus en restaurant l'instantané de
   // BASE (statePath explicite), pas encore le delta (qu'on va justement créer).
@@ -90,6 +115,7 @@ async function main() {
     appDiskBytes,
     memoryMb: options.memoryMb,
     mountPath: options.mountPath,
+    database,
   });
   await writeFile(configPath, `${JSON.stringify(configNoState, null, 2)}\n`);
   log(`config split écrite (${configName}) — base ${base} + hdb ${name}-app.ext2`);
@@ -101,7 +127,7 @@ async function main() {
     configName,
     statePath: baseStatePath,
     onLog: (line) => {
-      if (/error|fatal|montage|start-app|relancee|Listening|pont/i.test(line)) {
+      if (/error|fatal|montage|start-app|postgres|relancee|Listening|pont/i.test(line)) {
         log(`vm: ${line.slice(0, 160)}`);
       }
     },
@@ -155,6 +181,7 @@ async function main() {
             appDiskBytes,
             memoryMb: options.memoryMb,
             mountPath: options.mountPath,
+            database,
             baseUrl: options.baseUrl,
             baseChunkBytes: options.baseChunkBytes,
             appChunkBytes: options.appChunkBytes,
