@@ -92,7 +92,9 @@ gratuit. Aucun serveur applicatif n'existe : Puma tourne dans votre onglet.
 | Navigation, formulaires, POST | normaux, servis par la VM |
 
 Le rootfs mutualisé de 1,45 Go n'est jamais téléchargé en entier : v86 en lit
-les morceaux qu'il touche, une trentaine sur 363.
+les morceaux qu'il touche, une trentaine sur 363. Et il ne les lit qu'une
+fois : le Service Worker les garde en Cache Storage, si bien qu'un visiteur
+qui revient ne retélécharge rien (voir « Le cache des artefacts » plus bas).
 
 **Ce que l'hébergeur doit fournir** — et GitHub Pages le fournit : CORS `*`,
 requêtes `Range`, et rien d'autre. Les en-têtes d'isolation `COOP`/`COEP`,
@@ -304,6 +306,38 @@ Le préfixe `/app` est conservé de bout en bout : le Service Worker n'intercept
 que lui, et l'application le génère nativement puisqu'elle est montée dessous
 par `Rack::URLMap`.
 
+### Le cache des artefacts
+
+GitHub Pages plafonne ses réponses à `Cache-Control: max-age=600` et ne se
+configure pas. Or nos artefacts sont **immuables par construction** : une base
+publiée n'est jamais réécrite ([ADR 0004](docs/decisions/0004-topologie-de-distribution.md)),
+et un fichier-partie est une tranche figée d'un disque figé
+([ADR 0003](docs/decisions/0003-artefacts-en-fichiers-parties.md)). Sans rien
+faire, un visiteur qui revient le lendemain retélécharge donc les ~48 Mo qu'il
+avait déjà lus.
+
+Le Service Worker interceptant déjà tout, il tient un **cache applicatif en
+Cache Storage**, en stratégie « cache d'abord » :
+
+| Point | Choix |
+|---|---|
+| Ce qui est mis en cache | les fichiers-parties des disques découpés, le noyau, l'initrd — **et rien d'autre que ce qui est nommé dans la configuration v86** |
+| Ce qui ne l'est pas | l'instantané mémoire, déjà mis en cache par la page dans IndexedDB ; un disque lu par requêtes `Range`, dont les réponses 206 sont refusées par Cache Storage ; toute requête portant un en-tête `Range` |
+| Nom du cache | dérivé de la configuration entière, `builtAt` compris. L'URL du disque applicatif étant stable d'une construction à l'autre, un cache indexé par la seule URL panacherait les morceaux de deux images après une reconstruction — c'est-à-dire corromprait le système de fichiers. Un changement de configuration bascule sur un cache neuf et supprime l'ancien. |
+| En-têtes | **aucun n'est ajouté.** Les requêtes vers Pages doivent rester « simples » au sens CORS, sous peine d'un préflight que l'hébergeur ne sait pas honorer ([ADR 0001](docs/decisions/0001-distribution-artefacts.md)). La requête est réémise telle quelle, la réponse rendue telle quelle. |
+| Quota | `StorageManager.estimate` avant écriture, marge de 10 % ; un échec d'écriture est journalisé une fois et sans effet — **la requête aboutit toujours**, avec ou sans cache. |
+
+La décision (quelles URL, quel nom de cache, quelle invalidation) est isolée
+dans `public/shared/artifact-cache.js`, testée sans navigateur. Le fait qu'un
+rechargement ne redemande rien au réseau, lui, est vérifié dans un vrai
+Chromium (`tests/e2e/artifact-cache.e2e.spec.mjs`) : le fichier est supprimé
+du serveur entre les deux lectures, et la seconde réussit quand même.
+
+Ce que ce cache ne change pas : il vit dans l'origine de la démonstration,
+donc **deux démonstrations ne le partagent toujours pas** — c'est le coût
+assumé de la topologie « une origine par démonstration ». Il économise les
+visites répétées d'un même visiteur sur une même sandbox, pas la première.
+
 ## 4. Retour d'expérience : les défis résolus
 
 Vingt-deux itérations de build ont été nécessaires. Les obstacles n'étaient
@@ -428,12 +462,14 @@ pas, et pourquoi il ne faut jamais embarquer de vrais secrets :
 serve.mjs                          serveur de dev : COOP/COEP, Range, gzip, cache
 public/
 ├── index.html · main.js           page hôte : orchestration, badges, CSP, sandbox
-├── sw-proxy.js                    SW unique : proxy /app/*, assets statiques, COI
+├── sw-proxy.js                    SW unique : proxy /app/*, assets statiques, COI,
+│                                  cache des artefacts immuables
 ├── env-drawer.js · .css           inspecteur d'environnement (secrets session-only)
 ├── shared/
 │   ├── request-codec.js           validation HTTP (frontière de sécurité)
 │   ├── serial-codec.js            trames @RIB1, contrôle de flux montant
 │   ├── proxy-logic.js             logique pure du SW (réécriture, CSP, assets)
+│   ├── artifact-cache.js          logique pure du cache (URL cacheables, nom, purge)
 │   ├── env-detector.js            détection des variables manquantes
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
