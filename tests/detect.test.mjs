@@ -329,6 +329,46 @@ test("sans package.json le pipeline est importmap/sprockets", async () => {
   assert.equal(findByCode(findings, "no-npm-assets").severity, "info");
 });
 
+test("une application Tailwind est classée « précompilation amd64 », pas refusée", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": lockWith(["propshaft", "tailwindcss-rails", "tailwindcss-ruby"]),
+  });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.assets.stage, "amd64");
+  assert.deepEqual([...manifest.assets.binaryGems], ["tailwindcss-rails", "tailwindcss-ruby"]);
+  assert.equal(findByCode(findings, "assets-amd64-stage").severity, "info");
+  assert.equal(hasBlocking(findings), false);
+});
+
+test("un package-lock.json donne une installation reproductible", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": lockWith(["jsbundling-rails"]),
+    "package.json": JSON.stringify({ scripts: { build: "esbuild app.js" } }),
+    "package-lock.json": "{}",
+  });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.assets.stage, "amd64");
+  assert.match(manifest.assets.install, /^npm ci /);
+  assert.equal(findByCode(findings, "npm-lockfile-absent"), undefined);
+});
+
+test("un verrou yarn est signalé et l'installation retombe sur npm install", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": lockWith(["cssbundling-rails"]),
+    "package.json": JSON.stringify({ scripts: { "build:css": "sass x y" } }),
+    "yarn.lock": "# yarn lockfile v1\n",
+  });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.match(manifest.assets.install, /^npm install /);
+  assert.equal(findByCode(findings, "npm-lockfile-absent").severity, "warning");
+});
+
 test("un package.json illisible est un avertissement, pas un plantage", async () => {
   const dir = await createApp({ "Gemfile.lock": LOCK_MINIMAL, "package.json": "{ oops" });
 

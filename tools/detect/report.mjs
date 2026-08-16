@@ -1,6 +1,7 @@
 // Rapport d'incompatibilité lisible par un humain. Chaque diagnostic bloquant
 // ou d'avertissement porte un remède : un rapport qui constate sans dire quoi
 // faire oblige l'utilisateur à lire le code, ce qui est un échec de produit.
+import { ASSET_STAGE } from "./assets.mjs";
 import { SEVERITY } from "./findings.mjs";
 
 /** @typedef {import("./findings.mjs").Finding} Finding */
@@ -35,6 +36,9 @@ export const REMEDIES = Object.freeze({
     "Prévoyez une compilation longue, ou excluez la gem du groupe installé dans la VM.",
   "invalid-package-json":
     "Corrigez la syntaxe JSON de package.json, sinon les scripts d'assets ne seront pas exécutés.",
+  "npm-lockfile-absent":
+    "Versionnez un package-lock.json (`npm install` puis commit) : l'étage amd64 installe " +
+    "les dépendances front avec npm, et lui seul rend la construction reproductible.",
   "unknown-manifest-key":
     "Retirez la clé de railsbox.yml : seules ruby, database, seed, env et assets sont reconnues.",
   "malformed-manifest-line":
@@ -128,10 +132,34 @@ function field(label, value) {
  */
 function describeAssets(assets) {
   if (!assets) return null;
-  if (!assets.npm) return "importmap/sprockets (pas de package.json)";
-  const scripts = assets.scripts?.length ? assets.scripts.join(", ") : "aucun";
-  const tools = assets.tools?.length ? assets.tools.join(", ") : "aucun";
-  return `npm — scripts : ${scripts} — outils : ${tools}`;
+  const pipeline = assets.npm
+    ? `npm — scripts : ${listOr(assets.scripts, "aucun")} — outils : ${listOr(assets.tools, "aucun")}`
+    : "importmap/sprockets (pas de package.json)";
+  const stage = STAGE_LABELS[assets.stage ?? ""];
+  if (!stage) return pipeline;
+  const gems = assets.binaryGems?.length ? ` [${assets.binaryGems.join(", ")}]` : "";
+  return `${pipeline} — précompilation ${stage}${gems}`;
+}
+
+/**
+ * Libellés français des étages de précompilation.
+ * L'étage amd64 est nommé explicitement : c'est lui qui explique pourquoi une
+ * application Tailwind ou npm passe, alors que le guest est un i386.
+ */
+const STAGE_LABELS = Object.freeze({
+  [ASSET_STAGE.NONE]: "aucune",
+  [ASSET_STAGE.GUEST]: "dans le guest i386",
+  [ASSET_STAGE.HOST]: "sur un étage amd64",
+});
+
+/**
+ * Joint une liste, avec une valeur de repli quand elle est vide.
+ * @param {readonly string[]|undefined} values valeurs à joindre
+ * @param {string} fallback texte affiché si la liste est vide
+ * @returns {string} texte joint
+ */
+function listOr(values, fallback) {
+  return values?.length ? values.join(", ") : fallback;
 }
 
 /**

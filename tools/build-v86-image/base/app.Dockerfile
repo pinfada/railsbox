@@ -78,11 +78,37 @@ else
 fi
 RIB_AUTOLOGIN
 
-# Précompilation des assets (importmap/propshaft : tout se fait avec le Ruby
-# i386 de la base). Les applications à chaîne npm ne sont PAS couvertes par le
-# MVP (elles exigeraient l'étage amd64 du build monolithique).
+# Assets précompilés sur l'étage amd64 (tailwindcss-ruby, dartsass-ruby et les
+# chaînes npm n'ont aucun binaire i386 — voir assets-amd64.Dockerfile). Le
+# contexte nommé « railsbox-assets » est TOUJOURS fourni par build-app-disk.sh :
+# vide quand la précompilation a lieu dans le guest, ces deux COPY ne créent
+# alors que des répertoires. Ils précèdent la précompilation i386, qui ne
+# tourne que dans l'autre cas.
+COPY --from=railsbox-assets public/assets ./public/assets
+COPY --from=railsbox-assets app/assets/builds ./app/assets/builds
+
+# Précompilation des assets DANS le guest (importmap/propshaft pur : tout se
+# fait avec le Ruby i386 de la base). Vaut 0 dès que l'étage amd64 s'en est
+# chargé — relancer ici échouerait précisément sur les binaires absents.
 ARG ASSET_PRECOMPILE=1
-RUN if [ "${ASSET_PRECOMPILE}" = 1 ]; then bundle exec rails assets:precompile; fi
+ARG HOST_ASSETS=0
+RUN <<'RIB_ASSETS'
+set -eu
+if [ "${HOST_ASSETS}" = 1 ]; then
+  fichiers="$(find public/assets -type f | wc -l)"
+  # Garde-fou : un étage amd64 muet laisserait une application sans CSS, panne
+  # que le visiteur ne découvrirait qu'à l'affichage de la page.
+  if [ "${fichiers}" -eq 0 ]; then
+    echo "[build] AUCUN asset reçu de l'étage amd64 — construction interrompue" >&2
+    exit 1
+  fi
+  echo "[build] ${fichiers} assets précompilés reçus de l'étage amd64"
+elif [ "${ASSET_PRECOMPILE}" = 1 ]; then
+  bundle exec rails assets:precompile
+else
+  echo "[build] aucun pipeline d'assets détecté"
+fi
+RIB_ASSETS
 
 # Base préparée + seedée PENDANT le build : le premier boot n'a ni migration ni
 # amorçage à faire, et l'instantané delta capture une base déjà peuplée. Redis

@@ -4,10 +4,11 @@
 # --build-arg, calculés par manifest-to-args.mjs à partir de l'auto-détection.
 #
 # Trois étages :
-#  1. assets-1 (amd64) : tailwindcss/esbuild/dartsass n'ont AUCUN binaire i386 —
-#     la précompilation des assets npm se fait donc en x86_64.
-#  2. assets-0 (i386)  : étage vide, choisi quand l'application n'a pas de
-#     package.json (importmap/propshaft précompile directement dans le rootfs).
+#  1. assets-1 (amd64) : ni les chaînes npm (tailwindcss/esbuild/sass) ni les
+#     gems à exécutable précompilé (tailwindcss-ruby, dartsass-ruby) n'ont de
+#     binaire i386 — la précompilation se fait donc en x86_64.
+#  2. assets-0 (i386)  : étage vide, choisi quand aucun de ces outils n'est
+#     présent (importmap/propshaft précompile directement dans le rootfs).
 #  3. rootfs  (i386)   : Debian bookworm + Ruby compilé depuis les sources
 #     (bookworm i386 ne fournit que ruby 3.1) + services + noyau Linux 686
 #     (v86 boote le bzImage directement, sans bootloader).
@@ -16,11 +17,14 @@
 #   docker build --platform linux/386 -f <ce fichier> --build-arg … -t <tag> <app>
 
 ARG RUBY_VERSION=3.3.10
-# 0 : aucun package.json, l'étage amd64 est entièrement sauté.
+# 1 : les assets sont précompilés sur l'étage amd64 (chaîne npm et/ou gem à
+# exécutable précompilé). 0 : cet étage est entièrement sauté.
+ARG HOST_ASSETS=0
+# 1 : l'application a un package.json (donc des dépendances front à installer).
 ARG NPM_ASSETS=0
 
 ########################################################################
-# Étage 1a : précompilation des assets npm (amd64)
+# Étage 1a : précompilation des assets (amd64)
 ########################################################################
 FROM --platform=linux/amd64 ruby:${RUBY_VERSION}-slim AS assets-1
 
@@ -36,10 +40,11 @@ RUN bundle install
 
 COPY . .
 # node_modules est exclu par le .dockerignore de l'application : installation
-# complète (npm ci) nécessaire aux scripts de build. esbuild est ajouté sans
-# --save car certaines applications l'appellent sans le déclarer.
-RUN npm ci --no-audit --no-fund \
-    && npm install --no-save --no-audit --no-fund esbuild
+# complète nécessaire aux scripts de build. La commande vient de
+# l'auto-détection (`npm ci` avec un verrou, `npm install` sinon) et reste vide
+# pour une application sans package.json — Tailwind par la gem, par exemple.
+ARG NPM_INSTALL_COMMAND=""
+RUN if [ -n "${NPM_INSTALL_COMMAND}" ]; then sh -c "${NPM_INSTALL_COMMAND}"; fi
 
 # Valeurs jetables : ce stage ne sert qu'à produire public/assets, il est
 # entièrement écarté de l'image finale. Les vraies clés de la VM sont
@@ -75,14 +80,14 @@ RUN printf '%s\n' "$APP_ENV_MANIFEST" > /tmp/app-env.sh \
     && rm -f /tmp/app-env.sh
 
 ########################################################################
-# Étage 1b : substitut vide quand l'application n'utilise pas npm
+# Étage 1b : substitut vide quand rien n'exige l'étage amd64
 ########################################################################
 # Même base que le rootfs : aucune image supplémentaire à télécharger.
 FROM i386/debian:bookworm-slim AS assets-0
 RUN mkdir -p /app/public/assets /app/app/assets/builds
 
-# Sélection de l'étage d'assets par la valeur de NPM_ASSETS (0 ou 1).
-FROM assets-${NPM_ASSETS} AS assets
+# Sélection de l'étage d'assets par la valeur de HOST_ASSETS (0 ou 1).
+FROM assets-${HOST_ASSETS} AS assets
 
 ########################################################################
 # Étage 2 : rootfs i386 bootable par v86
@@ -632,14 +637,14 @@ fi
 chmod 600 /opt/rib/env.sh
 RIB_SETUP
 
-# Précompilation des assets DANS le rootfs quand l'application n'a pas de
-# chaîne npm (importmap + propshaft/sprockets) : rien à emprunter à l'étage
-# amd64, tout se fait avec le Ruby i386 déjà présent.
+# Précompilation des assets DANS le rootfs quand aucun outil n'exige l'étage
+# amd64 (importmap + propshaft/sprockets) : tout se fait avec le Ruby i386 déjà
+# présent. L'auto-détection met ASSET_PRECOMPILE à 0 dès que l'étage amd64 est
+# retenu — ses assets ont alors déjà été copiés plus haut.
 ARG ASSET_PRECOMPILE=0
-ARG NPM_ASSETS
 RUN <<'RIB_ASSETS'
 set -eu
-if [ "${ASSET_PRECOMPILE}" != 1 ] || [ "${NPM_ASSETS}" = 1 ]; then
+if [ "${ASSET_PRECOMPILE}" != 1 ]; then
   echo "[build] precompilation d'assets non requise dans le rootfs"
   exit 0
 fi
