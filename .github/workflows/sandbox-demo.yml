@@ -9,9 +9,15 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publier sur gh-pages (le dépôt étant privé, Pages n'y servira pas)"
+        description: "Publier la sandbox"
         type: boolean
-        default: false
+        default: true
+      target-repo:
+        description: >-
+          Dépôt PUBLIC où publier. railsbox étant privé, Pages n'y servirait
+          rien : la démonstration vit donc ailleurs.
+        type: string
+        default: "pinfada/railsbox-demo"
       railsbox-ref:
         description: "Version de railsbox utilisée pour construire"
         type: string
@@ -27,3 +33,6 @@ jobs:
       name: demo
       railsbox-ref: ${{ inputs.railsbox-ref }}
       publish: ${{ inputs.publish }}
+      target-repo: ${{ inputs.target-repo }}
+    secrets:
+      publish-key: ${{ secrets.PUBLISH_DEPLOY_KEY }}

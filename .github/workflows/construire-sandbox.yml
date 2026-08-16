@@ -51,6 +51,17 @@ on:
         description: "Publier sur gh-pages (sinon construction seule)"
         type: boolean
         default: true
+      target-repo:
+        description: >-
+          Dépôt où publier la sandbox, si ce n'est pas celui qui appelle.
+          Exige alors le secret publish-key (clé de déploiement en écriture),
+          le jeton du workflow ne valant que pour le dépôt courant.
+        type: string
+        default: ""
+    secrets:
+      publish-key:
+        description: "Clé de déploiement en écriture sur target-repo"
+        required: false
 
 # Limite de GitHub Pages : 95 Mo par fichier. Le disque applicatif et le rootfs
 # sont découpés, l'instantané est gzippé — au-delà, on refuse explicitement
@@ -183,8 +194,26 @@ jobs:
       - name: Publication sur gh-pages
         if: ${{ inputs.publish }}
         working-directory: railsbox/publication
+        env:
+          PUBLISH_KEY: ${{ secrets.publish-key }}
         run: |
           set -eu
+          cible="${{ inputs.target-repo }}"
+          if [ -n "$cible" ]; then
+            if [ -z "${PUBLISH_KEY:-}" ]; then
+              echo "::error::target-repo exige le secret publish-key (clé de déploiement en écriture)."
+              exit 1
+            fi
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            printf '%s\n' "$PUBLISH_KEY" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+            distant="git@github.com:${cible}.git"
+          else
+            cible="${{ github.repository }}"
+            distant="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${cible}.git"
+          fi
+
           git init -q -b gh-pages
           git config user.email "actions@github.com"
           git config user.name "railsbox"
@@ -193,14 +222,13 @@ jobs:
           # Branche remise à plat : la sandbox est entièrement régénérée à
           # chaque construction, conserver l'historique n'empilerait que des
           # binaires morts.
-          git push -f \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-            gh-pages
+          git push -f "$distant" gh-pages
+          echo "CIBLE=$cible" >> "$GITHUB_ENV"
 
       - name: Récapitulatif
         if: ${{ inputs.publish }}
         run: |
-          adresse="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          adresse="https://${CIBLE%%/*}.github.io/${CIBLE##*/}/"
           {
             echo "## Sandbox publiée"
             echo ""
