@@ -11,6 +11,7 @@ import {
   releverCapacites,
   resumerManques,
 } from "./shared/prerequis-demarrage.js";
+import { createVeilleController } from "./shared/veille.js";
 
 // Tout est relatif à la page : la coquille est publiée à la racine en
 // développement, mais sous « /<depot>/ » sur le Pages de projet de chaque
@@ -90,6 +91,12 @@ async function start() {
   frameElement.src = APP_URL;
   logLine(`Application disponible → iframe sur ${APP_URL}`);
 
+  // Une fois l'application servie — jamais pendant le boot, qu'un visiteur
+  // parti sur un autre onglet a le droit de laisser finir en arrière-plan —
+  // la VM se met en veille quand l'onglet est masqué : le processeur du
+  // visiteur ne paie plus une émulation que personne ne regarde.
+  installBackgroundPause(vm);
+
   if (typeof vm.metrics === "function") {
     // Débit du canal série : utile pour juger si les assets passent bien.
     setTimeout(() => {
@@ -109,6 +116,29 @@ async function start() {
       .then((message) => logLine(message))
       .catch((error) => logLine(`Instantané non sauvegardé: ${error.message}`));
   }
+}
+
+// Suspend la VM d'un onglet masqué après un délai de grâce, la reprend au
+// retour (avec recalage d'horloge, fait par resume()). La décision vit dans
+// shared/veille.js, testée sans navigateur.
+function installBackgroundPause(vm) {
+  if (typeof vm.pause !== "function" || typeof vm.resume !== "function") return;
+  const veille = createVeilleController({
+    pause: () => {
+      Promise.resolve(vm.pause()).catch((error) =>
+        logLine(`[veille] pause impossible : ${error.message}`),
+      );
+      logLine("[veille] onglet masqué — VM suspendue, le processeur est rendu au visiteur");
+    },
+    resume: () => {
+      vm.resume();
+      logLine("[veille] onglet visible — VM reprise, horloge recalée");
+    },
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) veille.hidden();
+    else veille.visible();
+  });
 }
 
 // L'inspecteur n'a de sens que si la VM sait recevoir des variables : le

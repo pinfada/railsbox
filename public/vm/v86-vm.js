@@ -349,6 +349,22 @@ function createFacade(emulator, state, onConsole, snapshot) {
     await restartAck;
   }
 
+  // Veille d'arrière-plan : l'émulation consomme le processeur du visiteur
+  // même sans spectateur. La pause arrête le CPU virtuel ET l'entretien
+  // d'horloge (recaler une VM arrêtée ne sert à rien) ; la reprise recale
+  // immédiatement l'horloge invitée, qui a pris exactement la durée de la
+  // pause de retard — sans quoi cookies de session et jetons CSRF expirent.
+  async function pause() {
+    stopClockKeeper();
+    await emulator.stop();
+  }
+
+  function resume() {
+    emulator.run();
+    syncGuestClock();
+    startClockKeeper();
+  }
+
   return {
     startServer,
     handleHttpRequest,
@@ -357,6 +373,8 @@ function createFacade(emulator, state, onConsole, snapshot) {
     persistSnapshot,
     syncGuestClock,
     stopClockKeeper,
+    pause,
+    resume,
     // Débit du dernier transfert et compteurs du canal série (diagnostic).
     metrics: () => ({
       lastTransfer: { ...snapshot.lastTransfer },
