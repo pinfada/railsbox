@@ -7,11 +7,17 @@
 # chargement de page est constitué d'assets fingerprintés immuables.
 #
 # Usage (WSL2 ou Linux, e2fsprogs requis) :
-#   sh tools/extract-assets.sh [image.ext2] [destination]
+#   sh tools/extract-assets.sh [image.ext2] [destination] [racine-dans-image]
+#
+# La racine par défaut « /app » vaut pour les images mono-disque, où
+# l'application vit sous /app. Dans le disque applicatif découplé (ADR 0002),
+# l'arbre est à la racine du système de fichiers : passer "" en troisième
+# argument.
 set -eu
 
 IMAGE="${1:-public/disks/jiyufit.ext2}"
 DEST="${2:-public/disks/assets}"
+RACINE="${3-/app}"
 
 if ! command -v debugfs >/dev/null 2>&1; then
   echo "debugfs introuvable — installez e2fsprogs (apt install e2fsprogs)" >&2
@@ -29,12 +35,12 @@ mkdir -p "$DEST"
 # montage (donc sans droits root). /app est la racine de l'application
 # dans le rootfs (WORKDIR du Dockerfile). Les avertissements de chown sont
 # attendus hors root (DrvFS/CI) : seuls les contenus nous intéressent.
-echo "extraction de /app/public/assets depuis $IMAGE…"
-debugfs -R "rdump /app/public/assets $DEST" "$IMAGE" 2>&1 \
+echo "extraction de ${RACINE}/public/assets depuis $IMAGE…"
+debugfs -R "rdump ${RACINE}/public/assets $DEST" "$IMAGE" 2>&1 \
   | grep -v -e "^debugfs" -e "changing ownership" || true
 
 if [ ! -d "$DEST/assets" ]; then
-  echo "échec : /app/public/assets absent de l'image" >&2
+  echo "échec : ${RACINE}/public/assets absent de l'image" >&2
   exit 1
 fi
 
@@ -53,7 +59,7 @@ for file in favicon.ico favicon-16x16.png favicon-32x32.png \
   apple-touch-icon.png apple-touch-icon-precomposed.png \
   android-chrome-192x192.png android-chrome-512x512.png \
   site.webmanifest manifest.json browserconfig.xml robots.txt; do
-  debugfs -R "dump /app/public/$file $APPSTATIC/$file" "$IMAGE" 2>/dev/null || true
+  debugfs -R "dump ${RACINE}/public/$file $APPSTATIC/$file" "$IMAGE" 2>/dev/null || true
   [ -s "$APPSTATIC/$file" ] || rm -f "$APPSTATIC/$file"
 done
 

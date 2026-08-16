@@ -172,6 +172,17 @@ jobs:
           cp "public/disks/${nom}-split-state.bin.gz" publication/disks/
           cp "public/disks/${nom}-split-config.json" publication/disks/v86-config.json
 
+          # Assets fingerprintés extraits du disque applicatif et servis
+          # STATIQUEMENT par le Service Worker : c'est le levier de performance
+          # n°1, ~90 % du trafic d'un chargement de page. Sans eux, chaque
+          # feuille de style traverserait le port série — quand elle arrive.
+          # La racine est vide : dans le disque découplé l'arbre applicatif est
+          # à la racine du système de fichiers, pas sous /app.
+          sudo sh tools/extract-assets.sh \
+            "public/disks/${nom}-app.ext2" publication/disks/assets ""
+          sudo chown -R "$USER" publication/disks
+          echo "assets extraits : $(find publication/disks/assets -type f | wc -l) fichiers"
+
       - name: Assemblage de la coquille
         working-directory: railsbox
         run: |
