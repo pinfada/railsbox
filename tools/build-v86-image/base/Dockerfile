@@ -1,19 +1,22 @@
 # syntax=docker/dockerfile:1.7
 # Image de BASE railsbox (ADR 0002) : rootfs i386 mutualisé, SANS application.
 # Contient Debian bookworm i386, le noyau Linux 686, Ruby compilé depuis les
-# sources, Redis, les bibliothèques système des gems natives courantes, le
-# démon du pont série et un init générique. Le disque applicatif (hdb) apporte
-# séparément l'arbre de l'app, son bundle (BUNDLE_PATH=/app/vendor/bundle),
-# ses assets et sa base pré-seedée.
+# sources, Redis, PostgreSQL (BINAIRES SEULS, sans cluster), les bibliothèques
+# système des gems natives courantes, le démon du pont série et un init
+# générique. Le disque applicatif (hdb) apporte séparément l'arbre de l'app, son
+# bundle (BUNDLE_PATH=/app/vendor/bundle), ses assets et sa base pré-seedée —
+# fichier sqlite3 ou datadir PostgreSQL dans /app/var/pg.
 #
 # Contexte de build attendu : tools/build-v86-image/base/ (contient rib/).
 #   docker build --platform linux/386 -f base/Dockerfile -t railsbox-base-3.3 base
 #
 # Le bundle NE vit PAS dans la base : seul le runtime Ruby + la toolchain (pour
 # compiler les gems natives i386 au build du disque app) + les bibliothèques
-# système y figurent. Pour le MVP, on code en dur les besoins de la démo
-# (sqlite3, nokogiri→libxml2) ; une base pleinement générique embarquerait
-# l'union des bibliothèques système courantes.
+# système y figurent. On code en dur les besoins couverts (sqlite3, PostgreSQL,
+# nokogiri→libxml2) ; une base pleinement générique embarquerait l'union des
+# bibliothèques système courantes. La liste doit rester synchronisée avec
+# BASE_SYSTEM_PACKAGES (split-config.mjs), qui refuse en amont une application
+# réclamant autre chose.
 
 ARG RUBY_VERSION=3.3.12
 
@@ -42,18 +45,33 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Socle commun : noyau bootable par v86 (bzImage direct, sans bootloader),
 # toolchain de compilation (Ruby + gems natives), bibliothèques système des
-# gems natives courantes, Redis mutualisé, Python du pont série.
+# gems natives courantes, Redis et PostgreSQL mutualisés, Python du pont série.
 # libsqlite3-dev + libxml2-dev/libxslt1-dev : besoins de la démo sqlite3 +
-# nokogiri, codés en dur pour le MVP (voir en-tête).
+# nokogiri. libpq-dev + postgresql : la gem pg et son serveur (voir plus bas,
+# le cluster n'est PAS créé ici).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       linux-image-686 initramfs-tools \
       build-essential libyaml-dev zlib1g-dev libssl-dev libffi-dev \
       libgmp-dev libreadline-dev bison pkg-config patch \
       libxml2-dev libxslt1-dev libsqlite3-dev \
       redis-server \
+      postgresql postgresql-client libpq-dev \
       python3 iproute2 procps openssl curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && update-initramfs -u -k all
+
+# Le postinst de postgresql-common crée d'office un cluster « main » dans
+# /var/lib/postgresql/<version>/main — c'est-à-dire dans le rootfs MUTUALISÉ,
+# exactement là où il ne doit pas être. Le cluster d'une sandbox vit sur son
+# disque applicatif (PGDATA=/app/var/pg), pour que l'état migré et seedé soit
+# capturé avec lui. On supprime donc le cluster par défaut : il ne servirait à
+# rien, pèserait ~40 Mo sur une base téléchargée par tous les visiteurs, et
+# offrirait un second datadir dans lequel une application pourrait atterrir par
+# accident.
+RUN set -eu; \
+    pg_dropcluster --stop 15 main 2>/dev/null || true; \
+    rm -rf /var/lib/postgresql/15/main /etc/postgresql/15/main; \
+    test ! -d /var/lib/postgresql/15/main
 
 # Ruby exact demandé (les dépôts bookworm i386 ne fournissent que ruby 3.1),
 # compilé depuis les sources. C'est de loin la couche la plus coûteuse : elle
@@ -78,16 +96,20 @@ COPY rib/serial-bridge.py /opt/rib/serial-bridge.py
 COPY rib/config.ru /opt/rib/config.ru
 COPY rib/start-app.sh /opt/rib/start-app.sh
 COPY rib/guest-init.sh /opt/rib/guest-init.sh
+COPY rib/postgres.sh /opt/rib/postgres.sh
+COPY rib/postgresql-railsbox.conf /opt/rib/postgresql-railsbox.conf
 
 ARG BASE_NAME=base-3.3
 ARG WITH_REDIS=1
+ARG PG_VERSION=15
 RUN <<'RIB_SETUP'
 set -eu
-chmod +x /opt/rib/guest-init.sh /opt/rib/start-app.sh
+chmod +x /opt/rib/guest-init.sh /opt/rib/start-app.sh /opt/rib/postgres.sh
 
 cat > /opt/rib/services.sh <<SERVICES
 export RIB_BASE_NAME='${BASE_NAME}'
 export RIB_WITH_REDIS=${WITH_REDIS}
+export RIB_PG_VERSION=${PG_VERSION}
 SERVICES
 
 # Environnement générique figé à la construction de la base. Les clés sont

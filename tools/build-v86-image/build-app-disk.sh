@@ -82,12 +82,6 @@ fi
 
 if [ "$SEED_OVERRIDE_SET" -eq 1 ]; then SEED_COMMAND="$SEED_OVERRIDE"; fi
 
-# PostgreSQL reste hors périmètre : le cluster devrait être initialisé dans le
-# disque applicatif et démarré après son montage (ADR 0002).
-if [ "${WITH_POSTGRES:-0}" = 1 ]; then
-  echo "✗ PostgreSQL hors périmètre du MVP B2 (voir ADR 0002)." >&2
-  exit 1
-fi
 # La base est mutualisée : son jeu de bibliothèques système est figé à sa
 # construction et le disque applicatif ne peut rien y ajouter. Une gem native
 # réclamant autre chose échouerait à la compilation, loin de la cause — on
@@ -107,10 +101,27 @@ if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
   exit 1
 fi
 
+# PostgreSQL n'existe dans la base qu'à partir de la révision 3.3-r2. Une base
+# antérieure produirait un disque applicatif dont l'initdb échoue au milieu du
+# build, plusieurs minutes après le début — on tranche ici, avec le remède.
+if [ "${WITH_POSTGRES:-0}" = 1 ]; then
+  PG_BIN="/usr/lib/postgresql/${PG_VERSION}/bin/initdb"
+  if ! docker run --rm --platform linux/386 "$BASE_IMAGE" test -x "$PG_BIN" >/dev/null 2>&1; then
+    echo "✗ L'image de base $BASE_IMAGE ne fournit pas PostgreSQL $PG_VERSION." >&2
+    echo "  PostgreSQL est apparu dans la base 3.3-r2 : utilisez une base au moins" >&2
+    echo "  aussi récente (--base ghcr.io/pinfada/railsbox-base:3.3-r2, ou l'entrée" >&2
+    echo "  « base: 3.3-r2 » du workflow construire-sandbox)." >&2
+    exit 1
+  fi
+fi
+
 # Le nombre de variables est affiché : un bloc `env:` silencieusement ignoré
 # est une panne très difficile à diagnostiquer depuis le navigateur.
 ENV_COUNT="$(printf '%s' "${APP_ENV_MANIFEST:-}" | grep -c '^export ' || true)"
 echo "  Base $BASE_IMAGE · Ruby $RUBY_VERSION · db $DATABASE · seed ${SEED_COMMAND:-aucun}"
+if [ "${WITH_POSTGRES:-0}" = 1 ]; then
+  echo "  Cluster PostgreSQL $PG_VERSION : $PG_DATABASE dans ${PG_DATA_DIR} (sur le disque applicatif)"
+fi
 echo "  Environnement déclaré : $ENV_COUNT variable(s)"
 echo "  Montée sous : ${MOUNT_PREFIX}/app"
 echo "  Assets : précompilation « ${ASSETS_STAGE:-aucun} »${BINARY_ASSET_GEMS:+ (${BINARY_ASSET_GEMS})}"
@@ -167,6 +178,11 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "ASSET_PRECOMPILE=${ASSET_PRECOMPILE:-0}" \
   --build-arg "HOST_ASSETS=${HOST_ASSETS:-0}" \
   --build-arg "WITH_REDIS=${WITH_REDIS:-0}" \
+  --build-arg "DATABASE=$DATABASE" \
+  --build-arg "WITH_POSTGRES=${WITH_POSTGRES:-0}" \
+  --build-arg "PG_VERSION=$PG_VERSION" \
+  --build-arg "PG_DATA_DIR=${PG_DATA_DIR:-}" \
+  --build-arg "PG_DATABASE_URL=${PG_DATABASE_URL:-}" \
   --build-arg "DB_PREPARE_COMMAND=$DB_PREPARE_COMMAND" \
   --build-arg "SEED_COMMAND=$SEED_COMMAND" \
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
@@ -199,5 +215,19 @@ rm -f "$OUTPUT_DIR/$NAME-app.ext2"
 mke2fs -q -t ext2 -b 4096 -d "$WORK_DIR/app" "$OUTPUT_DIR/$NAME-app.ext2" "${APP_DISK_MB}M"
 
 APP_DISK_BYTES=$(stat -c%s "$OUTPUT_DIR/$NAME-app.ext2")
+
+# Fiche du disque, lue par make-delta-snapshot.mjs : c'est ici, et nulle part
+# ailleurs, qu'on sait quelle base de données porte l'application. Sans elle, la
+# configuration v86 publiée annoncerait « sqlite3 » à une sandbox PostgreSQL —
+# une contre-vérité qui se paierait au diagnostic, pas au boot.
+cat > "$OUTPUT_DIR/$NAME-app.json" <<FICHE
+{
+  "name": "$NAME",
+  "database": "$DATABASE",
+  "ruby": "$RUBY_VERSION",
+  "base": "$BASE_IMAGE"
+}
+FICHE
+
 echo "✓ Disque applicatif prêt : $NAME-app.ext2 ($((APP_DISK_BYTES / 1048576)) Mo)"
 echo "  Delta d'instantané :  node tools/build-v86-image/make-delta-snapshot.mjs --name $NAME --base $BASE_IMAGE"

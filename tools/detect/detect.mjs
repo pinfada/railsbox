@@ -184,19 +184,38 @@ function detectRails(gemfile, specs) {
 }
 
 /**
- * Choisit la base de données à provisionner à partir de `config/database.yml`.
+ * Base supposée quand `config/database.yml` ne dit rien d'exploitable.
+ *
+ * Le Gemfile.lock tranche mieux qu'un défaut aveugle : un `database.yml`
+ * entièrement piloté par ERB (`url: <%= ENV["DATABASE_URL"] %>`, forme
+ * courante des applications déployées sur un PaaS) n'expose aucun `adapter:`,
+ * mais la gem `pg` ne se trouve dans le verrou que si l'application parle bien
+ * à PostgreSQL. Supposer sqlite3 dans ce cas produisait une image sans cluster
+ * et une application qui refuse de démarrer — très loin de la cause.
+ * @param {Map<string, string>} specs gems résolues du Gemfile.lock
+ * @returns {string} adaptateur supposé
+ */
+function fallbackDatabase(specs) {
+  return specs.has("pg") ? "postgresql" : "sqlite3";
+}
+
+/**
+ * Choisit la base de données à provisionner à partir de `config/database.yml`,
+ * le Gemfile.lock servant d'arbitre quand le fichier ne déclare rien.
  * @param {string|null} databaseYml contenu du fichier, `null` s'il est absent
+ * @param {Map<string, string>} specs gems résolues du Gemfile.lock
  * @returns {{database: string, findings: Finding[]}} adaptateur retenu et diagnostics
  */
-function detectDatabase(databaseYml) {
+function detectDatabase(databaseYml, specs) {
   if (databaseYml === null) {
+    const database = fallbackDatabase(specs);
     return {
-      database: "sqlite3",
+      database,
       findings: [
         createFinding(
           SEVERITY.WARNING,
           "missing-database-config",
-          "config/database.yml est absent : sqlite3 est supposé par défaut.",
+          `config/database.yml est absent : ${database} est supposé par défaut.`,
         ),
       ],
     };
@@ -221,7 +240,7 @@ function detectDatabase(databaseYml) {
       createFinding(
         SEVERITY.WARNING,
         "missing-database-adapter",
-        "Aucune clé adapter: exploitable dans config/database.yml : sqlite3 est supposé.",
+        `Aucune clé adapter: exploitable dans config/database.yml : ${fallbackDatabase(specs)} est supposé.`,
       ),
     );
   }
@@ -234,7 +253,21 @@ function detectDatabase(databaseYml) {
       ),
     );
   }
-  return { database: supported[0] ?? "sqlite3", findings };
+  const database = supported[0] ?? fallbackDatabase(specs);
+  // La gem pg est le seul moyen pour Rails de parler à PostgreSQL : sans elle
+  // le cluster démarrerait dans la VM pour rien, et l'application échouerait au
+  // premier accès à la base. Averti ici plutôt que découvert dans les journaux
+  // de boot, dix minutes après le début de la construction.
+  if (database === "postgresql" && !specs.has("pg")) {
+    findings.push(
+      createFinding(
+        SEVERITY.WARNING,
+        "missing-pg-gem",
+        "PostgreSQL est demandé mais la gem « pg » est absente du Gemfile.lock.",
+      ),
+    );
+  }
+  return { database, findings };
 }
 
 /**
@@ -319,7 +352,7 @@ export async function detectApp(appDir) {
   findings.push(...ruby.findings);
   const rails = detectRails(gemfile, specs);
   findings.push(...rails.findings);
-  const database = detectDatabase(databaseYml);
+  const database = detectDatabase(databaseYml, specs);
   findings.push(...database.findings);
   const assets = detectAssets(packageJson);
   findings.push(...assets.findings);

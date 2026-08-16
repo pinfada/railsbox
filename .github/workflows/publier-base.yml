@@ -14,9 +14,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version publiée sur GHCR (jamais réécrire un tag déjà consommé)"
+        description: >-
+          Version publiée sur GHCR (jamais réécrire un tag déjà consommé).
+          Convention : « <série Ruby> » pour la première base d'une série,
+          puis « <série Ruby>-r<N> » pour ses révisions successives — 3.3 vaut
+          donc r1. Une révision paraît dès que le CONTENU de la base change
+          (paquet ajouté, script d'init modifié) : les artefacts sont immuables
+          et les sandboxes déjà publiées continuent d'épingler l'ancienne.
         required: true
-        default: "3.3"
+        default: "3.3-r2"
       ruby:
         description: "Version exacte de Ruby compilée dans la base"
         required: true
@@ -97,13 +103,48 @@ jobs:
             ruby -v
             test -x /opt/rib/guest-init.sh
             test -x /opt/rib/start-app.sh
+            test -x /opt/rib/postgres.sh
+            test -f /opt/rib/postgresql-railsbox.conf
             test -f /opt/rib/serial-bridge.py
             test -f /opt/rib/config.ru
             test -d /app
             ls /boot/vmlinuz-* >/dev/null
             python3 --version
             redis-server --version | head -1
+            /usr/lib/postgresql/15/bin/postgres --version
           '
+
+      # PostgreSQL doit être présent EN BINAIRES et ABSENT EN CLUSTER. Un
+      # datadir dans le rootfs mutualisé serait un défaut de fond : il pèserait
+      # sur tous les visiteurs, y compris ceux dont l'application n'utilise pas
+      # PostgreSQL, et offrirait une seconde base dans laquelle une application
+      # pourrait atterrir au lieu de la sienne, sur son disque applicatif.
+      - name: Vérification de l'absence de cluster dans le rootfs
+        run: |
+          docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" sh -c '
+            set -eu
+            if [ -d /var/lib/postgresql/15/main ]; then
+              echo "cluster par défaut présent dans le rootfs mutualisé"; exit 1
+            fi
+            test ! -d /etc/postgresql/15/main
+          '
+
+      # Preuve que le cluster d'une sandbox peut réellement naître dans la base :
+      # initdb complet, démarrage, arrêt propre. C'est le chemin que suivra le
+      # build de chaque disque applicatif PostgreSQL — mieux vaut le casser ici
+      # que dans la CI d'un mainteneur.
+      - name: Répétition du cycle de vie PostgreSQL
+        run: |
+          docker run --rm --platform linux/386 \
+            -e PGDATA=/tmp/pgtest -e RIB_PG_VERSION=15 \
+            "$IMAGE:${{ inputs.tag }}" sh -c '
+              set -eu
+              mkdir -p /tmp/pgtest
+              sh /opt/rib/postgres.sh start
+              su -s /bin/sh postgres -c "psql -h 127.0.0.1 -U postgres -d postgres -qtAc \
+                \"select version();\"" | head -1
+              sh /opt/rib/postgres.sh stop
+            '
 
       # ------------------------------------------------------------------
       # Artefacts navigateur, extraits de L'IMAGE QUI VIENT D'ÊTRE VÉRIFIÉE.

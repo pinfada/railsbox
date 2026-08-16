@@ -113,7 +113,18 @@ RIB_ASSETS
 # Base préparée + seedée PENDANT le build : le premier boot n'a ni migration ni
 # amorçage à faire, et l'instantané delta capture une base déjà peuplée. Redis
 # de la base démarré au cas où des seeds enfileraient des jobs.
+#
+# PostgreSQL suit exactement la même logique que le fichier sqlite3, à ceci près
+# que l'« état » est un répertoire : le cluster est initialisé dans
+# PG_DATA_DIR (/app/var/pg), migré, seedé, puis ARRÊTÉ PROPREMENT — c'est cet
+# arrêt qui rend le datadir cohérent sur disque avant le mkfs de l'ext2. Le
+# datadir étant sous /app, il est exporté avec l'arbre applicatif et voyage avec
+# lui : le visiteur reçoit une base déjà peuplée, sans migration au boot.
 ARG WITH_REDIS=0
+ARG WITH_POSTGRES=0
+ARG PG_VERSION=15
+ARG PG_DATA_DIR=""
+ARG PG_DATABASE_URL=""
 ARG DB_PREPARE_COMMAND="bundle exec rails db:prepare"
 ARG SEED_COMMAND=""
 ARG SEED_OPTIONAL=0
@@ -121,6 +132,12 @@ RUN <<'RIB_DB'
 set -eu
 if [ "${WITH_REDIS}" = 1 ]; then
   redis-server --daemonize yes --port 6379 --save '' --appendonly no
+fi
+if [ "${WITH_POSTGRES}" = 1 ]; then
+  export PGDATA="${PG_DATA_DIR}"
+  export RIB_PG_VERSION="${PG_VERSION}"
+  export DATABASE_URL="${PG_DATABASE_URL}"
+  sh /opt/rib/postgres.sh start
 fi
 mkdir -p tmp/pids tmp/cache log storage
 sh -c "${DB_PREPARE_COMMAND}"
@@ -132,12 +149,19 @@ if [ -n "${SEED_COMMAND}" ]; then
   fi
 fi
 if [ "${WITH_REDIS}" = 1 ]; then redis-cli shutdown nosave || true; fi
+if [ "${WITH_POSTGRES}" = 1 ]; then
+  PGDATA="${PG_DATA_DIR}" RIB_PG_VERSION="${PG_VERSION}" sh /opt/rib/postgres.sh stop
+  du -sh "${PG_DATA_DIR}"
+fi
 # Journaux/caches de build : inutiles sur le disque livré, ils gonflent l'ext2.
 rm -rf log/* tmp/* 2>/dev/null || true
 RIB_DB
 
 # Environnement propre à l'application, sourcé par start-app.sh après montage
-# du disque applicatif (un futur PostgreSQL y fixerait PGDATA).
+# du disque applicatif. C'est LE canal par lequel le guest apprend quelle base
+# la sandbox utilise : RAILSBOX_DATABASE commande le démarrage (ou non) du
+# cluster PostgreSQL, PGDATA en désigne le datadir sur ce même disque, et
+# DATABASE_URL fait pointer Rails dessus quel que soit son config/database.yml.
 #
 # SÉCURITÉ : APP_ENV_MANIFEST provient de railsbox.yml, donc de code TIERS. Il
 # est écrit VERBATIM, jamais évalué ici : les valeurs sont déjà single-quotées
@@ -155,7 +179,21 @@ RIB_DB
 # et ses URL d'assets à la racine du domaine, hors du site — et hors de la
 # portée du Service Worker, qui ne pourrait même pas les rattraper.
 ARG APP_ENV_MANIFEST=""
-RUN mkdir -p /app/.railsbox \
-    && printf 'export RAILSBOX_SANDBOX=1\nexport RAILS_RELATIVE_URL_ROOT=%s/app\n%s\n' \
-       "${MOUNT_PREFIX}" "${APP_ENV_MANIFEST}" > /app/.railsbox/app-env.sh \
-    && chmod 600 /app/.railsbox/app-env.sh
+ARG DATABASE=sqlite3
+RUN <<'RIB_APP_ENV'
+set -eu
+mkdir -p /app/.railsbox
+{
+  echo "export RAILSBOX_SANDBOX=1"
+  echo "export RAILS_RELATIVE_URL_ROOT=${MOUNT_PREFIX}/app"
+  echo "export RAILSBOX_DATABASE=${DATABASE}"
+  if [ "${WITH_POSTGRES}" = 1 ]; then
+    echo "export PGDATA=${PG_DATA_DIR}"
+    echo "export DATABASE_URL='${PG_DATABASE_URL}'"
+  fi
+  # En DERNIER : le bloc `env:` du railsbox.yml a le dernier mot, y compris sur
+  # DATABASE_URL — une application peut ainsi imposer sa propre chaîne.
+  printf '%s\n' "${APP_ENV_MANIFEST}"
+} > /app/.railsbox/app-env.sh
+chmod 600 /app/.railsbox/app-env.sh
+RIB_APP_ENV

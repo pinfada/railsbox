@@ -28,7 +28,11 @@ on:
         type: string
         default: ""
       base:
-        description: "Version de la base railsbox à utiliser"
+        description: >-
+          Version de la base railsbox à utiliser. « 3.3 » suffit à une
+          application sqlite3 ; PostgreSQL exige « 3.3-r2 » ou plus récent
+          (la révision où la base a gagné le serveur PostgreSQL). La
+          construction refuse explicitement une base trop ancienne.
         type: string
         default: "3.3"
       assets-url:

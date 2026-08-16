@@ -181,6 +181,62 @@ env:
 silencieux — ou `true` pour le premier utilisateur. Pour une authentification
 exotique, `auto_login_code` reçoit un fragment Ruby avec `env` dans sa portée.
 
+### PostgreSQL
+
+Rien à déclarer : la détection reconnaît un `adapter: postgresql`, et à défaut
+la seule présence de la gem `pg` dans le `Gemfile.lock` — le cas des
+applications dont le `database.yml` n'est qu'un `url: <%= ENV["DATABASE_URL"] %>`.
+Une seule contrainte : **la base doit être en révision `3.3-r2` ou plus
+récente**, celle où le serveur PostgreSQL est entré dans le rootfs mutualisé.
+
+```yaml
+jobs:
+  sandbox:
+    uses: pinfada/railsbox/.github/workflows/construire-sandbox.yml@main
+    with:
+      base: "3.3-r2"
+```
+
+Ce que fait railsbox, et pourquoi c'est fait comme ça :
+
+| Élément | Choix | Raison |
+|---|---|---|
+| Serveur | dans le rootfs de base, **sans aucun cluster** | mutualisé entre sandboxes ; un datadir dans la base pèserait sur tous les visiteurs, y compris ceux en sqlite3 |
+| Répertoire de données | `/app/var/pg`, sur le **disque applicatif** | il voyage avec l'application : l'état migré et seedé à la construction est livré tel quel, sans migration au premier boot |
+| Démarrage du cluster | dans `start-app.sh`, **après** le montage du disque | l'instantané de base fige les processus ; un postmaster démarré à l'init y serait gelé sur un datadir encore inexistant |
+| Connexion | `DATABASE_URL` posée sur le disque applicatif | surcharge hôte, rôle et base sans toucher au `config/database.yml` de l'application |
+| Durabilité | `fsync = off`, WAL minimal | la base est reconstruite à chaque build et la copie du visiteur est jetable ; sous émulation, `fsync` domine le coût des migrations |
+
+Le mot de passe du rôle (`postgres`) n'est pas un secret : la VM n'a aucun
+réseau sortant et le cluster n'écoute que le loopback émulé (voir
+[`SECURITY.md`](SECURITY.md)). N'embarquez jamais de vraies données.
+
+Une variante PostgreSQL de l'application de démonstration sert de banc d'essai.
+Elle n'est pas une seconde application mais une surcouche de quatre fichiers :
+
+```bash
+APP="$(bash tools/demo-app/preparer-demo-pg.sh)"
+wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP" --name demo-pg
+```
+
+### Republier la base
+
+La base est un artefact **immuable et versionné** (ADR 0004) : on n'écrase
+jamais une version que des sandboxes épinglent peut-être. Toute modification de
+son contenu — paquet ajouté, script d'init retouché — donne une **révision**
+nouvelle, nommée `<série Ruby>-r<N>` (`3.3` vaut r1, la révision PostgreSQL est
+`3.3-r2`).
+
+1. Lancer le workflow **Publier la base** (`workflow_dispatch`) avec
+   `tag: 3.3-r2`, `ruby: 3.3.12`, `push: true`. Il construit l'image i386, la
+   vérifie (architecture déclarée, contenu attendu, absence de cluster dans le
+   rootfs, cycle de vie complet du cluster), pousse sur GHCR, puis publie
+   rootfs découpé, noyau, initrd et instantané de base dans un répertoire
+   `base-3.3-r2/` du dépôt d'artefacts — **à côté** des versions précédentes.
+2. Vérifier le récapitulatif du workflow : les URL publiées y figurent.
+3. Basculer les sandboxes qui en ont besoin sur `base: "3.3-r2"`. Celles qui
+   restent sur `3.3` continuent de fonctionner à l'identique.
+
 ### Tester en local
 
 ```bash
@@ -280,9 +336,9 @@ le visiteur découvrirait à l'affichage de la page.
 
 ### Construire à la main (voie monolithique héritée)
 
-Antérieure au découpage base/application, cette voie produit une image unique
-et reste la seule à couvrir PostgreSQL — son Dockerfile précompile les assets
-sur le même étage amd64.
+Antérieure au découpage base/application, cette voie produit une image unique.
+Elle n'a plus d'exclusivité : PostgreSQL, Tailwind, dart-sass et les chaînes
+npm sont désormais couverts des deux côtés.
 
 Le build est **piloté par auto-détection** : `build.sh` inspecte l'application
 (version de Ruby via `.ruby-version`/Gemfile, adaptateur de base via
@@ -508,7 +564,7 @@ importmap, publié et bootant en ligne. Le reste, honnêtement :
 
 | Limite | État |
 |---|---|
-| **PostgreSQL** | refusé par la construction. Le crochet existe dans `guest-init.sh` (le cluster ne démarrerait qu'après montage du disque applicatif) mais n'est pas branché. SQLite est la voie nominale. |
+| **PostgreSQL** | **branché** sur la voie découplée : le serveur vit dans la base (à partir de la révision `3.3-r2`), le répertoire de données sur le disque applicatif, et le cluster ne démarre qu'après le montage de celui-ci. Exige une base `3.3-r2` ou plus récente — la construction refuse explicitement une base antérieure. Voir « PostgreSQL » plus bas. |
 | **Tailwind, dart-sass** | **pris en charge** : précompilés sur un étage amd64, puis copiés dans le disque i386 (le guest n'exécute jamais ces binaires). Validé sur l'étage lui-même ; un boot de bout en bout reste à faire en CI. |
 | **Chaînes npm** (esbuild, cssbundling) | **pris en charge** par le même étage (`npm ci` puis scripts de build). Un verrou yarn/pnpm/bun n'est pas relu : repli sur `npm install`, signalé. |
 | **ActionCable / WebSockets** | hors périmètre : incompatibles avec un pont requête/réponse. Piste : long-polling ou flux dédié. |
@@ -560,7 +616,8 @@ tools/
 │                                  base/ (rootfs mutualisé + disque applicatif)
 ├── vm-harness.mjs                 boot d'une VM v86 sous Node (piloté par config)
 ├── extract-assets.sh             extraction des assets de l'image (debugfs)
-├── demo-app/                      application `rails new` de validation
+├── demo-app/                      application `rails new` de validation (demo/)
+│                                  + sa surcouche PostgreSQL (demo-pg/)
 └── bench-serial.mjs               mesure du coût du chemin chaud série
 docs/decisions/                    ADR : distribution des artefacts, découpage base/app
 SECURITY.md · CONTRIBUTING.md      modèle de menace · conventions

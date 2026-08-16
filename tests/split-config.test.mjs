@@ -97,6 +97,8 @@ test("buildSplitConfig tolère une barre oblique finale sur baseUrl", () => {
 
 test("unsupportedPackages accepte ce que la base fournit déjà", () => {
   assert.deepEqual(unsupportedPackages("libsqlite3-dev libxml2-dev libxslt1-dev"), []);
+  // PostgreSQL fait partie de la base depuis la révision 3.3-r2.
+  assert.deepEqual(unsupportedPackages("libpq-dev postgresql postgresql-client"), []);
   assert.deepEqual(unsupportedPackages(BASE_SYSTEM_PACKAGES), []);
 });
 
@@ -112,7 +114,7 @@ test("unsupportedPackages tolère une liste vide ou mal espacée", () => {
   assert.deepEqual(unsupportedPackages("   "), []);
   assert.deepEqual(unsupportedPackages([]), []);
   // Doublons repliés : le message d'erreur ne doit pas répéter un paquet.
-  assert.deepEqual(unsupportedPackages("libpq-dev  libpq-dev"), ["libpq-dev"]);
+  assert.deepEqual(unsupportedPackages("libvips-dev  libvips-dev"), ["libvips-dev"]);
 });
 
 test("buildSplitConfig omet state quand aucun instantané n'est fourni", () => {

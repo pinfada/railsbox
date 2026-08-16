@@ -41,6 +41,68 @@ export const DEFAULT_RUBY_VERSION = "3.3.12";
 /** Version majeure de PostgreSQL de la base Debian bookworm i386. */
 export const DEFAULT_PG_VERSION = "15";
 
+/**
+ * Répertoire de données du cluster PostgreSQL — SUR LE DISQUE APPLICATIF.
+ *
+ * C'est le choix structurant de la prise en charge de PostgreSQL (ADR 0002) :
+ * le datadir voyage avec l'application, donc l'état déjà migré et seedé au
+ * build est capturé dans l'ext2 applicatif, exactement comme le fichier
+ * sqlite3. Corollaire : le cluster ne peut démarrer qu'APRÈS le montage de hdb,
+ * jamais dans l'init de la base — dont l'instantané fige les processus.
+ */
+export const PG_DATA_DIR = "/app/var/pg";
+
+/** Port du cluster dans la VM : loopback interne, jamais exposé au navigateur. */
+export const PG_PORT = "5432";
+
+/** Rôle du cluster de démonstration. */
+export const PG_ROLE = "postgres";
+
+/**
+ * Mot de passe du rôle de démonstration. Ce n'est PAS un secret : la VM n'a
+ * aucun réseau sortant, le cluster n'écoute que sur le loopback émulé et chaque
+ * visiteur a sa propre copie jetable (voir SECURITY.md). Il n'existe que pour
+ * satisfaire les `config/database.yml` qui exigent un mot de passe.
+ */
+export const PG_PASSWORD = "postgres";
+
+/**
+ * Dérive un nom de base PostgreSQL valide du nom court de la sandbox.
+ * Les identifiants non cités n'acceptent que lettres, chiffres et souligné, et
+ * ne commencent pas par un chiffre : « mon-app » deviendrait sinon une syntaxe
+ * invalide dans la moitié des outils qui manipulent ce nom.
+ * @param {string} appName nom court de la sandbox
+ * @returns {string} nom de base, suffixé par l'environnement Rails servi
+ */
+export function postgresDatabaseName(appName) {
+  const cleaned = String(appName ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const stem = cleaned === "" || /^\d/.test(cleaned) ? `app_${cleaned}` : cleaned;
+  return `${stem.replace(/_+$/, "")}_production`;
+}
+
+/**
+ * Décrit le cluster PostgreSQL d'une sandbox : emplacement, nom de base et URL
+ * de connexion. Centralisé ici pour que le disque applicatif, l'init du guest
+ * et la documentation ne divergent jamais.
+ * @param {string} appName nom court de la sandbox
+ * @returns {{dataDir: string, database: string, port: string, role: string, url: string}}
+ */
+export function postgresSettings(appName) {
+  const database = postgresDatabaseName(appName);
+  return {
+    dataDir: PG_DATA_DIR,
+    database,
+    port: PG_PORT,
+    role: PG_ROLE,
+    // sslmode=disable : le cluster est local à la VM, une poignée de main TLS
+    // ne protégerait rien et coûterait cher sous émulation.
+    url: `postgresql://${PG_ROLE}:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/${database}?sslmode=disable`,
+  };
+}
+
 /** Paquets Debian fournissant chaque bibliothèque système réclamée par une gem. */
 const SYSTEM_LIB_PACKAGES = Object.freeze({
   libpq: Object.freeze(["libpq-dev"]),
@@ -162,14 +224,21 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
   const ruby = resolveRubyVersion(manifest.ruby);
   const assets = assetsPlan(manifest, specs);
   const seedCommand = manifest.seed?.command ?? (hasSeeds ? DEFAULT_SEED : "");
+  const withPostgres = manifest.database === "postgresql";
+  const postgres = postgresSettings(appName);
   return {
     APP_NAME: appName,
     RUBY_VERSION: ruby.version,
     DATABASE: manifest.database ?? "sqlite3",
-    WITH_POSTGRES: manifest.database === "postgresql" ? "1" : "0",
+    WITH_POSTGRES: withPostgres ? "1" : "0",
     // Version majeure de PostgreSQL fournie par la base Debian bookworm i386.
     // Centralisée ici pour que build.sh et le Dockerfile ne divergent pas.
     PG_VERSION: DEFAULT_PG_VERSION,
+    // Cluster de la sandbox — vide pour une application sqlite3, afin qu'un
+    // disque applicatif ne porte jamais de réglage PostgreSQL inutile.
+    PG_DATA_DIR: withPostgres ? postgres.dataDir : "",
+    PG_DATABASE: withPostgres ? postgres.database : "",
+    PG_DATABASE_URL: withPostgres ? postgres.url : "",
     WITH_REDIS: manifest.services?.redis ? "1" : "0",
     NPM_ASSETS: assets.npm ? "1" : "0",
     ASSET_SCRIPTS: assets.scripts.join(" "),

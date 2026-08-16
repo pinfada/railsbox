@@ -1,0 +1,22 @@
+# Variante PostgreSQL de l'application de démonstration.
+#
+# Ce fichier n'a rien de spécifique à railsbox : c'est le database.yml qu'écrit
+# `rails new --database=postgresql`. Dans la sandbox, DATABASE_URL — posé sur le
+# disque applicatif par build-app-disk.sh — surcharge hôte, rôle, mot de passe
+# et nom de base, sans que l'application ait à le savoir.
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+
+development:
+  <<: *default
+  database: demo_development
+
+test:
+  <<: *default
+  database: demo_test
+
+production:
+  <<: *default
+  database: demo_production

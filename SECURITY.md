@@ -56,6 +56,13 @@ dans sa propre VM. En conséquence :
   d'API tiers n'aboutissent jamais (c'est une propriété, pas un défaut).
 - **Déni de service local** : l'application peut consommer le CPU/RAM de
   l'onglet du visiteur ; c'est son navigateur qui arbitre.
+- **Identifiants des services de la VM** : le cluster PostgreSQL d'une sandbox
+  utilise le rôle `postgres` avec le mot de passe `postgres` et une
+  authentification `trust` sur le loopback émulé. Ce n'en est pas un secret :
+  le cluster n'écoute que `127.0.0.1` à l'intérieur de la VM, celle-ci n'a
+  aucun réseau sortant, et chaque visiteur travaille sur sa propre copie
+  jetable. Le corollaire est le même que pour tout le reste : **n'embarquez
+  jamais de vraies données** dans une sandbox.
 
 ## Signaler une vulnérabilité
 
