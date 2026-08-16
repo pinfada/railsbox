@@ -7,6 +7,8 @@
 // doit ni être confondu avec celui des tests, ni entrer en conflit avec lui.
 import { defineConfig } from "@playwright/test";
 
+import { projetsMoteurs } from "./tests/moteurs.mjs";
+
 const PORT = 8091;
 
 export default defineConfig({
@@ -26,7 +28,10 @@ export default defineConfig({
     video: "off",
     screenshot: "only-on-failure",
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  // Chromium par défaut ; `RAILSBOX_MOTEURS=tous` élargit à Firefox et WebKit,
+  // ce qui permet de distinguer un défaut de moteur d'un défaut d'hébergement
+  // quand la recette en ligne diverge. Voir tests/moteurs.mjs.
+  projects: projetsMoteurs(process.env.RAILSBOX_MOTEURS),
   webServer: {
     command: "node serve.mjs",
     port: PORT,

@@ -13,6 +13,7 @@
 // à la racine du domaine). Le voici versionné.
 import { defineConfig } from "@playwright/test";
 
+import { projetsMoteurs } from "./tests/moteurs.mjs";
 import { urlSandbox } from "./tests/live/url-sandbox.mjs";
 
 export default defineConfig({
@@ -39,5 +40,7 @@ export default defineConfig({
     video: "off",
     screenshot: "only-on-failure",
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  // Chromium par défaut ; `RAILSBOX_MOTEURS=tous` (ou une liste) élargit la
+  // recette à Firefox et WebKit. Voir tests/moteurs.mjs.
+  projects: projetsMoteurs(process.env.RAILSBOX_MOTEURS),
 });

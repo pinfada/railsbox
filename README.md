@@ -100,8 +100,30 @@ qui revient ne retélécharge rien (voir « Le cache des artefacts » plus bas).
 requêtes `Range`, et rien d'autre. Les en-têtes d'isolation `COOP`/`COEP`,
 qu'un hébergement statique ne pose pas, sont réinjectés par le Service Worker.
 
-Navigateurs : validé sur Chromium. Les webviews qui bloquent les Service
-Workers ne peuvent pas fonctionner, par construction.
+**Navigateurs** — mesuré par la recette `npm run test:live` (huit vérifications)
+sur la démonstration publiée et sur une réplique locale de la publication :
+
+| Moteur | Coquille | Service Worker | Isolation COI | Boot VM | Application servie | Cache d'artefacts |
+|---|---|---|---|---|---|---|
+| Chromium 151 | ok | ok | ok | 18–24 s | ok | ok |
+| Firefox 153 | ok | ok | ok | 21 s | ok | ok |
+| WebKit 26.5 | ok | ok | ok | 20 s | ok | ok |
+
+Les trois moteurs honorent les `COOP`/`COEP` réinjectés par le Service Worker,
+exposent donc `SharedArrayBuffer`, restaurent l'instantané mémoire de 272 Mo
+depuis IndexedDB et remplissent le cache d'artefacts. Une seule différence
+mesurée : la première requête traversant le pont série coûte environ 6 s sous
+Firefox, contre 1 s sous Chromium et WebKit.
+
+La recette ne joue que Chromium par défaut ; `RAILSBOX_MOTEURS=tous npm run
+test:live` (ou une liste : `firefox,webkit`) élargit aux trois, de même pour
+`npm run test:e2e`.
+
+Hors de portée, par construction : tout contexte qui refuse les Service Workers
+— webviews intégrées aux applications, navigation privée sur certains
+navigateurs — et tout contexte non sécurisé. La coquille les détecte au
+démarrage et affiche un diagnostic nommant la capacité manquante, au lieu de
+charger indéfiniment.
 
 ## 2. Guide d'utilisation
 

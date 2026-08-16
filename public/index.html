@@ -111,6 +111,29 @@
         height: 100%;
         background: var(--panel);
       }
+      /* Diagnostic affiché À LA PLACE de l'application : un visiteur dont le
+         navigateur ne convient pas doit le lire sans fouiller le journal. */
+      #diagnostic {
+        padding: 2rem 2.4rem;
+        overflow-y: auto;
+        background: var(--panel);
+      }
+      #diagnostic[hidden] {
+        display: none;
+      }
+      #diagnostic h2 {
+        margin: 0 0 1rem;
+        font-size: 1.05rem;
+        color: var(--error);
+      }
+      #diagnostic p {
+        margin: 0;
+        max-width: 62ch;
+        font-size: 0.85rem;
+        line-height: 1.7;
+        color: var(--text);
+        white-space: pre-wrap;
+      }
       @media (max-width: 900px) {
         main {
           grid-template-columns: 1fr;
@@ -145,6 +168,9 @@
         src="about:blank"
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
       ></iframe>
+      <!-- Rempli par main.js quand la sandbox ne peut pas démarrer ; remplace
+           alors l'iframe, qui resterait vide et muette. -->
+      <section id="diagnostic" role="alert" aria-live="polite" hidden></section>
     </main>
     <link rel="stylesheet" href="env-drawer.css" />
     <script type="module" src="main.js"></script>
