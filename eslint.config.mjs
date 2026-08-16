@@ -14,6 +14,10 @@ export default [
       // Application Rails de démonstration : sources générées par `rails new`,
       // hors périmètre des conventions du dépôt.
       "tools/demo-app/**",
+      // Clones des applications OSS de contrôle (tests/detect-oss.test.mjs).
+      // Sans cette exclusion, ESLint charge LEUR eslint.config.mjs et échoue
+      // sur des greffons qu'on n'installera jamais.
+      ".oss/**",
     ],
   },
   js.configs.recommended,
