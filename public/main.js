@@ -14,6 +14,11 @@ const V86_CONFIG_URL = new URL("disks/v86-config.json", document.baseURI).href;
 const MAX_REPAIR_RETRIES = 2;
 
 let inspector = null;
+// VM et configuration courantes, retenues au niveau du module : le Service
+// Worker peut être tué et redémarré à tout moment, et redemande alors l'une
+// ou l'autre à la page — hors de toute pile d'appel.
+let vmInstance = null;
+let artifactConfig = null;
 const MAX_LOG_LINES = 800;
 const RELOAD_GUARD_KEY = "rib-reloaded";
 
@@ -48,19 +53,21 @@ async function start() {
   await ensureControlled();
   setBadge("sw", true);
 
+  // Installé AVANT le boot : la configuration des artefacts est déclarée au
+  // Service Worker dès sa lecture, donc avant la première requête de v86.
+  navigator.serviceWorker.addEventListener("message", onWorkerMessage);
+
   ensureCrossOriginIsolated();
   setBadge("coi", true);
 
   const vm = await bootSelectedEngine();
+  vmInstance = vm;
   window.__vm = vm; // hook de diagnostic (DevTools)
   setBadge("vm", true);
 
   // Le SW peut être tué/redémarré à tout moment par le navigateur : il perd
-  // alors le port. On lui en fournit un neuf à chaque demande, et un
-  // immédiatement maintenant que la VM sait répondre.
-  navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type === "bridge-port-request") sendBridgePort(vm);
-  });
+  // alors le port. On lui en fournit un neuf à chaque demande (onWorkerMessage),
+  // et un immédiatement maintenant que la VM sait répondre.
   sendBridgePort(vm);
   await vm.startServer();
 
@@ -145,12 +152,32 @@ async function bootSelectedEngine() {
   if (!configResponse.ok) {
     throw new Error("v86-config.json introuvable — construisez d'abord la sandbox");
   }
+  const config = await configResponse.json();
+  // Le Service Worker met en cache les artefacts immuables (morceaux de
+  // disque, noyau, initrd) sous un nom dérivé de CETTE configuration. Il faut
+  // qu'il la connaisse avant que v86 ne demande son premier morceau — et il
+  // faut qu'elle vienne d'ici, pas d'une relecture du fichier : c'est la seule
+  // façon que le cache corresponde exactement aux artefacts effectivement
+  // bootés, y compris juste après une reconstruction.
+  declareArtifacts(config);
   const { bootVm } = await import("./vm/v86-vm.js");
   return bootVm({
     onConsole: logLine,
-    config: await configResponse.json(),
+    config,
     fresh: params.get("fresh") === "1",
   });
+}
+
+function onWorkerMessage(event) {
+  if (event.data?.type === "bridge-port-request" && vmInstance) sendBridgePort(vmInstance);
+  if (event.data?.type === "artifact-config-request") declareArtifacts(artifactConfig);
+}
+
+/** @param {Record<string, any> | null} config */
+function declareArtifacts(config) {
+  if (!config) return;
+  artifactConfig = config;
+  navigator.serviceWorker.controller?.postMessage({ type: "artifact-config", config });
 }
 
 function sendBridgePort(vm) {
