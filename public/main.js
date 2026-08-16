@@ -3,6 +3,14 @@
 
 import { createEnvironmentRegistry } from "./shared/env-detector.js";
 import { createEnvironmentDrawer } from "./env-drawer.js";
+import {
+  GARDE_CONTROLE,
+  GARDE_ISOLATION,
+  decisionReprise,
+  diagnostiquer,
+  releverCapacites,
+  resumerManques,
+} from "./shared/prerequis-demarrage.js";
 
 // Tout est relatif à la page : la coquille est publiée à la racine en
 // développement, mais sous « /<depot>/ » sur le Pages de projet de chaque
@@ -20,10 +28,10 @@ let inspector = null;
 let vmInstance = null;
 let artifactConfig = null;
 const MAX_LOG_LINES = 800;
-const RELOAD_GUARD_KEY = "rib-reloaded";
 
 const logElement = document.getElementById("boot-log");
 const frameElement = /** @type {HTMLIFrameElement} */ (document.getElementById("app-frame"));
+const diagnosticElement = document.getElementById("diagnostic");
 
 function logLine(text) {
   // Chaque ligne passe par le détecteur : une variable manquante citée par
@@ -45,6 +53,8 @@ function setBadge(id, ok) {
 }
 
 async function start() {
+  if (!checkBrowserSupport()) return;
+
   logLine("Enregistrement du Service Worker proxy…");
   await navigator.serviceWorker.register(new URL("sw-proxy.js", document.baseURI), {
     type: "module",
@@ -57,7 +67,7 @@ async function start() {
   // Service Worker dès sa lecture, donc avant la première requête de v86.
   navigator.serviceWorker.addEventListener("message", onWorkerMessage);
 
-  ensureCrossOriginIsolated();
+  await ensureCrossOriginIsolated();
   setBadge("coi", true);
 
   const vm = await bootSelectedEngine();
@@ -200,35 +210,94 @@ async function relayToVm(vm, port, data) {
   }
 }
 
-// Après la toute première installation, la page n'est pas encore contrôlée
-// par le SW : un unique rechargement règle ça (garde anti-boucle en session).
-function ensureControlled() {
-  if (navigator.serviceWorker.controller) return Promise.resolve();
-  if (sessionStorage.getItem(RELOAD_GUARD_KEY)) {
-    throw new Error("Le Service Worker ne prend pas le contrôle de la page");
+// Vérification préalable : sur un navigateur qui n'a pas de quoi faire tourner
+// la sandbox, mieux vaut le dire tout de suite et le dire clairement qu'échouer
+// plus loin sur un « navigator.serviceWorker is undefined ».
+function checkBrowserSupport() {
+  const { demarrable, bloquants, degradations } = diagnostiquer(releverCapacites(window));
+  for (const manque of degradations) {
+    logLine(`Fonctionnement dégradé — ${manque.titre} : ${manque.consequence}`);
   }
-  sessionStorage.setItem(RELOAD_GUARD_KEY, "1");
-  logLine("Premier passage : rechargement pour activer le Service Worker…");
+  if (demarrable) return true;
+  const resume = resumerManques(bloquants);
+  logLine(`Navigateur non pris en charge :\n${resume}`);
+  showDiagnostic("Ce navigateur ne peut pas faire tourner la sandbox", resume);
+  for (const id of ["sw", "coi", "vm", "http"]) setBadge(id, false);
+  return false;
+}
+
+/**
+ * Affiche un diagnostic à la place de l'application. Le journal de boot est
+ * long et gris : un visiteur dont le navigateur ne convient pas n'y lira rien.
+ * @param {string} titre
+ * @param {string} detail
+ */
+function showDiagnostic(titre, detail) {
+  if (!diagnosticElement) return;
+  diagnosticElement.replaceChildren();
+  const titreElement = document.createElement("h2");
+  titreElement.textContent = titre;
+  const detailElement = document.createElement("p");
+  // textContent, jamais innerHTML : ce texte peut citer un message d'erreur.
+  detailElement.textContent = detail;
+  diagnosticElement.append(titreElement, detailElement);
+  diagnosticElement.hidden = false;
+  frameElement.hidden = true;
+}
+
+/**
+ * Étape que la première visite ne peut satisfaire qu'après un rechargement.
+ *
+ * Le rechargement fait PARTIE du démarrage normal : il ne doit donc rien
+ * signaler d'anormal. La promesse rendue ne se résout jamais — la page part,
+ * la suite n'a plus lieu d'être — au lieu de lever, ce qui affichait
+ * auparavant une « ERREUR FATALE » et passait tous les badges au rouge à
+ * chaque première visite sur Firefox et WebKit.
+ *
+ * @param {{ satisfait: boolean, garde: string, attente: string, echec: string }} etape
+ * @returns {Promise<void>}
+ */
+function resumeAfterReload({ satisfait, garde, attente, echec }) {
+  const decision = decisionReprise({
+    satisfait,
+    dejaRecharge: sessionStorage.getItem(garde) !== null,
+  });
+  if (decision === "poursuivre") return Promise.resolve();
+  if (decision === "abandonner") throw new Error(echec);
+  sessionStorage.setItem(garde, "1");
+  logLine(`${attente} — rechargement…`);
   location.reload();
   return new Promise(() => {}); // la page se recharge, on n'ira pas plus loin
 }
 
+// Après la toute première installation, la page n'est pas encore contrôlée
+// par le SW : un unique rechargement règle ça.
+function ensureControlled() {
+  return resumeAfterReload({
+    satisfait: navigator.serviceWorker.controller !== null,
+    garde: GARDE_CONTROLE,
+    attente: "Premier passage : activation du Service Worker",
+    echec: "Le Service Worker ne prend pas le contrôle de la page",
+  });
+}
+
+// Le SW ré-injecte COOP/COEP, mais seulement sur les navigations qu'il
+// intercepte : celle qui l'a installé, elle, est déjà partie sans. Un
+// rechargement de plus suffit sur un hébergeur statique. En local, serve.mjs
+// pose les en-têtes et cette étape passe du premier coup.
 function ensureCrossOriginIsolated() {
-  if (crossOriginIsolated) return;
-  // Le SW vient d'être installé et ré-injecte COOP/COEP : un rechargement
-  // suffit sur un hébergeur statique. En local, serve.mjs pose les en-têtes.
-  if (!sessionStorage.getItem(RELOAD_GUARD_KEY)) {
-    sessionStorage.setItem(RELOAD_GUARD_KEY, "1");
-    location.reload();
-    throw new Error("Rechargement pour obtenir l'isolation cross-origin");
-  }
-  throw new Error(
-    "SharedArrayBuffer indisponible : servez la page avec les en-têtes COOP/COEP (voir serve.mjs)",
-  );
+  return resumeAfterReload({
+    satisfait: crossOriginIsolated,
+    garde: GARDE_ISOLATION,
+    attente: "Isolation cross-origin absente : en-têtes COOP/COEP réinjectés par le Service Worker",
+    echec:
+      "SharedArrayBuffer indisponible : servez la page avec les en-têtes COOP/COEP (voir serve.mjs)",
+  });
 }
 
 start().catch((error) => {
   logLine(`ERREUR FATALE: ${error.message}`);
+  showDiagnostic("Le démarrage a échoué", error.message);
   for (const id of ["sw", "coi", "vm", "http"]) {
     const badge = document.getElementById(`badge-${id}`);
     if (badge.classList.contains("pending")) setBadge(id, false);

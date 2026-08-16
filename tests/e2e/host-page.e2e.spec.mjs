@@ -24,10 +24,11 @@ async function blockExternalTraffic(page) {
 test.describe("Page hôte", () => {
   test.beforeEach(async ({ page }) => {
     await blockExternalTraffic(page);
-    // La page se recharge une fois au premier passage (garde « rib-reloaded »)
-    // pour laisser le Service Worker prendre le contrôle : toutes les
-    // assertions ci-dessous utilisent des attentes qui survivent à cette
-    // navigation, jamais des lectures ponctuelles.
+    // La page se recharge une ou deux fois au premier passage (gardes de
+    // reprise, voir shared/prerequis-demarrage.js) : le temps que le Service
+    // Worker prenne le contrôle, puis que la navigation qu'il intercepte porte
+    // enfin COOP/COEP. Toutes les assertions ci-dessous utilisent des attentes
+    // qui survivent à ces navigations, jamais des lectures ponctuelles.
     await page.goto("/");
   });
 

@@ -19,6 +19,15 @@ on:
         type: string
         required: false
         default: ""
+      moteurs:
+        description: >-
+          Moteurs de navigateur à vérifier. « chromium » (défaut), une liste
+          « chromium,firefox », ou « tous ». Firefox et WebKit sont mesurés
+          fonctionnels mais restent hors du passage hebdomadaire : ils
+          triplent la durée pour un verdict que Chromium rend déjà.
+        type: string
+        required: false
+        default: "chromium"
   schedule:
     # Lundi 06:00 UTC : la semaine commence sur un verdict frais.
     - cron: "0 6 * * 1"
@@ -28,6 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     # Boot de VM émulée derrière un GitHub Pages : large, sans être infini.
     timeout-minutes: 20
+    # Le passage hebdomadaire n'a pas d'entrées : Chromium par défaut.
+    env:
+      RAILSBOX_MOTEURS: ${{ inputs.moteurs || 'chromium' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,8 +47,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Installer Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Installer les moteurs demandés
+        run: |
+          if [ "$RAILSBOX_MOTEURS" = "tous" ] || [ "$RAILSBOX_MOTEURS" = "all" ]; then
+            npx playwright install --with-deps chromium firefox webkit
+          else
+            npx playwright install --with-deps $(echo "$RAILSBOX_MOTEURS" | tr ',' ' ')
+          fi
       - name: Recette en ligne
         env:
           RAILSBOX_SANDBOX_URL: ${{ inputs.url }}
