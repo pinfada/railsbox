@@ -12,12 +12,17 @@ import {
   createResponseAssembler,
   splitHttpResponse,
 } from "../shared/serial-codec.js";
+import {
+  buildDiskImages,
+  isBootableConfig,
+  isSplitConfig,
+  memoryBytes,
+} from "../shared/v86-config.js";
 
 const V86_LIB_URL = "/vendor/v86/libv86.js";
 const V86_WASM_PATH = "/vendor/v86/v86.wasm";
 const BIOS_URL = "/vendor/v86/seabios.bin";
 const VGA_BIOS_URL = "/vendor/v86/vgabios.bin";
-const DEFAULT_MEMORY_MB = 1024;
 const VGA_MEMORY_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
 const PROBE_TIMEOUT_MS = 10_000;
@@ -50,12 +55,13 @@ const SNAPSHOT_STORE = "states";
  *   config: {
  *     disk: string, kernel: string, initrd: string, cmdline?: string,
  *     diskSize?: number, memoryMb?: number, state?: string,
+ *     appDisk?: string, appDiskSize?: number,
  *   },
  *   fresh?: boolean,
  * }} options
  */
 export async function bootVm({ onConsole = () => {}, config, fresh = false }) {
-  if (!config?.disk || !config?.kernel || !config?.initrd) {
+  if (!isBootableConfig(config)) {
     throw new Error(
       "Configuration v86 incomplète — lancez tools/build-v86-image/build.sh pour produire public/disks/",
     );
@@ -75,16 +81,20 @@ export async function bootVm({ onConsole = () => {}, config, fresh = false }) {
     ? await purgeSnapshot(onConsole)
     : await resolveSnapshot(snapshotKey, config, onConsole);
 
+  if (isSplitConfig(config)) {
+    onConsole(`[v86] montage base + application : rootfs ${config.disk} + hdb ${config.appDisk}`);
+  }
   const emulator = new V86Constructor({
     wasm_path: V86_WASM_PATH,
-    memory_size: (config.memoryMb ?? DEFAULT_MEMORY_MB) * 1024 * 1024,
+    memory_size: memoryBytes(config),
     vga_memory_size: VGA_MEMORY_BYTES,
     bios: { url: BIOS_URL },
     vga_bios: { url: VGA_BIOS_URL },
     bzimage: { url: config.kernel },
     initrd: { url: config.initrd },
     cmdline: config.cmdline,
-    hda: { url: config.disk, async: true, size: config.diskSize },
+    // hda (rootfs) toujours, hdb (disque applicatif) en mode base + app.
+    ...buildDiskImages(config),
     // ArrayBuffer direct plutôt qu'un Blob URL : v86 accepte { buffer } et
     // cela évite de retenir 600+ Mo dans un Object URL que le navigateur ne
     // libère jamais tout seul (doublement de la mémoire de l'onglet).

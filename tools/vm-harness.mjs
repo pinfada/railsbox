@@ -24,6 +24,7 @@ import {
   createResponseAssembler,
   splitHttpResponse,
 } from "../public/shared/serial-codec.js";
+import { isBootableConfig, isSplitConfig, memoryBytes } from "../public/shared/v86-config.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_READY_ATTEMPTS = 240;
@@ -36,35 +37,59 @@ const ACK_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_MS;
 /**
  * @param {{
  *   projectRoot: string,
+ *   configName?: string,
+ *   statePath?: string | null,
  *   useSnapshot?: boolean,
  *   onLog?: (line: string) => void,
  * }} options
  */
-export async function bootHarness({ projectRoot, useSnapshot = true, onLog = () => {} }) {
+export async function bootHarness({
+  projectRoot,
+  configName = "v86-config.json",
+  statePath,
+  useSnapshot = true,
+  onLog = () => {},
+}) {
   const disksDir = join(projectRoot, "public", "disks");
-  const configPath = join(disksDir, "v86-config.json");
-  const config = JSON.parse(await readFile(configPath, "utf8"));
+  const config = JSON.parse(await readFile(join(disksDir, configName), "utf8"));
+  if (!isBootableConfig(config)) {
+    throw new Error(`${configName} incomplet : kernel, initrd et disk sont requis`);
+  }
+  // Les chemins de la config sont des URL web (/disks/x) : on les résout vers
+  // le système de fichiers pour le boot sous Node.
+  const toFile = (webPath) => join(disksDir, webPath.replace(/^\/disks\//, ""));
 
-  const statePath = join(disksDir, "jiyufit-state.bin");
+  // L'instantané par défaut suit le nom de la config (demo-config → demo-state),
+  // avec repli sur le champ `state` de la config, puis sur l'ancien nom jiyufit.
+  const resolvedStatePath =
+    statePath ??
+    (config.state ? toFile(config.state) : join(disksDir, `${config.name ?? "jiyufit"}-state.bin`));
   let initialState = null;
-  if (useSnapshot && existsSync(statePath)) {
+  if (useSnapshot && existsSync(resolvedStatePath)) {
     // Copie explicite : le Buffer de Node partage un pool interne, v86 exige
     // un ArrayBuffer propre qu'il peut consommer.
-    const raw = await readFile(statePath);
+    const raw = await readFile(resolvedStatePath);
     initialState = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
     onLog(`[harness] instantané chargé (${Math.round(initialState.byteLength / 1048576)} Mo)`);
   }
 
+  // hda (rootfs) toujours ; hdb (disque applicatif) en mode base + application.
+  const diskImages = { hda: { url: toFile(config.disk), async: true, size: config.diskSize } };
+  if (isSplitConfig(config)) {
+    diskImages.hdb = { url: toFile(config.appDisk), async: true, size: config.appDiskSize };
+    onLog(`[harness] montage base + application : ${config.disk} + hdb ${config.appDisk}`);
+  }
+
   const emulator = new V86({
     wasm_path: join(projectRoot, "node_modules", "v86", "build", "v86.wasm"),
-    memory_size: (config.memoryMb ?? 1024) * 1024 * 1024,
+    memory_size: memoryBytes(config),
     vga_memory_size: 8 * 1024 * 1024,
     bios: { url: join(projectRoot, "public", "vendor", "v86", "seabios.bin") },
     vga_bios: { url: join(projectRoot, "public", "vendor", "v86", "vgabios.bin") },
-    bzimage: { url: join(disksDir, "jiyufit-vmlinuz") },
-    initrd: { url: join(disksDir, "jiyufit-initrd") },
+    bzimage: { url: toFile(config.kernel) },
+    initrd: { url: toFile(config.initrd) },
     cmdline: config.cmdline,
-    hda: { url: join(disksDir, "jiyufit.ext2"), async: true, size: config.diskSize },
+    ...diskImages,
     ...(initialState ? { initial_state: { buffer: initialState } } : {}),
     autostart: true,
     disable_speaker: true,
