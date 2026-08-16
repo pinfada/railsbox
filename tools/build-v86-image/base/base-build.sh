@@ -12,6 +12,8 @@
 #   --name <nom>     base des artefacts (défaut : base-<X.Y>)
 #   --size-mb <n>    taille de l'ext2 de base (défaut : calculée sur le rootfs)
 #   --no-cache       reconstruction complète de l'image Docker
+#   --image <tag>    extrait le rootfs d'une image DÉJÀ construite (GHCR, ou
+#                    celle que la CI vient de vérifier) au lieu d'en bâtir une
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,6 +29,7 @@ RUBY_VERSION="3.3.12"
 NAME=""
 SIZE_MB="${SIZE_MB:-}"
 NO_CACHE=""
+IMAGE_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,7 +37,8 @@ while [ $# -gt 0 ]; do
     --name) NAME="$2"; shift 2 ;;
     --size-mb) SIZE_MB="$2"; shift 2 ;;
     --no-cache) NO_CACHE="--no-cache"; shift ;;
-    -h|--help) sed -n '2,20p' "$0" >&2; exit 2 ;;
+    --image) IMAGE_OVERRIDE="$2"; shift 2 ;;
+    -h|--help) sed -n '2,22p' "$0" >&2; exit 2 ;;
     *) echo "Option inconnue : $1" >&2; exit 2 ;;
   esac
 done
@@ -49,17 +53,30 @@ command -v mke2fs >/dev/null || { echo "mke2fs introuvable (apt install e2fsprog
 
 SERIES="$(echo "$RUBY_VERSION" | cut -d. -f1,2)"
 [ -n "$NAME" ] || NAME="base-$SERIES"
-IMAGE_TAG="railsbox-$NAME"
+IMAGE_TAG="${IMAGE_OVERRIDE:-railsbox-$NAME}"
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-echo "→ Build Docker i386 de la base ($NAME, Ruby $RUBY_VERSION)…"
-docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMAGE_TAG" \
-  --build-arg "RUBY_VERSION=$RUBY_VERSION" \
-  --build-arg "BASE_NAME=$NAME" \
-  --build-arg "WITH_REDIS=1" \
-  "$SCRIPT_DIR"
+# --image désigne une image DÉJÀ construite (typiquement celle que le workflow
+# de publication vient de vérifier, ou une base tirée de GHCR) : on saute la
+# construction et on passe directement à l'extraction du rootfs. Sans quoi la
+# CI reconstruirait une seconde fois ce qu'elle vient de valider — et publierait
+# des artefacts issus d'une image différente de celle poussée sur GHCR.
+if [ -n "$IMAGE_OVERRIDE" ]; then
+  echo "→ Réutilisation de l'image $IMAGE_TAG (aucune construction)…"
+  docker image inspect "$IMAGE_TAG" >/dev/null 2>&1 || {
+    echo "✗ Image introuvable localement : $IMAGE_TAG" >&2
+    exit 1
+  }
+else
+  echo "→ Build Docker i386 de la base ($NAME, Ruby $RUBY_VERSION)…"
+  docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMAGE_TAG" \
+    --build-arg "RUBY_VERSION=$RUBY_VERSION" \
+    --build-arg "BASE_NAME=$NAME" \
+    --build-arg "WITH_REDIS=1" \
+    "$SCRIPT_DIR"
+fi
 
 echo "→ Export du rootfs de base…"
 CONTAINER_ID="$(docker create --platform linux/386 "$IMAGE_TAG")"

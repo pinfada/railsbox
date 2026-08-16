@@ -31,8 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: read
+      # contents: write — la branche gh-pages porte les artefacts navigateur.
+      contents: write
       packages: write
+      pages: write
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/railsbox-base
     steps:
@@ -94,11 +96,70 @@ jobs:
             redis-server --version | head -1
           '
 
+      # ------------------------------------------------------------------
+      # Artefacts navigateur, extraits de L'IMAGE QUI VIENT D'ÊTRE VÉRIFIÉE.
+      # Les reconstruire séparément donnerait un ext2 différent (UUID,
+      # horodatages) de celui dont dérive l'image publiée : les deux faces de
+      # la base doivent sortir du même build.
+      # ------------------------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Extraction du rootfs et fabrication de l'ext2
+        run: |
+          sudo bash tools/build-v86-image/base/base-build.sh \
+            --image "$IMAGE:${{ inputs.tag }}" \
+            --name "base-${{ inputs.tag }}"
+          # base-build.sh tourne en root pour préserver les uid : les étapes
+          # Node qui suivent doivent pouvoir écrire dans public/disks.
+          sudo chown -R "$USER" public/disks
+          ls -la public/disks
+
+      - name: Capture de l'instantané de base
+        run: node tools/build-v86-image/make-base-snapshot.mjs --base "base-${{ inputs.tag }}"
+
+      - name: Découpage en morceaux zstd
+        run: |
+          node tools/build-v86-image/split-artifact.mjs \
+            "public/disks/base-${{ inputs.tag }}.ext2" --zstd --out publication/disks/parts-base
+          cp "public/disks/base-${{ inputs.tag }}-vmlinuz" publication/disks/
+          cp "public/disks/base-${{ inputs.tag }}-initrd" publication/disks/
+          # L'instantané de base ne sert PAS au visiteur (il restaure le delta
+          # de l'application) : il n'est consommé que par la CI d'un mainteneur,
+          # au moment de capturer ce delta. Un seul fichier gzippé suffit donc,
+          # sous la limite de 95 Mo de Pages.
+          cp "public/disks/base-${{ inputs.tag }}-state.bin.gz" publication/disks/
+          touch publication/.nojekyll
+          # L'ext2 pèse 1,4 Go : inutile de le garder sur le disque du runner.
+          rm -f "public/disks/base-${{ inputs.tag }}.ext2"
+          du -sh publication
+          find publication -type f | wc -l
+
+      # Preuve que les morceaux publiés reconstituent bien l'artefact d'origine.
+      # Sans elle, une corruption ne se verrait qu'au boot d'un visiteur.
+      - name: Vérification du réassemblage
+        run: |
+          node tools/build-v86-image/assemble-artifact.mjs \
+            "publication/disks/parts-base/base-${{ inputs.tag }}.ext2.zst" \
+            --out /tmp/verif.ext2
+          attendu=$(node -e "
+            const m = require('./publication/disks/parts-base/base-${{ inputs.tag }}.ext2-parts.json');
+            process.stdout.write(String(m.totalBytes));
+          ")
+          obtenu=$(stat -c%s /tmp/verif.ext2)
+          echo "réassemblé : ${obtenu} octets, attendu ${attendu}"
+          [ "$obtenu" = "$attendu" ] || { echo "::error::Réassemblage incohérent."; exit 1; }
+          rm -f /tmp/verif.ext2
+
       - name: Publication sur GHCR
         if: ${{ inputs.push }}
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "$IMAGE:${{ inputs.tag }}"
+          echo "DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:${{ inputs.tag }}" 2>/dev/null || echo -)" >> "$GITHUB_ENV"
           digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:${{ inputs.tag }}" 2>/dev/null || echo "-")
           {
             echo "## Publiée"
@@ -108,4 +169,54 @@ jobs:
             echo "Empreinte : \`${digest}\`"
             echo ""
             echo "Le workflow du mainteneur épingle cette empreinte plutôt que le tag."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------
+      # Face navigateur : branche gh-pages du dépôt railsbox (ADR 0004).
+      # Branche ORPHELINE poussée en force — elle ne contient jamais qu'un
+      # commit, sinon chaque publication y empilerait 333 Mo d'objets.
+      # Corollaire : cette branche est dédiée aux artefacts de base, rien
+      # d'autre ne doit y vivre, ce serait écrasé.
+      # ------------------------------------------------------------------
+      - name: Publication des artefacts navigateur sur gh-pages
+        if: ${{ inputs.push }}
+        working-directory: publication
+        run: |
+          git init -q -b gh-pages
+          git config user.email "actions@github.com"
+          git config user.name "railsbox CI"
+          git add -A
+          git commit -q -m "base ${{ inputs.tag }} — artefacts navigateur (${{ github.sha }})"
+          git push -f \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            gh-pages
+
+      - name: Activation de GitHub Pages
+        if: ${{ inputs.push }}
+        continue-on-error: true
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/pages" \
+            -f "source[branch]=gh-pages" -f "source[path]=/" \
+            || echo "Pages déjà actif."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Récapitulatif
+        if: ${{ inputs.push }}
+        run: |
+          racine="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/disks"
+          {
+            echo "## Base ${{ inputs.tag }} publiée"
+            echo ""
+            echo "| Face | Adresse |"
+            echo "|---|---|"
+            echo "| Image de construction | \`$IMAGE:${{ inputs.tag }}\` |"
+            echo "| Empreinte | \`${DIGEST:--}\` |"
+            echo "| Rootfs (morceaux zstd) | \`${racine}/parts-base/base-${{ inputs.tag }}.ext2.zst\` |"
+            echo "| Noyau | \`${racine}/base-${{ inputs.tag }}-vmlinuz\` |"
+            echo "| Initrd | \`${racine}/base-${{ inputs.tag }}-initrd\` |"
+            echo "| Instantané de base (CI mainteneur) | \`${racine}/base-${{ inputs.tag }}-state.bin.gz\` |"
+            echo ""
+            echo "Le visiteur ne lit que les morceaux, le noyau et l'initrd."
+            echo "L'instantané de base ne sert qu'à capturer un delta applicatif."
           } >> "$GITHUB_STEP_SUMMARY"
