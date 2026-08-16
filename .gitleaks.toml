@@ -1,0 +1,16 @@
+# Allowlist des faux positifs connus, documentés par l'audit d'historique
+# pré-ouverture : aucun secret réel n'existe dans ce dépôt. Les valeurs
+# ci-dessous sont des littéraux jetables d'étages de build ou des fragments
+# shell évalués au moment de la construction (openssl rand).
+
+[allowlist]
+description = "Faux positifs connus — littéraux de build jetables, jamais des secrets réels"
+paths = [
+  '''tools/build-v86-image/Dockerfile''',
+  '''tools/build-v86-image/env/.*\.env''',
+]
+regexes = [
+  '''sk_live_\$\(openssl rand''',
+  '''(assets-stage|appdisk-build)-throwaway''',
+  '''0{64}''',
+]

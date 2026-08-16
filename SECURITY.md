@@ -59,6 +59,7 @@ dans sa propre VM. En conséquence :
 
 ## Signaler une vulnérabilité
 
-Ouvrez une issue (ou un courriel privé au mainteneur pour un problème
-sensible). Les défauts qui traversent une frontière du tableau ci-dessus
-sont traités en priorité.
+Pour un problème sensible, utilisez le signalement privé de GitHub
+(« Report a vulnerability », onglet Security du dépôt) — jamais une issue
+publique. Pour le reste, ouvrez une issue. Les défauts qui traversent une
+frontière du tableau ci-dessus sont traités en priorité.

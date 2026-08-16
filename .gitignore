@@ -1,4 +1,5 @@
 ﻿node_modules/
+.claude/
 public/disks/
 tools/build-v86-image/build.log
 test-results/

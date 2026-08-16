@@ -4,6 +4,10 @@
 # vérifiés ici — le harnais d'intégration sur VM réelle arrive en phase A1/B.
 name: CI
 
+# Dépôt public : les PR de forks ne doivent jamais obtenir un jeton en écriture.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
