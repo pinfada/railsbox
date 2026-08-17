@@ -115,6 +115,12 @@ export const REMEDES = Object.freeze({
   "db-migration":
     "Rejouez `bin/rails db:prepare` sur une base VIERGE hors railsbox : la construction part " +
     "toujours d'une base vide, une migration qui suppose des données existantes échoue ici.",
+  "db-donnees-de-migration-absentes":
+    "Vos données de référence (devises, rôles, catégories…) sont amorcées par une MIGRATION : " +
+    "le rapport d'analyse, plus haut dans le journal, nomme le fichier. Une base recréée " +
+    "depuis db/schema.rb ne joue aucune migration — c'est vrai ici comme sur un rails " +
+    "db:setup ou une base de CI. Déplacez cet amorçage dans db/seeds.rb ; pour un dépannage " +
+    "immédiat, déclarez database_prepare: migrate dans railsbox.yml.",
   "db-seed":
     'Rendez les seeds idempotents sur une base vierge, ou passez `seed: ""` dans railsbox.yml ' +
     "pour ne rien amorcer (l'option --seed-optional rend un seed partiel non bloquant).",
@@ -348,6 +354,9 @@ function assembler(tranche) {
  * @property {number} rang 1 = cause nommée, 2 = famille, 3 = constat générique
  * @property {RegExp} motif détecteur, appliqué ligne à ligne (jamais global)
  * @property {RegExp} [etapes] restreint la règle à certaines étapes
+ * @property {(c: Contexte) => boolean} [garde] condition portant sur TOUT le
+ *   journal, évaluée avant le motif. Sert aux pannes dont le symptôme est banal
+ *   mais dont la cause est prouvée par une trace apparue bien plus haut.
  * @property {(m: RegExpExecArray, c: Contexte) => string} message phrase française
  */
 
@@ -507,6 +516,32 @@ const REGLES = Object.freeze([
     motif:
       /An error has occurred, all later migrations canceled|ActiveRecord::(?:StatementInvalid|PendingMigrationError|IrreversibleMigration)|PG::\w+|SQLite3::\w+Exception|Mysql2::Error/,
     message: (_m, contexte) => `Une migration a échoué${detailErreurRuby(contexte.texte)}.`,
+  },
+  {
+    // Le piège des migrations porteuses de données, vu depuis l'AVAL : la
+    // validation qui échoue ne parle jamais de migration, elle parle d'une
+    // valeur « non supportée » et énumère une liste VIDE — celle d'une table de
+    // référence que le chargement de db/schema.rb n'a jamais peuplée. Sans ce
+    // code, le classifieur rendait « l'amorçage a échoué », ce qui envoie
+    // corriger les seeds, c'est-à-dire le seul endroit qui n'a rien à se
+    // reprocher.
+    //
+    // La garde est ce qui rend la règle sûre : le symptôme (une validation en
+    // échec) est trop banal pour trancher seul. Elle exige la trace, apparue
+    // bien plus haut dans le même journal, que l'analyse amont a relevé des
+    // migrations porteuses de données — le rapport d'analyse précède toujours
+    // la construction dans le journal.
+    code: "db-donnees-de-migration-absentes",
+    categorie: CATEGORIES.BASE_DE_DONNEES,
+    rang: 1,
+    garde: (contexte) => /\[data-bearing-migration\]/.test(contexte.texte),
+    // Volontairement borné à la validation : `RecordNotFound` rejoindrait ici
+    // trop de pannes qui n'ont rien à voir (une auto-connexion qui ne trouve
+    // pas son compte, par exemple).
+    motif: /Validation failed:|ActiveRecord::RecordInvalid/,
+    message: (_m, contexte) =>
+      "Une validation a échoué sur une table de référence restée VIDE : le schéma a été " +
+      `chargé sans rejouer les migrations qui l'amorcent${detailErreurRuby(contexte.texte)}.`,
   },
   {
     code: "db-seed",
@@ -685,6 +720,7 @@ export function classifierEchec(journal, etape = "") {
   const candidats = [];
   for (const [ordre, regle] of REGLES.entries()) {
     if (regle.etapes && !regle.etapes.test(nomEtape)) continue;
+    if (regle.garde && !regle.garde(contexte)) continue;
     for (let index = 0; index < lignes.length; index += 1) {
       if (lignes[index].bruit) continue;
       const correspondance = regle.motif.exec(lignes[index].texte);

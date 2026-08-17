@@ -265,6 +265,38 @@ test("un seed en échec renvoie à l'idempotence sur base vierge", () => {
   assert.match(diagnostic.remede, /vierge|idempotent/);
 });
 
+test("une validation en échec après un avertissement de migration porteuse désigne la vraie cause", () => {
+  const diagnostic = classer(
+    [
+      "- [data-bearing-migration] 1 migration écrit des données (execute d'un INSERT SQL) :",
+      "  db/migrate/20260514210000_create_currencies.rb.",
+      "+ bundle exec rails db:prepare",
+      "+ bin/rails runner db/seeds_api.rb",
+      "rails aborted!",
+      "ActiveRecord::RecordInvalid: Validation failed: Currency XAF non supporté (attendu : )",
+      "/app/db/seeds_api.rb:131:in `block in <main>'",
+    ].join("\n"),
+  );
+  assert.equal(diagnostic.code, "db-donnees-de-migration-absentes");
+  assert.equal(diagnostic.categorie, CATEGORIES.BASE_DE_DONNEES);
+  assert.match(diagnostic.message, /table de référence restée VIDE/);
+  assert.match(diagnostic.remede, /db\/seeds\.rb|database_prepare/);
+});
+
+test("sans l'avertissement amont, la même validation reste un simple échec de seed", () => {
+  // La garde est ce qui sépare les deux : « Validation failed » tout seul est
+  // le symptôme le plus banal du monde, il ne prouve rien.
+  const diagnostic = classer(
+    [
+      "+ bin/rails db:seed",
+      "rails aborted!",
+      "ActiveRecord::RecordInvalid: Validation failed: Email has already been taken",
+      "/app/db/seeds.rb:14:in `block in <main>'",
+    ].join("\n"),
+  );
+  assert.equal(diagnostic.code, "db-seed");
+});
+
 test("une préparation de base sans erreur reconnue reste dans la famille base de données", () => {
   const diagnostic = classer(
     [

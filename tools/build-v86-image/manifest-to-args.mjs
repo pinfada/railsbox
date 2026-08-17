@@ -169,8 +169,45 @@ const DATABASE_PACKAGES = Object.freeze({
 // arguments de construction, et ne doit exister qu'une fois.
 export { binaryAssetGems };
 
-/** Commande de préparation de la base par défaut (crée, migre, charge le schéma). */
-const DEFAULT_DB_PREPARE = "bundle exec rails db:prepare";
+/**
+ * Préparation par CHARGEMENT DU SCHÉMA : `db:prepare` sur une base vierge crée
+ * la base, charge db/schema.rb et marque toutes les migrations comme
+ * appliquées — sans en jouer une seule. Rapide, insensible aux vieilles
+ * migrations qui ne tournent plus, mais aveugle aux données qu'une migration
+ * amorce.
+ */
+export const DB_PREPARE_SCHEMA = "bundle exec rails db:prepare";
+
+/**
+ * Préparation par REJEU DES MIGRATIONS : tout l'historique est rejoué depuis
+ * une base vide, donc les `INSERT` portés par une migration s'exécutent.
+ */
+export const DB_PREPARE_MIGRATE = "bundle exec rails db:create db:migrate";
+
+/**
+ * Compose la commande de préparation de la base.
+ *
+ * ARBITRAGE : le défaut RESTE le chargement du schéma, même quand des
+ * migrations porteuses de données ont été relevées. Basculer automatiquement
+ * sur `db:migrate` réparerait la sandbox en masquant un défaut que
+ * l'application porte déjà — son `db/schema.rb` ne contient pas ces données,
+ * donc tout environnement recréé depuis le schéma (poste neuf, CI, review app)
+ * obtient la même table vide. railsbox ne fait que révéler la panne, en partant
+ * toujours d'une base vierge ; ce qui lui manquait, c'est le DIAGNOSTIC, pas un
+ * rattrapage. Et le rattrapage coûterait cher : tout l'historique rejoué à
+ * chaque construction, avec le risque qu'une migration ancienne ne tourne plus.
+ *
+ * `database_prepare: migrate` reste disponible en opt-in explicite, sans repli
+ * silencieux : un choix explicite doit échouer bruyamment.
+ * @param {{strategy?: string, dataMigrations?: readonly string[]}} [input] stratégie déclarée
+ *   dans railsbox.yml ; `dataMigrations` est accepté et volontairement IGNORÉ —
+ *   c'est là que vit l'arbitrage, et un lecteur doit pouvoir le vérifier ici.
+ * @returns {{strategy: string, command: string}} stratégie retenue et commande shell
+ */
+export function dbPrepareCommand(input = {}) {
+  if (input.strategy === "migrate") return { strategy: "migrate", command: DB_PREPARE_MIGRATE };
+  return { strategy: "schema", command: DB_PREPARE_SCHEMA };
+}
 
 /** Commande de seed par défaut, utilisée quand `db/seeds.rb` existe. */
 const DEFAULT_SEED = "bundle exec rails db:seed";
@@ -302,6 +339,7 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
   const postgres = postgresSettings(appName);
   const keepForceSsl = manifest.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE;
   const paquets = splitPackages(manifest, baseRevision);
+  const dbPrepare = dbPrepareCommand({ strategy: manifest.databasePrepare });
   return {
     APP_NAME: appName,
     RUBY_VERSION: ruby.version,
@@ -354,7 +392,13 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
     // elle, occupe le disque applicatif de cette sandbox et le sien seulement.
     // Quand l'épingle suffit, elle est préférable — d'où ce conseil.
     SYSTEM_PACKAGES_HINT: paquets.hint ?? "",
-    DB_PREPARE_COMMAND: DEFAULT_DB_PREPARE,
+    // Préparation de la base : chargement de db/schema.rb par défaut, rejeu des
+    // migrations si — et seulement si — railsbox.yml le demande explicitement
+    // (voir detect/migrations.mjs pour ce que cela répare et ce que non).
+    DB_PREPARE_COMMAND: dbPrepare.command,
+    // Stratégie retenue, pour le journal de construction : sans elle, une
+    // préparation bien plus lente n'aurait aucune explication visible.
+    DB_PREPARE_STRATEGY: dbPrepare.strategy,
     SEED_COMMAND: seedCommand,
     // Non fiable (railsbox.yml tiers) : ajouté verbatim, jamais évalué.
     APP_ENV_MANIFEST: formatEnvFragment(manifest.env),

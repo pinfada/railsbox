@@ -49,6 +49,17 @@ export const REMEDIES = Object.freeze({
     "RAILSBOX_KEEP_FORCE_SSL neutralise la parade de railsbox : l'application redirigera " +
     "en 301 vers https et ses cookies seront « secure ». Retirez la variable du bloc env: " +
     "de railsbox.yml si la démonstration ne répond plus.",
+  "data-bearing-migration":
+    "Déplacez l'amorçage de ces données dans db/seeds.rb : c'est ce que Rails prévoit pour " +
+    "les données de référence, et une migration ne les fournit qu'aux bases construites " +
+    "migration par migration — jamais à celles recréées depuis db/schema.rb, ce que font " +
+    "rails db:setup, une base de CI, une review app et railsbox. Dépannage immédiat sans " +
+    "toucher à l'application : database_prepare: migrate dans railsbox.yml (voir son propre " +
+    "diagnostic — il ne corrige que la sandbox).",
+  "database-prepare-migrate":
+    "Rien à faire si le dépannage vous suffit. Mais la correction durable reste de déplacer " +
+    "ces données dans db/seeds.rb : railsbox rejouera alors l'historique pour rien, et " +
+    "l'application fonctionnera aussi hors de la sandbox.",
   "missing-sqlite3-gem":
     'Ajoutez `gem "sqlite3"` au Gemfile puis relancez `bundle install`, ou déclarez ' +
     "database: postgresql dans railsbox.yml si l'application parle à PostgreSQL.",
@@ -77,8 +88,8 @@ export const REMEDIES = Object.freeze({
     "Versionnez un package-lock.json (`npm install` puis commit) : l'étage amd64 installe " +
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",
   "unknown-manifest-key":
-    "Retirez la clé de railsbox.yml : seules ruby, database, seed, env, assets et " +
-    "system_packages sont reconnues.",
+    "Retirez la clé de railsbox.yml : seules ruby, database, database_prepare, seed, env, " +
+    "assets et system_packages sont reconnues.",
   "invalid-asset-output":
     "assets.output n'accepte que des chemins RELATIFS à la racine de l'application " +
     "(« public/dist », « public/vite »), sans « .. », sans chemin absolu et sans espace.",
@@ -155,6 +166,7 @@ function summaryLines(manifest) {
     field("Contrainte Ruby", describeRubyRequirement(manifest)),
     field("Rails", manifest.rails),
     field("Base de données", manifest.database),
+    field("Préparation base", describeDatabasePrepare(manifest)),
     field("force_ssl", describeSsl(manifest.ssl)),
     field("Assets", describeAssets(manifest.assets)),
     field("Gems natives", describeNativeGems(manifest.nativeGems)),
@@ -200,6 +212,30 @@ function describeRubyRequirement(manifest) {
   const mot =
     verdict === false ? "NON satisfaite" : verdict === true ? "satisfaite" : "non vérifiée";
   return `${declared} (source : ${requirement.source}) — ${mot} par ${manifest.baseRuby}`;
+}
+
+/**
+ * Décrit COMMENT la base sera préparée, et pourquoi.
+ *
+ * Deux lignes distinctes dans le résumé, et c'est le point : « Base de
+ * données » dit avec quoi l'application parle, « Préparation base » dit si
+ * railsbox charge db/schema.rb ou rejoue les migrations — ce qui décide de la
+ * présence des données amorcées par une migration.
+ * @param {Manifest} manifest manifeste (détecté ou fusionné)
+ * @returns {string|null} description, ou `null` si rien n'est connu
+ */
+function describeDatabasePrepare(manifest) {
+  const migrations = manifest.dataMigrations ?? [];
+  if (manifest.databasePrepare === "migrate") {
+    return "rejeu des migrations, db:create db:migrate (demandé par railsbox.yml)";
+  }
+  const pluriel = migrations.length > 1;
+  const reserve =
+    migrations.length > 0
+      ? ` — ATTENTION : ${migrations.length} migration${pluriel ? "s" : ""} ` +
+        `y amorce${pluriel ? "nt" : ""} des données qui ne seront donc pas insérées`
+      : "";
+  return `chargement de db/schema.rb, db:prepare${reserve}`;
 }
 
 /** Libellés français des états de `config.force_ssl`. */

@@ -1,7 +1,7 @@
 // Auto-détection d'une application Rails : produit le manifeste de build que
 // railsbox utilisera pour préparer l'image. Tout est tolérant à l'absence de
 // fichier — un projet incomplet doit donner un rapport, jamais une exception.
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { detectOutputDirs } from "./asset-output.mjs";
 import { NPM_LOCKFILES, planAssets } from "./assets.mjs";
@@ -9,6 +9,7 @@ import { DEFAULT_BASE, resolveBase } from "./bases.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
+import { dataMigrationFindings, scanDataMigrations } from "./migrations.mjs";
 import { sqliteDriverFindings, sqliteDriverState } from "./sqlite.mjs";
 import {
   normalizeRubyVersion,
@@ -91,6 +92,33 @@ async function detectNpmLockfiles(appDir) {
   const names = Object.keys(NPM_LOCKFILES);
   const present = await Promise.all(names.map((name) => pathExists(join(appDir, name))));
   return names.filter((_, index) => present[index]);
+}
+
+/**
+ * Lit toutes les migrations de `db/migrate`, en tolérant l'absence du dossier.
+ * @param {string} appDir racine de l'application
+ * @returns {Promise<{name: string, text: string}[]>} migrations, triées par nom
+ * @throws {Error} pour toute erreur autre qu'une absence (droits, E/S)
+ */
+async function readMigrations(appDir) {
+  const dir = join(appDir, "db", "migrate");
+  /** @type {string[]} */
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch (error) {
+    if (error && ABSENT_CODES.includes(error.code)) return [];
+    throw error;
+  }
+  const names = entries.filter((name) => name.endsWith(".rb")).sort();
+  return Promise.all(
+    names.map(async (name) => ({
+      name,
+      // Un fichier disparu entre le readdir et la lecture n'est pas un incident
+      // : l'analyse doit rendre un rapport, jamais une exception.
+      text: (await readOptionalFile(join(dir, name))) ?? "",
+    })),
+  );
 }
 
 /**
@@ -405,6 +433,7 @@ export async function detectApp(appDir, options = {}) {
     viteJson,
     shakapackerYml,
     webpackerYml,
+    migrations,
   ] = await Promise.all([
     readOptionalFile(join(appDir, ".ruby-version")),
     readOptionalFile(join(appDir, "Gemfile")),
@@ -419,6 +448,10 @@ export async function detectApp(appDir, options = {}) {
     readOptionalFile(join(appDir, "config", "vite.json")),
     readOptionalFile(join(appDir, "config", "shakapacker.yml")),
     readOptionalFile(join(appDir, "config", "webpacker.yml")),
+    // Les migrations elles-mêmes : railsbox doit savoir si certaines AMORCENT
+    // des données, car `db:prepare` sur une base vierge charge db/schema.rb et
+    // n'en joue aucune (voir migrations.mjs).
+    readMigrations(appDir),
   ]);
 
   /** @type {Finding[]} */
@@ -465,6 +498,8 @@ export async function detectApp(appDir, options = {}) {
   const adapters = parseDatabaseAdapters(databaseYml ?? "");
   const sqlite = sqliteDriverState(gemfile, specs, lock !== null);
   findings.push(...sqliteDriverFindings({ state: sqlite, database: database.database, adapters }));
+  const dataMigrations = scanDataMigrations(migrations);
+  findings.push(...dataMigrationFindings(dataMigrations));
   const ssl = detectSsl(productionRb);
   findings.push(...ssl.findings);
   const assets = detectAssets(packageJson);
@@ -523,6 +558,9 @@ export async function detectApp(appDir, options = {}) {
     rails: rails.version,
     database: database.database,
     databaseAdapters: Object.freeze(adapters),
+    // Noms des migrations qui écrivent des lignes : ce sont eux qui décident,
+    // en mode « auto », de préparer la base en jouant les migrations.
+    dataMigrations: Object.freeze(dataMigrations.map((entry) => entry.file)),
     sqliteDriver: sqlite,
     ssl: ssl.ssl,
     bundler,
