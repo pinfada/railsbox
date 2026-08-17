@@ -4,9 +4,22 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { NPM_LOCKFILES, planAssets } from "./assets.mjs";
+import { DEFAULT_BASE, resolveBase } from "./bases.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
+import { sqliteDriverFindings, sqliteDriverState } from "./sqlite.mjs";
+import {
+  normalizeRubyVersion,
+  parseRubyDirective,
+  resolveRubyRequirement,
+  satisfiesRubyRequirement,
+} from "./ruby-requirement.mjs";
+import { detectSslSettings, isSslEnforced } from "./ssl.mjs";
+
+// Réexporté ici : la fonction vit avec l'analyse des contraintes (l'inverse
+// créerait un cycle d'imports), mais son point d'entrée public reste detect.
+export { normalizeRubyVersion };
 
 /** @typedef {import("./findings.mjs").Finding} Finding */
 /** @typedef {import("./manifest.mjs").Manifest} Manifest */
@@ -26,8 +39,6 @@ const KNOWN_ASSET_TOOLS = Object.freeze(["esbuild", "tailwindcss", "sass"]);
 /** Codes d'erreur système à traiter comme « fichier absent ». */
 const ABSENT_CODES = Object.freeze(["ENOENT", "ENOTDIR", "EISDIR"]);
 
-// `3.3.10p91`, `ruby-3.3.10`, `~> 3.3` : on ne garde que les composants numériques.
-const RUBY_VERSION = /^(?:ruby-)?v?(\d+(?:\.\d+){0,2})/;
 const LOCK_RUBY = /^RUBY VERSION\s+ruby\s+(\S+)/m;
 const ERB_TAG = /<%[\s\S]*?%>/g;
 // `\s` engloberait les sauts de ligne et ferait déborder ces motifs sur la
@@ -82,21 +93,6 @@ async function detectNpmLockfiles(appDir) {
 }
 
 /**
- * Normalise une version de Ruby quelle que soit sa forme d'écriture.
- * @param {string|null} raw valeur brute (`ruby-3.3.10`, `~> 3.3`, `3.3.10p91`...)
- * @returns {string|null} version canonique `X.Y.Z`, ou `null` si illisible
- */
-export function normalizeRubyVersion(raw) {
-  if (typeof raw !== "string") return null;
-  const cleaned = raw
-    .trim()
-    .replace(/^[~^>=<\s]+/, "")
-    .trim();
-  const match = RUBY_VERSION.exec(cleaned);
-  return match ? match[1] : null;
-}
-
-/**
  * Extrait les adaptateurs déclarés dans un `config/database.yml`.
  * Les balises ERB sont retirées d'abord : elles rendent le fichier non-YAML.
  * @param {string} text contenu du fichier
@@ -136,6 +132,75 @@ function detectRuby(sources) {
     "Aucune version de Ruby détectée (.ruby-version, Gemfile ni Gemfile.lock).",
   );
   return { version: null, source: null, findings: [finding] };
+}
+
+/**
+ * Confronte la contrainte de Ruby du Gemfile au Ruby fourni par la base.
+ *
+ * C'est LE refus amont que ce module doit produire : la détection connaît les
+ * deux valeurs, et sans cette confrontation le désaccord n'éclatait qu'au
+ * `bundle install` de app.Dockerfile, plusieurs minutes après le début de la
+ * construction, sous la forme d'un `Bundler::RubyVersionMismatch`.
+ * @param {{gemfile: string|null, rubyVersionFile: string|null, base: {version: string|null, ruby: string|null}}} sources
+ * @returns {{requirement: {requirements: readonly string[], source: string}|null, findings: Finding[]}}
+ */
+function checkRubyRequirement({ gemfile, rubyVersionFile, base }) {
+  const directive = parseRubyDirective(gemfile);
+  // `ruby file: ".ruby-version"` est la seule forme où le fichier engage
+  // Bundler ; seul est relu celui que la directive désigne.
+  const referenced =
+    directive?.kind === "file" && directive.path === ".ruby-version" ? rubyVersionFile : null;
+  const requirement = resolveRubyRequirement(directive, referenced);
+  if (!requirement) return { requirement: null, findings: [] };
+  const verdict = satisfiesRubyRequirement(base.ruby, requirement.requirements);
+  if (verdict !== false) return { requirement, findings: [] };
+  const declared = requirement.requirements.join(", ");
+  return {
+    requirement,
+    findings: [
+      createFinding(
+        SEVERITY.BLOCKING,
+        "ruby-version-incompatible",
+        `Le Gemfile exige Ruby « ${declared} » (source : ${requirement.source}) ; ` +
+          `la base ${base.version} fournit ${base.ruby}.`,
+        { required: declared, provided: base.ruby, base: base.version },
+      ),
+    ],
+  };
+}
+
+/**
+ * Relève `config.force_ssl` dans l'environnement de production.
+ * @param {string|null} productionRb contenu de config/environments/production.rb
+ * @returns {{ssl: object, findings: Finding[]}} réglages relevés et diagnostics
+ */
+function detectSsl(productionRb) {
+  const settings = detectSslSettings(productionRb);
+  const forced = isSslEnforced(settings.force_ssl);
+  const ssl = Object.freeze({
+    forceSsl: settings.force_ssl?.state ?? null,
+    forceSslEnv: settings.force_ssl?.env ?? null,
+    assumeSsl: settings.assume_ssl?.state ?? null,
+    enforced: forced,
+  });
+  if (!forced) return { ssl, findings: [] };
+  const par =
+    settings.force_ssl.state === "conditionnel-actif"
+      ? ` (via ${settings.force_ssl.env}, active par défaut)`
+      : "";
+  return {
+    ssl,
+    findings: [
+      createFinding(
+        SEVERITY.INFO,
+        "force-ssl-enabled",
+        `config/environments/production.rb ligne ${settings.force_ssl.line} active ` +
+          `config.force_ssl${par} ; la sandbox sert l'application en clair derrière le pont ` +
+          "série — railsbox le neutralise dans le guest.",
+        { line: settings.force_ssl.line, env: settings.force_ssl.env ?? undefined },
+      ),
+    ],
+  };
 }
 
 /**
@@ -319,21 +384,25 @@ function detectAssets(packageJson) {
 /**
  * Inspecte une application Rails et en déduit le manifeste de build.
  * @param {string} appDir racine de l'application à analyser
+ * @param {{base?: string}} [options] version (ou référence d'image) de la base visée
  * @returns {Promise<{manifest: Manifest, findings: readonly Finding[]}>} manifeste gelé et diagnostics
  * @throws {TypeError} si `appDir` n'est pas un chemin exploitable
  */
-export async function detectApp(appDir) {
+export async function detectApp(appDir, options = {}) {
   if (typeof appDir !== "string" || appDir.trim() === "") {
     throw new TypeError("detectApp attend le chemin du dossier de l'application");
   }
-  const [rubyVersionFile, gemfile, lock, databaseYml, packageJson, lockfiles] = await Promise.all([
-    readOptionalFile(join(appDir, ".ruby-version")),
-    readOptionalFile(join(appDir, "Gemfile")),
-    readOptionalFile(join(appDir, "Gemfile.lock")),
-    readOptionalFile(join(appDir, "config", "database.yml")),
-    readOptionalFile(join(appDir, "package.json")),
-    detectNpmLockfiles(appDir),
-  ]);
+  const base = resolveBase(options.base ?? DEFAULT_BASE);
+  const [rubyVersionFile, gemfile, lock, databaseYml, packageJson, productionRb, lockfiles] =
+    await Promise.all([
+      readOptionalFile(join(appDir, ".ruby-version")),
+      readOptionalFile(join(appDir, "Gemfile")),
+      readOptionalFile(join(appDir, "Gemfile.lock")),
+      readOptionalFile(join(appDir, "config", "database.yml")),
+      readOptionalFile(join(appDir, "package.json")),
+      readOptionalFile(join(appDir, "config", "environments", "production.rb")),
+      detectNpmLockfiles(appDir),
+    ]);
 
   /** @type {Finding[]} */
   const findings = [];
@@ -350,10 +419,37 @@ export async function detectApp(appDir) {
 
   const ruby = detectRuby({ rubyVersionFile, gemfile, lock });
   findings.push(...ruby.findings);
+  // La contrainte du Gemfile est confrontée au Ruby de la BASE, pas à celle
+  // que la détection retient : `manifest.ruby` ne pilote que la série (donc la
+  // base choisie) et l'image de l'étage amd64 — le Ruby du guest, lui, est
+  // compilé dans la base et rien ne peut l'y changer.
+  const requirement = checkRubyRequirement({ gemfile, rubyVersionFile, base });
+  findings.push(...requirement.findings);
+  if (base.ruby === null) {
+    const quelle = base.version
+      ? `Base « ${base.version} » inconnue de railsbox`
+      : "Base non précisée";
+    findings.push(
+      createFinding(
+        SEVERITY.INFO,
+        "base-ruby-unknown",
+        `${quelle} : la compatibilité de la contrainte Ruby du Gemfile n'a pas pu être vérifiée.`,
+        { base: base.version },
+      ),
+    );
+  }
   const rails = detectRails(gemfile, specs);
   findings.push(...rails.findings);
   const database = detectDatabase(databaseYml, specs);
   findings.push(...database.findings);
+  // L'état du pilote sqlite3 entre dans le manifeste : la base FINALEMENT
+  // retenue peut changer à la fusion de railsbox.yml (« database: sqlite3 »),
+  // et le verdict doit alors être réévalué avec les mêmes données.
+  const adapters = parseDatabaseAdapters(databaseYml ?? "");
+  const sqlite = sqliteDriverState(gemfile, specs, lock !== null);
+  findings.push(...sqliteDriverFindings({ state: sqlite, database: database.database, adapters }));
+  const ssl = detectSsl(productionRb);
+  findings.push(...ssl.findings);
   const assets = detectAssets(packageJson);
   findings.push(...assets.findings);
   // L'étage de précompilation se décide ici et nulle part ailleurs : il dépend
@@ -390,8 +486,21 @@ export async function detectApp(appDir) {
   const manifest = deepFreeze({
     ruby: ruby.version,
     rubySource: ruby.source,
+    // Le Ruby que le guest exécutera VRAIMENT, et d'où il vient. Sans ces deux
+    // champs, le rapport laissait croire que `ruby:` choisissait l'interpréteur.
+    base: base.version,
+    baseRuby: base.ruby,
+    rubyRequirement: requirement.requirement
+      ? {
+          requirements: requirement.requirement.requirements,
+          source: requirement.requirement.source,
+        }
+      : null,
     rails: rails.version,
     database: database.database,
+    databaseAdapters: Object.freeze(adapters),
+    sqliteDriver: sqlite,
+    ssl: ssl.ssl,
     bundler,
     assets: assetPlan.plan,
     nativeGems: native.nativeGems,

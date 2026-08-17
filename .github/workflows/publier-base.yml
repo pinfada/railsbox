@@ -24,7 +24,12 @@ on:
         required: true
         default: "3.3-r2"
       ruby:
-        description: "Version exacte de Ruby compilée dans la base"
+        description: >-
+          Version exacte de Ruby compilée dans la base. À REPORTER dans
+          BASE_RUBY_VERSIONS (tools/detect/bases.mjs) : c'est cette table qui
+          permet à la détection de refuser AVANT la construction un Gemfile
+          dont la directive `ruby` exclut ce patch. Une base absente de la
+          table ne casse rien, elle désactive seulement la vérification.
         required: true
         default: "3.3.12"
       assets-repo:

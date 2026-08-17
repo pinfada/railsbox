@@ -172,8 +172,13 @@ jobs:
         run: |
           set -eu
           app="${GITHUB_WORKSPACE}/application/${IN_APP_PATH}"
+          # --base : l'analyse doit connaître le Ruby que la VM exécutera pour
+          # confronter la directive `ruby` du Gemfile à ce que la base fournit.
+          # Sans lui, une égalité stricte (ruby "3.3.10") n'échouait qu'au
+          # bundle install de app.Dockerfile — Bundler::RubyVersionMismatch,
+          # plusieurs minutes après le début de la construction.
           if ! node tools/build-v86-image/manifest-to-args.mjs \
-                 "$app" "$SB_NOM" > plan.env 2> plan.txt; then
+                 "$app" "$SB_NOM" --base "$SB_VERSION_BASE" > plan.env 2> plan.txt; then
             cat plan.txt >&2
             {
               echo "### Construction refusée"
@@ -193,7 +198,8 @@ jobs:
             echo ""
             echo "| Élément | Valeur |"
             echo "|---|---|"
-            echo "| Ruby | $RUBY_VERSION |"
+            echo "| Ruby déclaré (série, étage amd64) | $RUBY_VERSION |"
+            echo "| Ruby du guest (fourni par la base) | ${BASE_RUBY_VERSION:-inconnu} |"
             echo "| Base de données | $DATABASE |"
             echo "| Précompilation des assets | \`$ASSETS_STAGE\` |"
             echo "| Outils d'assets sans binaire i386 | ${BINARY_ASSET_GEMS:-aucun} |"

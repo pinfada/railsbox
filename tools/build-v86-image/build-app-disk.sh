@@ -73,7 +73,19 @@ echo "→ Analyse de l'application ($APP_DIR)…"
 ARGS_FILE="$(mktemp)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR" "$ARGS_FILE"' EXIT
-if ! node "$SCRIPT_DIR/manifest-to-args.mjs" "$APP_DIR" "$NAME" > "$ARGS_FILE"; then
+# La base est passée à l'analyse : c'est elle qui fixe le Ruby que la VM
+# exécutera, donc la compatibilité de la directive `ruby` du Gemfile. Sans
+# cette information, le désaccord n'éclatait qu'au bundle install de
+# app.Dockerfile, plusieurs minutes plus tard (Bundler::RubyVersionMismatch).
+# --base accepte aussi bien « 3.3-r2 » que la référence d'image complète.
+#
+# Passé VIDE quand l'appelant n'a rien précisé, et c'est délibéré : le défaut
+# local (railsbox-base-<série>) se déduit de la version de Ruby, donc de cette
+# analyse même. Supposer 3.3-r2 refuserait à tort une application d'une autre
+# série. Sans --base, la vérification est simplement annoncée comme non faite —
+# le workflow, lui, la passe toujours, et c'est là que les neuf minutes vivent.
+if ! node "$SCRIPT_DIR/manifest-to-args.mjs" "$APP_DIR" "$NAME" \
+     --base "$BASE_IMAGE" > "$ARGS_FILE"; then
   echo "✗ Construction refusée : voir le rapport ci-dessus." >&2
   exit 1
 fi
@@ -119,6 +131,18 @@ fi
 # est une panne très difficile à diagnostiquer depuis le navigateur.
 ENV_COUNT="$(printf '%s' "${APP_ENV_MANIFEST:-}" | grep -c '^export ' || true)"
 echo "  Base $BASE_IMAGE · Ruby $RUBY_VERSION · db $DATABASE · seed ${SEED_COMMAND:-aucun}"
+# Le Ruby du guest n'est PAS RUBY_VERSION : celui-ci ne choisit que la série
+# (donc la base) et l'image de l'étage amd64. Les afficher côte à côte évite la
+# confusion la plus coûteuse du produit.
+echo "  Ruby du guest : ${BASE_RUBY_VERSION:-inconnu} (compilé dans la base, non modifiable)"
+if [ "${WITH_POSTGRES:-0}" != 1 ] && [ -n "${SQLITE_DATABASE_URL:-}" ]; then
+  echo "  DATABASE_URL sqlite3 : $SQLITE_DATABASE_URL (override réel de config/database.yml)"
+fi
+if [ -n "${FORCE_SSL_INITIALIZER:-}" ]; then
+  echo "  force_ssl : neutralisé dans le guest"
+else
+  echo "  force_ssl : conservé (RAILSBOX_KEEP_FORCE_SSL)"
+fi
 if [ "${WITH_POSTGRES:-0}" = 1 ]; then
   echo "  Cluster PostgreSQL $PG_VERSION : $PG_DATABASE dans ${PG_DATA_DIR} (sur le disque applicatif)"
 fi
@@ -183,11 +207,13 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "PG_VERSION=$PG_VERSION" \
   --build-arg "PG_DATA_DIR=${PG_DATA_DIR:-}" \
   --build-arg "PG_DATABASE_URL=${PG_DATABASE_URL:-}" \
+  --build-arg "SQLITE_DATABASE_URL=${SQLITE_DATABASE_URL:-}" \
   --build-arg "DB_PREPARE_COMMAND=$DB_PREPARE_COMMAND" \
   --build-arg "SEED_COMMAND=$SEED_COMMAND" \
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "AUTO_LOGIN_INITIALIZER=$AUTO_LOGIN_INITIALIZER" \
+  --build-arg "FORCE_SSL_INITIALIZER=$FORCE_SSL_INITIALIZER" \
   --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
   "$APP_DIR"
 
