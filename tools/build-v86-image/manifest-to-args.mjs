@@ -204,7 +204,7 @@ export function extraPackages(manifest) {
  * `public/assets` — il ne relance rien.
  * @param {Manifest} manifest manifeste fusionné
  * @param {Map<string, string>} specs gems résolues du Gemfile.lock
- * @returns {{npm: boolean, scripts: string[], stage: string, install: string, binaryGems: string[], precompile: boolean}} plan d'assets
+ * @returns {{npm: boolean, scripts: string[], stage: string, install: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
  */
 export function assetsPlan(manifest, specs) {
   const { plan } = planAssets({ assets: manifest.assets, specs });
@@ -215,6 +215,7 @@ export function assetsPlan(manifest, specs) {
     install: plan.install,
     binaryGems: [...plan.binaryGems],
     precompile: plan.stage === ASSET_STAGE.GUEST,
+    output: [...plan.output],
   };
 }
 
@@ -286,6 +287,11 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
     ASSETS_STAGE: assets.stage,
     HOST_ASSETS: assets.stage === ASSET_STAGE.HOST ? "1" : "0",
     NPM_INSTALL_COMMAND: assets.install,
+    // Répertoires que l'étage amd64 remonte vers le disque applicatif. Les
+    // deux premiers sont structurels ; les suivants viennent de la détection
+    // (vite_rails, Shakapacker) ou de `assets.output` du railsbox.yml, et sont
+    // validés à l'analyse : chemin relatif, sans « .. », sans métacaractère.
+    ASSET_OUTPUT_DIRS: assets.output.join(" "),
     // Outils d'assets à binaire précompilé : aucun n'existe pour i386, ils
     // tournent donc sur l'étage amd64. Conservé pour le journal de build.
     BINARY_ASSET_GEMS: assets.binaryGems.join(" "),

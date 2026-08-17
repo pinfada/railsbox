@@ -104,11 +104,16 @@ RIB_FORCE_SSL
 # Assets précompilés sur l'étage amd64 (tailwindcss-ruby, dartsass-ruby et les
 # chaînes npm n'ont aucun binaire i386 — voir assets-amd64.Dockerfile). Le
 # contexte nommé « railsbox-assets » est TOUJOURS fourni par build-app-disk.sh :
-# vide quand la précompilation a lieu dans le guest, ces deux COPY ne créent
-# alors que des répertoires. Ils précèdent la précompilation i386, qui ne
-# tourne que dans l'autre cas.
-COPY --from=railsbox-assets public/assets ./public/assets
-COPY --from=railsbox-assets app/assets/builds ./app/assets/builds
+# vide quand la précompilation a lieu dans le guest, ce COPY ne crée alors que
+# des répertoires. Il précède la précompilation i386, qui ne tourne que dans
+# l'autre cas.
+#
+# Le contexte est copié D'UN BLOC parce que sa forme n'est plus fixe : outre
+# `public/assets` et `app/assets/builds`, il peut porter `public/vite`,
+# `public/packs` ou tout répertoire déclaré en `assets.output` — et un COPY ne
+# se met pas en boucle. Ce contexte ne contient QUE ce que l'étage amd64 a
+# rassemblé sous /rib-export (voir assets-amd64.Dockerfile).
+COPY --from=railsbox-assets . ./
 
 # Précompilation des assets DANS le guest (importmap/propshaft pur : tout se
 # fait avec le Ruby i386 de la base). Vaut 0 dès que l'étage amd64 s'en est

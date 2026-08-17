@@ -3,6 +3,7 @@
 // fichier — un projet incomplet doit donner un rapport, jamais une exception.
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { detectOutputDirs } from "./asset-output.mjs";
 import { NPM_LOCKFILES, planAssets } from "./assets.mjs";
 import { DEFAULT_BASE, resolveBase } from "./bases.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
@@ -393,16 +394,32 @@ export async function detectApp(appDir, options = {}) {
     throw new TypeError("detectApp attend le chemin du dossier de l'application");
   }
   const base = resolveBase(options.base ?? DEFAULT_BASE);
-  const [rubyVersionFile, gemfile, lock, databaseYml, packageJson, productionRb, lockfiles] =
-    await Promise.all([
-      readOptionalFile(join(appDir, ".ruby-version")),
-      readOptionalFile(join(appDir, "Gemfile")),
-      readOptionalFile(join(appDir, "Gemfile.lock")),
-      readOptionalFile(join(appDir, "config", "database.yml")),
-      readOptionalFile(join(appDir, "package.json")),
-      readOptionalFile(join(appDir, "config", "environments", "production.rb")),
-      detectNpmLockfiles(appDir),
-    ]);
+  const [
+    rubyVersionFile,
+    gemfile,
+    lock,
+    databaseYml,
+    packageJson,
+    productionRb,
+    lockfiles,
+    viteJson,
+    shakapackerYml,
+    webpackerYml,
+  ] = await Promise.all([
+    readOptionalFile(join(appDir, ".ruby-version")),
+    readOptionalFile(join(appDir, "Gemfile")),
+    readOptionalFile(join(appDir, "Gemfile.lock")),
+    readOptionalFile(join(appDir, "config", "database.yml")),
+    readOptionalFile(join(appDir, "package.json")),
+    readOptionalFile(join(appDir, "config", "environments", "production.rb")),
+    detectNpmLockfiles(appDir),
+    // Configurations des empaqueteurs qui écrivent HORS des deux répertoires
+    // exportés par défaut : lues pour que l'auto-détection couvre le cas
+    // courant sans que le mainteneur ait rien à écrire.
+    readOptionalFile(join(appDir, "config", "vite.json")),
+    readOptionalFile(join(appDir, "config", "shakapacker.yml")),
+    readOptionalFile(join(appDir, "config", "webpacker.yml")),
+  ]);
 
   /** @type {Finding[]} */
   const findings = [];
@@ -454,7 +471,14 @@ export async function detectApp(appDir, options = {}) {
   findings.push(...assets.findings);
   // L'étage de précompilation se décide ici et nulle part ailleurs : il dépend
   // à la fois du package.json (chaîne npm) et du Gemfile.lock (gems à binaire).
-  const assetPlan = planAssets({ assets: assets.assets, specs, lockfiles });
+  const outputs = detectOutputDirs({ specs, viteJson, shakapackerYml, webpackerYml });
+  findings.push(...outputs.findings);
+  const assetPlan = planAssets({
+    assets: assets.assets,
+    specs,
+    lockfiles,
+    outputDirs: outputs.dirs,
+  });
   findings.push(...assetPlan.findings);
   const native = collectNativeGems(specs);
   findings.push(...native.findings);

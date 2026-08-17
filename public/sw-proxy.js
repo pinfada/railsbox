@@ -27,9 +27,13 @@ import {
   appRequestRefusal,
   errorPage,
   isShellClient,
+  parseRootStaticIndex,
   prepareProxyHeaders,
   responseBodyFor,
-  rootStaticPath,
+  rootStaticCandidate,
+  ROOT_STATIC_ROOT,
+  ROOT_STATIC_INDEX,
+  DEFAULT_ROOT_STATIC_FILES,
   staticAssetPath,
 } from "./shared/proxy-logic.js";
 import {
@@ -122,6 +126,9 @@ const state = {
   artifacts: null,
   lastConfigRequest: 0,
   storageEstimate: null, // { at, estimate }
+  // Inventaire des fichiers racine extraits de l'image, lu une fois par vie du
+  // worker : Promise<Set<string>>, null tant qu'aucune requête n'en a besoin.
+  rootStatic: null,
   warned: new Set(), // motifs déjà journalisés, pour ne pas inonder la console
   // Restauration du bocal depuis IndexedDB : tentée une seule fois par vie du
   // Service Worker, avant la première requête relayée.
@@ -449,12 +456,18 @@ sw.addEventListener("fetch", (event) => {
   if (url.origin !== sw.location.origin || url.pathname.startsWith(RAW_ASSET_PREFIX)) {
     return;
   }
-  // /favicon.ico, /site.webmanifest… : écrits en dur par Rails sans préfixe,
-  // ils échappaient au proxy et finissaient en 404 silencieux.
-  const staticUrl =
-    staticAssetPath(url.pathname, BASE_PATH) ?? rootStaticPath(url.pathname, BASE_PATH);
+  const staticUrl = staticAssetPath(url.pathname, BASE_PATH);
   if (event.request.method === "GET" && staticUrl !== null) {
     event.respondWith(serveStaticFirst(event.request, url, staticUrl));
+    return;
+  }
+  // /favicon.ico, /site.webmanifest, /404.html… : écrits en dur par Rails sans
+  // préfixe, ils échappaient au proxy et finissaient en 404 silencieux. La
+  // liste des noms servis vient de l'image elle-même (voir rootStaticIndex) :
+  // une allowlist en dur ne pouvait pas connaître ceux d'une application
+  // tierce. La résolution est donc asynchrone, le temps de lire l'inventaire.
+  if (event.request.method === "GET" && rootStaticCandidate(url.pathname, BASE_PATH) !== null) {
+    event.respondWith(serveRootStatic(event.request, url));
     return;
   }
   if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) {
@@ -465,6 +478,53 @@ sw.addEventListener("fetch", (event) => {
     event.respondWith(withIsolationHeaders(event.request));
   }
 });
+
+/**
+ * Inventaire des fichiers racine réellement extraits de l'image
+ * (`/disks/appstatic/index.json`, écrit par tools/extract-assets.sh).
+ *
+ * Lu UNE fois puis mémoïsé — le Service Worker est tué dès qu'il est inactif,
+ * la promesse ne survit donc pas plus longtemps que lui. Absent (sandbox
+ * construite avant l'inventaire, ou serveur de développement), on retombe sur
+ * la liste de repli : le comportement d'avant, ni plus ni moins.
+ * @returns {Promise<Set<string>>}
+ */
+function rootStaticIndex() {
+  if (state.rootStatic === null) {
+    const url = `${BASE_PATH.replace(/\/+$/, "")}${ROOT_STATIC_ROOT}${ROOT_STATIC_INDEX}`;
+    state.rootStatic = fetch(url)
+      .then((response) => (response.ok ? response.json() : null))
+      .then(
+        (data) => new Set(data === null ? DEFAULT_ROOT_STATIC_FILES : parseRootStaticIndex(data)),
+      )
+      .catch(() => new Set(DEFAULT_ROOT_STATIC_FILES));
+  }
+  return state.rootStatic;
+}
+
+/**
+ * Sert un fichier racine écrit en dur par l'application (/favicon.ico,
+ * /404.html, /site.webmanifest…) depuis l'extraction statique de l'image.
+ *
+ * Rien n'est routé vers un ailleurs : la cible reste une URL same-origin sous
+ * /disks/appstatic/, dont le nom a déjà passé le contrôle de forme. Un nom
+ * inconnu de l'inventaire retombe exactement là où il tombait avant — la VM
+ * sous /app/*, le réseau sinon.
+ * @param {Request} request
+ * @param {URL} url
+ */
+async function serveRootStatic(request, url) {
+  const bare = rootStaticCandidate(url.pathname, BASE_PATH);
+  const known = bare !== null && (await rootStaticIndex()).has(bare);
+  if (!known) {
+    if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) {
+      return proxyToVm(request, url);
+    }
+    return withIsolationHeaders(request);
+  }
+  const staticUrl = `${BASE_PATH.replace(/\/+$/, "")}${ROOT_STATIC_ROOT}${bare}`;
+  return serveStaticFirst(request, url, staticUrl);
+}
 
 /**
  * Sert un fichier depuis les extractions statiques de l'image

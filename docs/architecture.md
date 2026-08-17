@@ -94,8 +94,15 @@ dans cet ordre :
    statiquement depuis `/depot/disks/assets/…`, extrait de l'image par
    `tools/extract-assets.sh`. Ces fichiers **ne traversent jamais le pont** :
    c'est le levier de performance n°1, ~90 % du trafic d'un chargement de page.
-4. **Est-ce sous `/depot/app` ?** → `proxyToVm`, la suite de ce parcours.
-5. Sinon, GET → la réponse du réseau, augmentée de COOP/COEP.
+4. **Est-ce un fichier racine écrit en dur par l'application ?**
+   (`rootStaticCandidate` : un seul segment, une extension, pas un nom que la
+   coquille sert elle-même) → servi depuis `/depot/disks/appstatic/…` si
+   l'inventaire `index.json` — écrit à l'extraction avec ce que l'image
+   contenait à la racine de son `public/` — le connaît. Sinon la requête
+   retombe exactement où elle tombait avant (étape 5, ou `proxyToVm` sous
+   `/app`). Rien n'est routé vers la VM par cette étape.
+5. **Est-ce sous `/depot/app` ?** → `proxyToVm`, la suite de ce parcours.
+6. Sinon, GET → la réponse du réseau, augmentée de COOP/COEP.
 
 ### Étage 2 — le proxy fabrique un descripteur
 

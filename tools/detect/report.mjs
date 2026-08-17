@@ -78,6 +78,12 @@ export const REMEDIES = Object.freeze({
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",
   "unknown-manifest-key":
     "Retirez la clé de railsbox.yml : seules ruby, database, seed, env et assets sont reconnues.",
+  "invalid-asset-output":
+    "assets.output n'accepte que des chemins RELATIFS à la racine de l'application " +
+    "(« public/dist », « public/vite »), sans « .. », sans chemin absolu et sans espace.",
+  "assets-output-hors-export":
+    "Ajoutez ces répertoires à assets.output dans railsbox.yml : sans cela leur contenu " +
+    "reste sur l'étage amd64 et n'atteint jamais la sandbox.",
   "malformed-manifest-line":
     "Respectez le format « clé: valeur » avec une indentation de 2 espaces pour les blocs.",
   "invalid-manifest-value": "Corrigez la valeur dans railsbox.yml en suivant le schéma documenté.",
@@ -228,7 +234,14 @@ function describeAssets(assets) {
   const stage = STAGE_LABELS[assets.stage ?? ""];
   if (!stage) return pipeline;
   const gems = assets.binaryGems?.length ? ` [${assets.binaryGems.join(", ")}]` : "";
-  return `${pipeline} — précompilation ${stage}${gems}`;
+  // Ce qui redescend dans le disque est annoncé : un bundle écrit ailleurs
+  // partait jusqu'ici à la poubelle sans que rien ne le dise. Seul l'étage
+  // amd64 exporte quoi que ce soit — dans le guest, tout est déjà sur place.
+  const exported =
+    assets.stage === ASSET_STAGE.HOST && assets.output?.length
+      ? ` — exporté : ${assets.output.join(", ")}`
+      : "";
+  return `${pipeline} — précompilation ${stage}${gems}${exported}`;
 }
 
 /**
