@@ -1,0 +1,22 @@
+<p><%= notice %></p>
+
+<% content_for :title, "Posts" %>
+
+<%#
+  La classe ci-dessous n'existe que dans dartsass.scss, et sa règle emploie une
+  fonction de couleur Sass. Retrouver sa sortie CALCULÉE dans la feuille servie
+  par la VM prouve qu'un vrai compilateur Dart Sass est passé sur l'étage
+  amd64 — un fichier recopié tel quel ne produirait rien de tel.
+%>
+<h1 class="railsbox-preuve-dartsass">Posts</h1>
+
+<div id="posts">
+  <% @posts.each do |post| %>
+    <%= render post %>
+    <p>
+      <%= link_to "Show this post", post %>
+    </p>
+  <% end %>
+</div>
+
+<%= link_to "New post", new_post_path %>

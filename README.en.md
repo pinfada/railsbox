@@ -201,7 +201,7 @@ nothing to protect server-side, because there is no server.
 | Limit | Status |
 | --- | --- |
 | **PostgreSQL** | **wired up** on the split path: the server lives in the base image (from revision `3.3-r2`), the data directory on the application disk, and the cluster only starts after that disk is mounted. Requires base `3.3-r2` or newer — the build explicitly refuses an older base. See "[PostgreSQL](#postgresql)". |
-| **Tailwind, dart-sass** | **supported**: precompiled on an amd64 stage, then copied into the i386 disk (the guest never runs those binaries). Tailwind is validated **end to end** — `demo-tailwind` variant, real v86 VM boot, compiled stylesheet served by the guest — and replayed by the [`valider-variantes.yml`](.github/workflows/valider-variantes.yml) workflow. dart-sass takes the same path, without a dedicated test bench. |
+| **Tailwind, dart-sass** | **supported**: precompiled on an amd64 stage, then copied into the i386 disk (the guest never runs those binaries). Tailwind is validated **end to end** — `demo-tailwind` variant, real v86 VM boot, compiled stylesheet served by the guest — and replayed by the [`valider-variantes.yml`](.github/workflows/valider-variantes.yml) workflow. dart-sass now has its own test bench (`demo-dartsass`), stricter still: `sass-embedded` ships no i386 binary at all, where `tailwindcss-ruby` still offers a `ruby` variant. |
 | **npm toolchains** (esbuild, cssbundling) | **supported** by the same stage (`npm ci` then build scripts). A yarn/pnpm/bun lockfile is not read: it falls back to `npm install`, with a warning. |
 | **ActionCable / WebSockets** | out of scope: incompatible with a request/response bridge. Possible route: long-polling or a dedicated stream. |
 | **Outbound networking** | nonexistent. That is also a property of the demo model — see [`SECURITY.md`](SECURITY.md). |
@@ -384,8 +384,9 @@ wsl -e sh tools/extract-assets.sh   # → public/disks/assets/ + appstatic/
 tests — exactly what CI runs ([`ci.yml`](.github/workflows/ci.yml)).
 
 The **variant panel** covers what a single app cannot: `demo` (sqlite3, assets
-in the guest), `demo-pg` (embedded PostgreSQL cluster) and `demo-tailwind`
-(assets on an amd64 stage). `npm test` pins their auto-detection manifests; the
+in the guest), `demo-pg` (embedded PostgreSQL cluster), `demo-tailwind` and
+`demo-dartsass` (assets on an amd64 stage, via two gems with different
+constraints). `npm test` pins their auto-detection manifests; the
 [`valider-variantes.yml`](.github/workflows/valider-variantes.yml) workflow
 replays the whole chain — overlay, app disk, snapshot, real VM boot — on demand
 and every Wednesday, publishing nothing. It also checks the classification of

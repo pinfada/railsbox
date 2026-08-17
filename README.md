@@ -205,7 +205,7 @@ hébergeur, et des propriétés dès qu'on assume le cadrage : une sandbox n'a r
 | Limite | État |
 | --- | --- |
 | **PostgreSQL** | **branché** sur la voie découplée : le serveur vit dans la base (à partir de la révision `3.3-r2`), le répertoire de données sur le disque applicatif, et le cluster ne démarre qu'après le montage de celui-ci. Exige une base `3.3-r2` ou plus récente — la construction refuse explicitement une base antérieure. Voir « [PostgreSQL](#postgresql) ». |
-| **Tailwind, dart-sass** | **pris en charge** : précompilés sur un étage amd64, puis copiés dans le disque i386 (le guest n'exécute jamais ces binaires). Tailwind est validé **de bout en bout** — variante `demo-tailwind`, boot d'une VM v86 réelle, feuille compilée servie par le guest — et rejoué par le workflow [`valider-variantes.yml`](.github/workflows/valider-variantes.yml). dart-sass emprunte le même chemin, sans banc d'essai dédié. |
+| **Tailwind, dart-sass** | **pris en charge** : précompilés sur un étage amd64, puis copiés dans le disque i386 (le guest n'exécute jamais ces binaires). Tailwind est validé **de bout en bout** — variante `demo-tailwind`, boot d'une VM v86 réelle, feuille compilée servie par le guest — et rejoué par le workflow [`valider-variantes.yml`](.github/workflows/valider-variantes.yml). dart-sass a désormais son propre banc d'essai (`demo-dartsass`), plus strict encore : `sass-embedded` ne publie aucun binaire i386 là où `tailwindcss-ruby` offre une variante « ruby ». |
 | **Chaînes npm** (esbuild, cssbundling) | **pris en charge** par le même étage (`npm ci` puis scripts de build). Un verrou yarn/pnpm/bun n'est pas relu : repli sur `npm install`, signalé. |
 | **ActionCable / WebSockets** | hors périmètre : incompatibles avec un pont requête/réponse. Piste : long-polling ou flux dédié. |
 | **Réseau sortant** | inexistant. C'est aussi une propriété du modèle de démonstration — voir [`SECURITY.md`](SECURITY.md). |
@@ -393,8 +393,9 @@ unitaires — c'est exactement ce que joue la CI
 ([`ci.yml`](.github/workflows/ci.yml)).
 
 Le **panel de variantes** couvre ce qu'une application seule ne peut pas :
-`demo` (sqlite3, assets dans le guest), `demo-pg` (cluster PostgreSQL embarqué)
-et `demo-tailwind` (assets sur un étage amd64). `npm test` en fige les
+`demo` (sqlite3, assets dans le guest), `demo-pg` (cluster PostgreSQL embarqué),
+`demo-tailwind` et `demo-dartsass` (assets sur un étage amd64, par deux gems aux
+contraintes différentes). `npm test` en fige les
 manifestes d'auto-détection ; le workflow
 [`valider-variantes.yml`](.github/workflows/valider-variantes.yml) rejoue la
 chaîne entière — surcouche, disque applicatif, instantané, boot d'une VM

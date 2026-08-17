@@ -1,0 +1,48 @@
+// Point d'entrée dart-sass de la variante « demo-dartsass ».
+//
+// Ce fichier n'est JAMAIS servi tel quel : dartsass-rails le donne au
+// compilateur Dart Sass (gem sass-embedded), qui écrit
+// app/assets/builds/dartsass.css, ensuite digéré par Propshaft. Et ce
+// compilateur n'existe pas en i386 — d'où l'étage amd64 de précompilation
+// (assets-amd64.Dockerfile). Le guest reçoit une feuille CSS ordinaire.
+//
+// Le contenu ci-dessous emploie délibérément trois constructions que le CSS
+// ne connaît pas — variable Sass, imbrication, fonction de couleur — pour que
+// le résultat compilé soit la PREUVE qu'un vrai compilateur est passé : un
+// fichier simplement recopié ne produirait aucune de ces sorties.
+
+@use "sass:color";
+
+$railsbox-accent: #1d4ed8;
+$railsbox-encre: #0f172a;
+
+// Marqueur de vérification. La valeur est le résultat d'un CALCUL de couleur
+// que seul un compilateur Sass peut produire : la retrouver dans la feuille
+// servie prouve la compilation, là où un simple `cp` échouerait.
+.railsbox-preuve-dartsass {
+  color: color.adjust($railsbox-accent, $lightness: -12%);
+  letter-spacing: 0.35em;
+}
+
+body {
+  color: $railsbox-encre;
+
+  // Imbrication : construction Sass pure, aplatie à la compilation.
+  h1 {
+    color: $railsbox-accent;
+    font-weight: 700;
+  }
+
+  [id^="post_"] {
+    border: 1px solid color.adjust($railsbox-accent, $alpha: -0.85);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+
+    strong {
+      display: inline-block;
+      min-width: 5.5rem;
+      color: color.adjust($railsbox-encre, $lightness: 25%);
+    }
+  }
+}

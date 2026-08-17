@@ -7,7 +7,8 @@
 # à la main, un jour donné :
 #
 #   demo-pg        cluster PostgreSQL embarqué dans le disque applicatif
-#   demo-tailwind  assets précompilés sur un étage amd64 (aucun binaire i386)
+#   demo-tailwind  assets amd64, gem à variante « ruby » (tailwindcss-ruby)
+#   demo-dartsass  assets amd64, gem SANS aucun binaire i386 (sass-embedded)
 #
 # Ce workflow les rejoue en entier — surcouche, disque applicatif, instantané
 # delta, boot d'une VRAIE VM v86 sous Node — et RIEN n'est publié : ni gh-pages,
@@ -97,6 +98,9 @@ jobs:
           - nom: demo-tailwind
             preparation: preparer-demo-tailwind.sh
             integration: tests/integration/vm-tailwind.it.mjs
+          - nom: demo-dartsass
+            preparation: preparer-demo-dartsass.sh
+            integration: tests/integration/vm-dartsass.it.mjs
           - nom: demo-pg
             preparation: preparer-demo-pg.sh
             integration: tests/integration/vm-postgres.it.mjs

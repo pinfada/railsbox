@@ -1,4 +1,4 @@
-// Panel de détection : les TROIS variantes de l'application de démonstration
+// Panel de détection : les QUATRE variantes de l'application de démonstration
 // passées à tools/detect, et leurs manifestes FIGÉS.
 //
 // Pourquoi ce test existe. Les variantes ne sont pas des démonstrations
@@ -7,7 +7,8 @@
 //
 //   demo           sqlite3      · assets précompilés dans le guest i386
 //   demo-pg        postgresql   · idem, mais cluster PostgreSQL embarqué
-//   demo-tailwind  sqlite3      · assets précompilés sur un étage amd64
+//   demo-tailwind  sqlite3      · assets amd64, gem à variante « ruby »
+//   demo-dartsass  sqlite3      · assets amd64, gem SANS aucun binaire i386
 //
 // Une régression de classement (un « amd64 » qui redevient « i386ivre », une
 // gem native oubliée) ne se voit pas dans les tests unitaires par fonction :
@@ -129,6 +130,24 @@ const PANEL = Object.freeze([
       services: { redis: false, sidekiq: false },
     },
   },
+  {
+    nom: "demo-dartsass",
+    overlay: "demo-dartsass",
+    attendu: {
+      ruby: "3.3.12",
+      rubySource: ".ruby-version",
+      database: "sqlite3",
+      // Même étage que Tailwind, cas plus strict : dartsass-rails tire
+      // sass-embedded, dont AUCUNE variante i386 n'existe — là où
+      // tailwindcss-ruby offre encore une variante « ruby ».
+      stage: "amd64",
+      npm: false,
+      binaryGems: ["dartsass-rails"],
+      scripts: [],
+      nativeGems: ["nokogiri", "sqlite3"],
+      services: { redis: false, sidekiq: false },
+    },
+  },
 ]);
 
 for (const { nom, overlay, attendu } of PANEL) {
@@ -141,7 +160,11 @@ for (const { nom, overlay, attendu } of PANEL) {
 
     // Assert
     assert.deepEqual(resume(manifest), attendu);
-    assert.equal(manifest.rails, "8.1.3.1", "les trois variantes suivent la même version de Rails");
+    assert.equal(
+      manifest.rails,
+      "8.1.3.1",
+      "les quatre variantes suivent la même version de Rails",
+    );
     assert.equal(hasBlocking(findings), false, "aucune variante ne doit être refusée");
     assert.deepEqual(
       findings.filter((finding) => finding.severity === SEVERITY.WARNING).map((f) => f.code),
@@ -151,11 +174,16 @@ for (const { nom, overlay, attendu } of PANEL) {
   });
 }
 
-test("panel — les trois variantes couvrent trois combinaisons distinctes", async () => {
-  // Arrange / Act
-  const combinaisons = PANEL.map(({ attendu }) => `${attendu.database}/${attendu.stage}`);
+test("panel — les quatre variantes couvrent quatre chemins distincts", async () => {
+  // Arrange / Act : base de données, étage d'assets, et outil d'assets — les
+  // deux variantes amd64 partagent l'étage mais pas la gem qui l'impose, et
+  // c'est bien cette gem qui décide de ce que le guest saurait exécuter.
+  const chemins = PANEL.map(
+    ({ attendu }) => `${attendu.database}/${attendu.stage}/${attendu.binaryGems[0] ?? "aucun"}`,
+  );
 
   // Assert : sans cela, deux variantes pourraient converger au fil des
-  // correctifs et l'on croirait tester trois chemins pour n'en tester que deux.
-  assert.equal(new Set(combinaisons).size, PANEL.length, `combinaisons : ${combinaisons}`);
+  // correctifs et l'on croirait tester quatre chemins pour n'en tester que
+  // trois.
+  assert.equal(new Set(chemins).size, PANEL.length, `chemins : ${chemins}`);
 });

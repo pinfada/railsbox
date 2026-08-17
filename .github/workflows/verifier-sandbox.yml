@@ -52,7 +52,10 @@ jobs:
           if [ "$RAILSBOX_MOTEURS" = "tous" ] || [ "$RAILSBOX_MOTEURS" = "all" ]; then
             npx playwright install --with-deps chromium firefox webkit
           else
-            npx playwright install --with-deps $(echo "$RAILSBOX_MOTEURS" | tr ',' ' ')
+            # Tableau plutôt qu'expansion nue : une liste « firefox,webkit »
+            # doit devenir deux arguments, pas un mot découpé au hasard.
+            IFS=',' read -r -a moteurs <<< "$RAILSBOX_MOTEURS"
+            npx playwright install --with-deps "${moteurs[@]}"
           fi
       - name: Recette en ligne
         env:
