@@ -498,6 +498,7 @@ test("parseRootStaticIndex tolère un inventaire absent ou informe", () => {
 test("l'interdiction d'encadrement de l'application est levée, la protection reste", () => {
   // Arrange : ce que pose une application Rails durcie (X-Frame-Options: DENY
   // par default_headers, frame-ancestors :none par la CSP de production).
+  /** @type {[string, string][]} */
   const brut = [
     ["content-type", "text/html; charset=utf-8"],
     ["x-frame-options", "DENY"],
