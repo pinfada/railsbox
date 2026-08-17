@@ -85,13 +85,85 @@ set -a
 . /tmp/app-env.sh
 set +a
 rm -f /tmp/app-env.sh
+# Repère temporel posé JUSTE avant les builds : tout fichier plus récent que
+# lui a été écrit ici, et nulle part ailleurs. C'est ce qui permet, plus bas,
+# de nommer les répertoires produits qui ne seront pas exportés.
+touch /tmp/rib-repere
 for script in ${ASSET_SCRIPTS}; do npm run "$script"; done
 bundle exec rails assets:precompile
 RIB_ASSETS
+
+# Récolte : ce qui redescend dans le disque i386, et ce qui va être perdu.
+#
+# Les COPY d'un Dockerfile ne se mettent pas en boucle : l'étage rassemble donc
+# lui-même les répertoires demandés sous /rib-export, que l'étage `scratch`
+# final copie d'un bloc. ASSET_OUTPUT_DIRS ouvre TOUJOURS sur les deux
+# répertoires structurels ; les suivants viennent de l'auto-détection
+# (vite_rails, Shakapacker) ou de `assets.output` du railsbox.yml.
+#
+# SÉCURITÉ : ces valeurs viennent d'un dépôt tiers. Elles sont validées à
+# l'analyse (asset-output.mjs : chemin relatif, aucun segment « .. », aucun
+# caractère interprétable par un shell) et ne subissent ici que le découpage en
+# mots de l'expansion — jamais de substitution de commande, qui n'a pas lieu
+# sur le RÉSULTAT d'une expansion.
+ARG ASSET_OUTPUT_DIRS="public/assets app/assets/builds"
+RUN <<'RIB_RECOLTE'
+set -eu
+cd /app
+# `set -f` coupe la globalisation : un « * » ne pourrait de toute façon pas
+# franchir la validation, mais la boucle ne doit dépendre que d'elle.
+set -f
+mkdir -p /rib-export
+for dir in ${ASSET_OUTPUT_DIRS}; do
+  [ -d "$dir" ] || { echo "[assets] $dir : rien à exporter (répertoire absent)"; continue; }
+  # `cp -a src/. dest/` FUSIONNE le contenu au lieu d'imbriquer : sans cela un
+  # export qui demanderait à la fois `public` et `public/assets` produirait un
+  # `public/public`, selon l'ordre de la liste.
+  mkdir -p "/rib-export/$dir"
+  cp -a "$dir/." "/rib-export/$dir/"
+  echo "[assets] exporté : $dir ($(find "$dir" -type f | wc -l) fichiers)"
+done
+# Les deux répertoires structurels existent toujours dans le contexte, même
+# vides : app.Dockerfile compte dessus pour son garde-fou.
+mkdir -p /rib-export/public/assets /rib-export/app/assets/builds
+set +f
+
+# Comparaison avant/après. Les arbres qu'aucun build d'assets ne produit sont
+# élagués (node_modules à lui seul pèse plus que tout le reste) : sans cela la
+# mesure coûterait plus cher que ce qu'elle rapporte.
+#
+# Un échec de la comparaison n'interrompt PAS la construction — c'est un
+# diagnostic, pas un garde-fou — mais il est dit, et le rapport est remis à
+# vide : mieux vaut « je n'ai pas su regarder » qu'un rapport muet qui laisse
+# croire que tout est exporté.
+if ! find . \( -path ./node_modules -o -path ./.git -o -path ./tmp -o -path ./log \
+            -o -path ./vendor/bundle -o -path ./.bundle -o -path ./storage \
+            -o -path ./coverage \) -prune -o \
+          -type f -newer /tmp/rib-repere -print \
+  | awk '{ sub(/^\.\//, ""); n = match($0, /\/[^\/]*$/); print (n ? substr($0, 1, n - 1) : ".") }' \
+  | sort -u \
+  | awk -v exportes="${ASSET_OUTPUT_DIRS}" '
+      BEGIN { total = split(exportes, liste, " ") }
+      {
+        for (i = 1; i <= total; i++)
+          if ($0 == liste[i] || index($0, liste[i] "/") == 1) next
+        print
+      }' \
+  | awk '{ if (racine == "" || index($0, racine "/") != 1) { racine = $0; print } }' \
+  > /rib-export/.railsbox-hors-export
+then
+  echo "[assets] comparaison avant/après indisponible : l'export n'a PAS été vérifié" >&2
+  : > /rib-export/.railsbox-hors-export
+fi
+
+if [ -s /rib-export/.railsbox-hors-export ]; then
+  echo "[assets] AVERTISSEMENT — écrit par les builds mais NON exporté :" >&2
+  sed 's/^/[assets]   /' /rib-export/.railsbox-hors-export >&2
+fi
+RIB_RECOLTE
 
 ########################################################################
 # Sortie : uniquement les répertoires d'assets, pour --output type=local
 ########################################################################
 FROM scratch AS export
-COPY --from=precompilation /app/public/assets /public/assets
-COPY --from=precompilation /app/app/assets/builds /app/assets/builds
+COPY --from=precompilation /rib-export/ /

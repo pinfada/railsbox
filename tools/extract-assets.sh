@@ -49,22 +49,61 @@ fi
 find "$DEST/assets" -mindepth 1 -maxdepth 1 -exec mv {} "$DEST"/ \;
 rmdir "$DEST/assets"
 
-# Fichiers statiques que Rails référence en dur à la racine (favicon,
-# manifeste PWA…) : sans eux, 404 silencieux — voir rootStaticPath dans
-# public/shared/proxy-logic.js (les deux listes doivent rester alignées).
+# Fichiers statiques que l'application référence EN DUR à la racine (favicon,
+# manifeste PWA, 404.html…) : sans eux, 404 silencieux.
+#
+# On n'en tient PLUS de liste. Une allowlist en dur ne pouvait pas connaître
+# les chemins racine d'une application tierce, et tout ce qui n'y figurait pas
+# faisait un trou invisible. La source de vérité est l'image elle-même : on
+# relève chaque FICHIER à la racine du `public/` de l'application — un
+# ensemble petit et clos par construction, les sous-répertoires (assets/,
+# images/, dist/…) n'en font pas partie.
+#
+# `ls -p` est le format machine de debugfs : /inode/mode/uid/gid/nom/taille/.
+# Le mode d'un fichier ordinaire commence par 100. Les noms sont filtrés sur
+# une forme sûre : ils deviennent des noms de fichiers de l'hôte, puis des
+# entrées d'un inventaire JSON lu par le Service Worker.
 APPSTATIC="$(dirname "$DEST")/appstatic"
 rm -rf "$APPSTATIC"
 mkdir -p "$APPSTATIC"
-for file in favicon.ico favicon-16x16.png favicon-32x32.png \
-  apple-touch-icon.png apple-touch-icon-precomposed.png \
-  android-chrome-192x192.png android-chrome-512x512.png \
-  site.webmanifest manifest.json browserconfig.xml robots.txt; do
+
+# Les noms que LA COQUILLE sert à sa propre racine sont écartés : le Service
+# Worker les refuse déjà (SHELL_OWNED_FILES dans public/shared/proxy-logic.js),
+# les extraire ne ferait qu'alourdir la publication d'un fichier mort.
+MAX_ROOT_FILES=200
+COQUILLE='^(index\.html|main\.js|sw-proxy\.js|badge\.svg|env-drawer\.(js|css)|types\.d\.ts)$'
+LISTE="$(debugfs -R "ls -p ${RACINE}/public" "$IMAGE" 2>/dev/null \
+  | awk -F/ '$3 ~ /^100/ { print $6 }' \
+  | grep -E '^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+$' \
+  | grep -Ev "$COQUILLE" \
+  | sort -u | head -n "$MAX_ROOT_FILES" || true)"
+
+for file in $LISTE; do
   debugfs -R "dump ${RACINE}/public/$file $APPSTATIC/$file" "$IMAGE" 2>/dev/null || true
   [ -s "$APPSTATIC/$file" ] || rm -f "$APPSTATIC/$file"
 done
 
+# Inventaire de ce qui a RÉELLEMENT été extrait : c'est lui, et non une liste
+# figée dans le code, qui dit au Service Worker quels chemins racine servir
+# statiquement (voir rootStaticPath dans public/shared/proxy-logic.js). Son
+# absence n'est pas une panne : le worker retombe alors sur sa liste de repli.
+{
+  printf '{\n  "files": [\n'
+  premier=1
+  for chemin in "$APPSTATIC"/*; do
+    [ -f "$chemin" ] || continue
+    file="${chemin##*/}"
+    [ "$file" != index.json ] || continue
+    [ "$premier" -eq 1 ] || printf ',\n'
+    premier=0
+    printf '    "%s"' "$file"
+  done
+  [ "$premier" -eq 1 ] || printf '\n'
+  printf '  ]\n}\n'
+} > "$APPSTATIC/index.json"
+
 COUNT=$(find "$DEST" -type f | wc -l)
 SIZE=$(du -sh "$DEST" | cut -f1)
-ROOTCOUNT=$(find "$APPSTATIC" -type f | wc -l)
+ROOTCOUNT=$(find "$APPSTATIC" -type f ! -name index.json | wc -l)
 echo "extrait : $COUNT fichiers, $SIZE → $DEST ; $ROOTCOUNT fichiers racine → $APPSTATIC"
 echo "le Service Worker les servira sous /app/assets/* sans passer par la VM"

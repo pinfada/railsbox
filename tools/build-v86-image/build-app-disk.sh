@@ -144,15 +144,36 @@ mkdir -p "$ASSETS_CONTEXT/public/assets" "$ASSETS_CONTEXT/app/assets/builds"
 
 if [ "${ASSETS_STAGE:-aucun}" = "amd64" ]; then
   echo "→ Précompilation des assets sur un étage amd64…"
+  # Le repli n'est pas décoratif : une valeur VIDE écraserait le défaut de
+  # l'ARG côté Dockerfile et l'étage n'exporterait plus rien.
+  ASSET_OUTPUT_DIRS="${ASSET_OUTPUT_DIRS:-public/assets app/assets/builds}"
+  echo "  Répertoires exportés : $ASSET_OUTPUT_DIRS"
   docker build --platform linux/amd64 $NO_CACHE -f "$SCRIPT_DIR/assets-amd64.Dockerfile" \
     --build-arg "RUBY_VERSION=$RUBY_VERSION" \
     --build-arg "NPM_ASSETS=${NPM_ASSETS:-0}" \
     --build-arg "NPM_INSTALL_COMMAND=${NPM_INSTALL_COMMAND:-}" \
     --build-arg "ASSET_SCRIPTS=${ASSET_SCRIPTS:-}" \
+    --build-arg "ASSET_OUTPUT_DIRS=$ASSET_OUTPUT_DIRS" \
     --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
     --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
     --output "type=local,dest=$ASSETS_CONTEXT" \
     "$APP_DIR"
+
+  # Avertissement remonté de l'étage : des répertoires ont été écrits par les
+  # scripts de build sans faire partie de l'export. C'est la panne SILENCIEUSE
+  # que le garde-fou « aucun asset » ne voit pas — Tailwind produit ses
+  # fichiers, la construction réussit, et le bundle React reste sur l'étage.
+  HORS_EXPORT="$ASSETS_CONTEXT/.railsbox-hors-export"
+  if [ -s "$HORS_EXPORT" ]; then
+    echo "⚠ Répertoires produits par les builds mais NON exportés vers la sandbox :" >&2
+    sed 's/^/    /' "$HORS_EXPORT" >&2
+    echo "  Leur contenu reste sur l'étage amd64 : la sandbox servira la version" >&2
+    echo "  versionnée dans le dépôt, ou rien du tout. Déclarez-les dans railsbox.yml :" >&2
+    echo "    assets:" >&2
+    echo "      output: [$(paste -sd, - < "$HORS_EXPORT")]" >&2
+  fi
+  # Le rapport ne doit pas voyager dans le disque applicatif : il a été lu.
+  rm -f "$HORS_EXPORT"
 
   ASSET_COUNT="$(find "$ASSETS_CONTEXT/public/assets" -type f | wc -l)"
   # Seul refus qui subsiste sur les assets, et il est tardif par nature : un

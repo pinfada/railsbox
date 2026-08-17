@@ -11,6 +11,8 @@ import {
   prepareProxyHeaders,
   responseBodyFor,
   rewriteLocation,
+  parseRootStaticIndex,
+  rootStaticCandidate,
   rootStaticPath,
   staticAssetPath,
 } from "../public/shared/proxy-logic.js";
@@ -411,4 +413,79 @@ test("rootStaticPath résout les fichiers racine sous le sous-répertoire", () =
     "/ma-demo/disks/appstatic/favicon.ico",
   );
   assert.equal(rootStaticPath("/ma-demo/inconnu.txt", "/ma-demo/"), null);
+});
+
+// ── Chemins racine inconnus (inventaire d'extraction) ──────────────────────
+// L'allowlist en dur ne pouvait pas connaître les chemins racine d'une
+// application tierce : tout ce qui n'y figurait pas faisait 404 en silence.
+// La liste sert désormais de repli ; la vérité est l'inventaire écrit par
+// tools/extract-assets.sh à partir de l'image elle-même.
+
+test("rootStaticPath sert un fichier racine que seul l'inventaire connaît", () => {
+  // Arrange : la panne rapportée — une application qui référence /agrimer.json
+  // en dur, absent de toute liste écrite d'avance.
+  const inventaire = new Set(["agrimer.json", "404.html"]);
+
+  // Act / Assert
+  assert.equal(rootStaticPath("/agrimer.json", "/", inventaire), "/disks/appstatic/agrimer.json");
+  assert.equal(rootStaticPath("/app/404.html", "/", inventaire), "/disks/appstatic/404.html");
+  // Ce que l'image ne contient pas n'est pas inventé.
+  assert.equal(rootStaticPath("/favicon.ico", "/", inventaire), null);
+});
+
+test("rootStaticCandidate n'accepte qu'un nom de fichier d'un seul segment", () => {
+  // Arrange / Act / Assert
+  assert.equal(rootStaticCandidate("/agrimer.json"), "agrimer.json");
+  assert.equal(rootStaticCandidate("/app/agrimer.json"), "agrimer.json");
+  assert.equal(rootStaticCandidate("/images/logo.png"), null, "deux segments");
+  assert.equal(rootStaticCandidate("/app/posts"), null, "pas d'extension");
+  assert.equal(rootStaticCandidate("/"), null);
+  assert.equal(rootStaticCandidate("/app"), null);
+  assert.equal(rootStaticCandidate("/../secret.txt"), null, "traversée");
+  assert.equal(rootStaticCandidate("/app/../../secret.txt"), null, "traversée préfixée");
+  assert.equal(rootStaticCandidate("/hors-site.json", "/ma-demo/"), null, "hors du site");
+});
+
+test("un fichier de la coquille ne peut jamais être recouvert par l'application", () => {
+  // Arrange : une application qui embarquerait public/main.js prendrait sinon
+  // la place du chargeur de la coquille — le code qui pilote la VM.
+  const inventaire = new Set(["main.js", "index.html", "sw-proxy.js", "badge.svg"]);
+
+  // Act / Assert
+  for (const nom of [...inventaire]) {
+    assert.equal(rootStaticCandidate(`/${nom}`), null, nom);
+    assert.equal(rootStaticPath(`/${nom}`, "/", inventaire), null, nom);
+  }
+});
+
+test("parseRootStaticIndex revalide l'inventaire produit à partir d'une image tierce", () => {
+  // Arrange : l'inventaire est une donnée, pas une autorité.
+  const data = {
+    files: [
+      "agrimer.json",
+      "../../etc/passwd",
+      "/etc/passwd",
+      "images/logo.png",
+      "main.js",
+      "sans-extension",
+      "agrimer.json",
+      42,
+      null,
+      "robots.txt",
+    ],
+  };
+
+  // Act
+  const noms = parseRootStaticIndex(data);
+
+  // Assert
+  assert.deepEqual(noms, ["agrimer.json", "robots.txt"]);
+});
+
+test("parseRootStaticIndex tolère un inventaire absent ou informe", () => {
+  // Arrange / Act / Assert
+  assert.deepEqual(parseRootStaticIndex(null), []);
+  assert.deepEqual(parseRootStaticIndex({}), []);
+  assert.deepEqual(parseRootStaticIndex("favicon.ico"), []);
+  assert.deepEqual(parseRootStaticIndex(["robots.txt"]), ["robots.txt"]);
 });

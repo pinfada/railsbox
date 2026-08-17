@@ -58,8 +58,15 @@ export function staticAssetPath(pathname, basePath = "/") {
 // produisaient des 404 silencieux. Extraits de l'image vers /disks/appstatic/
 // par tools/extract-assets.sh, ils sont servis statiquement — qu'ils soient
 // demandés nus ou préfixés /app.
+//
+// Cette liste n'est PLUS la vérité, seulement le repli. La vérité est
+// `/disks/appstatic/index.json`, écrit à l'extraction avec ce que l'image
+// contenait RÉELLEMENT à la racine de son `public/` : une allowlist en dur ne
+// pouvait pas connaître les chemins racine d'une application tierce, et tout
+// ce qui n'y figurait pas faisait 404 en silence. La liste ci-dessous sert
+// encore aux sandboxes construites avant l'index.
 export const ROOT_STATIC_ROOT = "/disks/appstatic/";
-const ROOT_STATIC_FILES = new Set([
+export const DEFAULT_ROOT_STATIC_FILES = Object.freeze([
   "favicon.ico",
   "favicon-16x16.png",
   "favicon-32x32.png",
@@ -73,18 +80,89 @@ const ROOT_STATIC_FILES = new Set([
   "robots.txt",
 ]);
 
+// Noms que LA COQUILLE sert à sa propre racine. Ils ne sont jamais résolus
+// vers l'extraction, quoi que dise l'index : une application qui embarquerait
+// un `public/main.js` prendrait sinon la place du chargeur de la coquille —
+// c'est-à-dire du code qui pilote la VM et enregistre le Service Worker.
+// C'est le seul point où élargir la résolution racine pouvait faire un dégât,
+// et il est fermé ici, en dur, du côté qui nous appartient.
+export const SHELL_OWNED_FILES = Object.freeze([
+  "index.html",
+  "main.js",
+  "sw-proxy.js",
+  "badge.svg",
+  "env-drawer.js",
+  "env-drawer.css",
+  "types.d.ts",
+]);
+
+// Un nom de fichier racine plausible : un seul segment, un point (donc une
+// extension), aucun caractère qui puisse construire un autre chemin. Le nom
+// est concaténé à /disks/appstatic/ : la traversée est fermée par la forme,
+// pas par un nettoyage.
+const ROOT_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+$/;
+
 /**
+ * Nom de fichier racine visé par une requête, ou null si la requête n'en vise
+ * aucun. Accepte les deux écritures — nue (`/favicon.ico`) et préfixée
+ * (`/app/favicon.ico`) — parce que Rails produit les deux.
  * @param {string} pathname
  * @param {string} [basePath] racine de publication de la coquille
  * @returns {string | null}
  */
-export function rootStaticPath(pathname, basePath = "/") {
+export function rootStaticCandidate(pathname, basePath = "/") {
   const base = normalizeBasePath(basePath);
   const prefix = `${base}/app`;
-  const bare = pathname.startsWith(`${prefix}/`)
-    ? pathname.slice(prefix.length + 1)
-    : pathname.slice(base.length).replace(/^\//, "");
-  return ROOT_STATIC_FILES.has(bare) ? `${base}${ROOT_STATIC_ROOT}${bare}` : null;
+  let bare;
+  if (pathname === `${prefix}` || pathname.startsWith(`${prefix}/`)) {
+    bare = pathname.slice(prefix.length + 1);
+  } else if (pathname === base || pathname.startsWith(`${base}/`)) {
+    bare = pathname.slice(base.length + 1);
+  } else {
+    return null; // hors du site : ce chemin ne nous appartient pas
+  }
+  if (!ROOT_FILE_NAME.test(bare)) return null;
+  if (bare === "." || bare === ".." || SHELL_OWNED_FILES.includes(bare)) return null;
+  return bare;
+}
+
+/**
+ * Traduit un chemin racine vers son équivalent extrait de l'image, ou null.
+ * @param {string} pathname
+ * @param {string} [basePath] racine de publication de la coquille
+ * @param {readonly string[] | ReadonlySet<string>} [knownFiles] fichiers réellement
+ *   extraits (index.json) ; à défaut, la liste de repli
+ * @returns {string | null}
+ */
+export function rootStaticPath(pathname, basePath = "/", knownFiles = DEFAULT_ROOT_STATIC_FILES) {
+  const bare = rootStaticCandidate(pathname, basePath);
+  if (bare === null) return null;
+  const known = knownFiles instanceof Set ? knownFiles.has(bare) : [...knownFiles].includes(bare);
+  return known ? `${normalizeBasePath(basePath)}${ROOT_STATIC_ROOT}${bare}` : null;
+}
+
+/**
+ * Lit l'inventaire des fichiers racine extraits de l'image.
+ *
+ * FRONTIÈRE : ce document est produit à partir d'une image applicative TIERCE.
+ * Chaque nom est revalidé par la même forme que les chemins entrants, et tout
+ * ce qui appartient à la coquille est écarté — un index hostile ne peut donc
+ * rien viser d'autre que /disks/appstatic/<nom-plausible>.
+ * @param {unknown} data document déjà décodé (JSON.parse)
+ * @returns {string[]} noms retenus, sans doublon
+ */
+export function parseRootStaticIndex(data) {
+  const listed = /** @type {*} */ (data)?.files;
+  const files = Array.isArray(data) ? data : Array.isArray(listed) ? listed : [];
+  /** @type {string[]} */
+  const names = [];
+  for (const entry of files) {
+    if (typeof entry !== "string") continue;
+    if (!ROOT_FILE_NAME.test(entry)) continue;
+    if (SHELL_OWNED_FILES.includes(entry) || names.includes(entry)) continue;
+    names.push(entry);
+  }
+  return names;
 }
 
 // --- Frontière de la sandbox ----------------------------------------------

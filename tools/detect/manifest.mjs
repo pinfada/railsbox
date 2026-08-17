@@ -2,6 +2,7 @@
 // complète l'auto-détection. On analyse un sous-ensemble strict de YAML à la
 // main — le projet s'interdit toute dépendance runtime, et le schéma est assez
 // petit pour que l'analyseur reste plus court qu'une bibliothèque.
+import { sanitizeOutputDirs } from "./asset-output.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./yaml-subset.mjs";
 
@@ -17,7 +18,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {string|null} [rails] version de Rails résolue
  * @property {string|null} [database] adaptateur de base de données
  * @property {string|null} [bundler] version de Bundler ayant produit le lock
- * @property {{npm?: boolean, scripts?: readonly string[], tools?: readonly string[], stage?: string, binaryGems?: readonly string[], install?: string}} [assets] pipeline d'assets et étage de précompilation
+ * @property {{npm?: boolean, scripts?: readonly string[], tools?: readonly string[], stage?: string, binaryGems?: readonly string[], install?: string, output?: readonly string[]}} [assets] pipeline d'assets, étage de précompilation et répertoires exportés
  * @property {readonly NativeGem[]} [nativeGems] gems à extension native
  * @property {{redis?: boolean, sidekiq?: boolean}} [services] services d'arrière-plan
  * @property {{command?: string, autoLogin?: string, autoLoginCode?: string}} [seed] amorçage des données
@@ -39,7 +40,7 @@ const NESTED_KEYS = Object.freeze({
     auto_login: "autoLogin",
     auto_login_code: "autoLoginCode",
   }),
-  assets: Object.freeze({ scripts: "scripts" }),
+  assets: Object.freeze({ scripts: "scripts", output: "output" }),
 });
 
 /** Valeurs acceptées pour `database:`. */
@@ -257,13 +258,54 @@ function applyNested(state, key, value, lineNumber) {
     );
     return;
   }
-  const normalized = state.block === "assets" ? normalizeScripts(value) : normalizeText(value);
+  const normalized =
+    state.block === "assets"
+      ? normalizeAssetsValue(state, key, value, path, lineNumber)
+      : normalizeText(value);
   if (normalized === null) {
-    pushInvalidValue(state, path, lineNumber, "valeur texte attendue");
+    if (state.block !== "assets")
+      pushInvalidValue(state, path, lineNumber, "valeur texte attendue");
     return;
   }
   if (!state.manifest[state.block]) state.manifest[state.block] = {};
   state.manifest[state.block][target] = normalized;
+}
+
+/**
+ * Normalise une valeur du bloc `assets:`.
+ *
+ * SÉCURITÉ : `output` est une FRONTIÈRE. Ses valeurs viennent d'un dépôt tiers
+ * et finissent dans une boucle shell de l'étage amd64 puis dans un chemin de
+ * copie. Tout ce qui sortirait de l'arbre applicatif (`../`, chemin absolu) ou
+ * porterait un caractère interprétable par un shell est REFUSÉ ici, avec un
+ * diagnostic nommant l'entrée fautive — jamais assaini en silence.
+ * @param {ParseState} state état mutable de l'analyse
+ * @param {string} key clé YAML du bloc assets
+ * @param {*} value valeur analysée
+ * @param {string} path chemin complet de la clé, pour les diagnostics
+ * @param {number} lineNumber numéro de ligne
+ * @returns {string[]|null} liste normalisée, ou `null` si rien n'est exploitable
+ */
+function normalizeAssetsValue(state, key, value, path, lineNumber) {
+  const list = normalizeScripts(value);
+  if (list === null) {
+    pushInvalidValue(state, path, lineNumber, "valeur texte attendue");
+    return null;
+  }
+  if (key !== "output") return list;
+  const { dirs, rejected } = sanitizeOutputDirs(list);
+  for (const entry of rejected) {
+    state.findings.push(
+      createFinding(
+        SEVERITY.WARNING,
+        "invalid-asset-output",
+        `railsbox.yml ligne ${lineNumber} : répertoire de sortie « ${entry} » refusé ` +
+          "(chemin relatif à la racine de l'application attendu, sans « .. »).",
+        { key: path, line: lineNumber, value: entry },
+      ),
+    );
+  }
+  return dirs.length > 0 ? dirs : null;
 }
 
 /**
@@ -324,12 +366,23 @@ export function mergeManifest(detected, declared) {
     }
     merged[block] = { ...base, ...declared[block] };
   }
-  if (isObject(declared.assets) && Array.isArray(declared.assets.scripts)) {
+  if (isObject(declared.assets)) {
     const base = isObject(detected.assets) ? detected.assets : {};
-    // Une liste détectée vide n'est pas une valeur remplacée mais une absence.
-    const previous = base.scripts?.length ? base.scripts.join(", ") : undefined;
-    recordOverride(findings, "assets.scripts", previous, declared.assets.scripts.join(", "));
-    merged.assets = { ...base, scripts: [...declared.assets.scripts] };
+    /** @type {Record<string, *>} */
+    const assets = { ...base };
+    if (Array.isArray(declared.assets.scripts)) {
+      // Une liste détectée vide n'est pas une valeur remplacée mais une absence.
+      const previous = base.scripts?.length ? base.scripts.join(", ") : undefined;
+      recordOverride(findings, "assets.scripts", previous, declared.assets.scripts.join(", "));
+      assets.scripts = [...declared.assets.scripts];
+    }
+    // `output` COMPLÈTE la détection au lieu de la remplacer : le mainteneur
+    // ajoute ce que railsbox ne sait pas deviner, il ne retire jamais la sortie
+    // de assets:precompile — la lui laisser retirer rendrait la sandbox muette.
+    if (Array.isArray(declared.assets.output)) {
+      assets.output = [...(base.output ?? []), ...declared.assets.output];
+    }
+    if (Object.keys(assets).length > 0) merged.assets = assets;
   }
   return { manifest: deepFreeze(merged), findings: Object.freeze(findings) };
 }

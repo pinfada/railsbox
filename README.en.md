@@ -282,14 +282,21 @@ env:
   APP_HOST: "http://localhost:8080" # variables your initializers require
 assets:
   scripts: ["build", "build:css"] # npm build scripts to trigger
+  output: ["public/dist"] # produced directories to ship into the sandbox
 ```
 
 Five keys are recognised — `ruby`, `database`, `seed`, `env`, `assets` — and
-inside the `assets:` block only the `scripts` key is read (anything else there
-is ignored with a warning), and
-anything else raises a diagnostic. `database` accepts `postgresql` or `sqlite3`.
-`env:` values are treated as **inert data**, never evaluated at build time (see
-[`SECURITY.md`](SECURITY.md)).
+inside the `assets:` block two keys are read, `scripts` and `output` (anything
+else there is ignored with a warning); anything else raises a diagnostic.
+`database` accepts `postgresql` or `sqlite3`. `env:` values are treated as
+**inert data**, never evaluated at build time (see [`SECURITY.md`](SECURITY.md)).
+
+`assets.output` accepts only paths **relative** to the application root, with no
+`..`, no absolute path and no character a shell could interpret: these values
+come from a third-party repository and end up in build commands. Anything that
+fails that check is rejected with a diagnostic naming the offending entry, never
+silently sanitised. The key **completes** auto-detection rather than replacing
+it: `public/assets` and `app/assets/builds` stay exported no matter what.
 
 ### Demo data and auto-login
 
@@ -548,6 +555,40 @@ The `/app` prefix is preserved end to end: the Service Worker intercepts only it
 and the application generates it natively because `Rack::URLMap` mounts the app
 underneath.
 
+### Paths hardcoded at the domain root
+
+Every application references a few files **at the domain root**, with no prefix:
+`/favicon.ico`, `/site.webmanifest`, `/robots.txt`, sometimes a `/404.html` or a
+data file. Those paths escape the proxy — they do not start with `/app` — and so
+produced **silent 404s**.
+
+The list of names to catch used to be hardcoded in the Service Worker. It could
+not know a third-party application's own: anything missing from it stayed an
+invisible hole. It no longer is. `tools/extract-assets.sh` now enumerates
+**every file at the root of the image's `public/`** — a small, closed-by-
+construction set; subdirectories (`assets/`, `images/`, `dist/`…) are not part of
+it — drops them into `disks/appstatic/` and writes an `index.json` inventory of
+what was actually extracted next to them. The Service Worker reads that
+inventory once and uses it as its allowlist, falling back to the historical list
+when the inventory is absent (sandbox built before it).
+
+**What was rejected: proxying unknown root paths to the VM.** The site root is
+the **shell's** space — `index.html`, `main.js`, `sw-proxy.js`, `disks/` — and,
+on a project Pages, everything else the repository publishes. A proxied fallback
+would have the proxy claim a namespace it does not own, would send the session
+cookie on requests unrelated to the application, and would multiply round trips
+over the **narrow pipe** — on requests that are precisely 404s. It would not even
+work: those files are requested while the shell loads, **before** the VM has
+booted; the fallback would answer 503 instead of 404. A slower hole, not a
+plugged one.
+
+The retained resolution therefore routes nothing to the VM: it only redirects a
+same-origin GET to another static path on the same origin, under
+`disks/appstatic/`, after a **shape** check (a single segment, an extension, no
+character that could build another path). And the names the shell serves itself
+are excluded in code, whatever the inventory says: an application shipping a
+`public/main.js` cannot take the place of the loader that drives the VM.
+
 ## Where assets are precompiled
 
 The guest is **i386**, and two families of asset tools publish no binary for that
@@ -591,6 +632,53 @@ Two warnings rather than a refusal: without a `package-lock.json` (or with a
 yarn/pnpm/bun lockfile, which railsbox does not read), installation falls back to
 `npm install` and the build is no longer reproducible — the analysis report says
 so. And if the amd64 stage produces **no** asset at all, the build stops there.
+
+### What the amd64 stage ships back into the sandbox
+
+For a long time the stage exported only `public/assets` and `app/assets/builds`.
+That is exactly right for sprockets/propshaft and for `jsbundling-rails` — and
+for nobody else. `vite_rails` writes to `public/vite`, Shakapacker to
+`public/packs`, a bare `vite build` to whatever its config says. Those bundles
+were thrown away **without anything failing**: the build succeeded, the sandbox
+booted, and the SPA was missing on screen. The "no asset produced → stop" guard
+did not catch it, because Tailwind had produced its files just fine.
+
+Three mechanisms answer that failure, from the most automatic to the most
+explicit.
+
+**1. Auto-detection**, which covers the common case with nothing to write:
+
+| What it finds | What it adds to the export |
+| --- | --- |
+| `vite_rails` / `vite_ruby` in Gemfile.lock | `public/vite` |
+| `shakapacker` / `webpacker` | `public/packs` |
+| `config/vite.json` (`publicOutputDir`) | the declared directory, across all environments |
+| `config/shakapacker.yml` (`public_output_path`) | same, YAML anchors included |
+
+**2. `assets.output`**, the escape hatch, for what nobody can guess — a `vite
+build` invoked directly, a bespoke script:
+
+```yaml
+assets:
+  scripts: ["build:css", "build:react"]
+  output: ["public/dist"]
+```
+
+**3. The end-of-stage warning**, the guard that backs up the other two. Right
+before running the scripts the stage drops a timestamp marker; right after, it
+lists the directories that were written and will *not* be exported, and names
+them:
+
+```
+⚠ Répertoires produits par les builds mais NON exportés vers la sandbox :
+    public/dist
+```
+
+It is a **warning**, not a refusal: a produced-but-unexported directory is
+sometimes exactly what you want (a coverage report, a build cache). The
+comparison prunes `node_modules`, `.git`, `tmp`, `log`, `vendor/bundle`,
+`.bundle`, `storage` and `coverage` — otherwise it would cost more than it is
+worth.
 
 ## Artifact caching
 

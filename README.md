@@ -291,13 +291,23 @@ env:
   APP_HOST: "http://localhost:8080" # variables exigées par vos initializers
 assets:
   scripts: ["build", "build:css"] # scripts npm de build à déclencher
+  output: ["public/dist"] # répertoires produits à remonter dans la sandbox
 ```
 
 Cinq clés sont reconnues — `ruby`, `database`, `seed`, `env`, `assets` — et
-toute autre déclenche un diagnostic. Dans le bloc `assets:`, seule la clé
-`scripts` est lue : toute autre y est ignorée avec un avertissement. `database` accepte `postgresql` ou
-`sqlite3`. Les valeurs `env:` sont traitées comme des **données inertes**,
-jamais évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
+toute autre déclenche un diagnostic. Dans le bloc `assets:`, deux clés sont
+lues, `scripts` et `output` : toute autre y est ignorée avec un avertissement.
+`database` accepte `postgresql` ou `sqlite3`. Les valeurs `env:` sont traitées
+comme des **données inertes**, jamais évaluées au build (voir
+[`SECURITY.md`](SECURITY.md)).
+
+`assets.output` n'accepte que des chemins **relatifs** à la racine de
+l'application, sans `..`, sans chemin absolu et sans caractère qu'un shell
+pourrait interpréter : ces valeurs viennent d'un dépôt tiers et finissent dans
+des commandes de construction. Tout ce qui échoue à ce contrôle est refusé avec
+un diagnostic nommant l'entrée fautive, jamais assaini en silence. La clé
+**complète** l'auto-détection au lieu de la remplacer : `public/assets` et
+`app/assets/builds` restent exportés quoi qu'il arrive.
 
 ### Données de démonstration et auto-connexion
 
@@ -568,6 +578,43 @@ Le préfixe `/app` est conservé de bout en bout : le Service Worker n'intercept
 que lui, et l'application le génère nativement puisqu'elle est montée dessous par
 `Rack::URLMap`.
 
+### Les chemins écrits en dur à la racine
+
+Une application référence toujours quelques fichiers **à la racine du domaine**,
+sans préfixe : `/favicon.ico`, `/site.webmanifest`, `/robots.txt`, parfois un
+`/404.html` ou un fichier de données. Ces chemins échappent au proxy — ils ne
+commencent pas par `/app` — et faisaient donc des **404 silencieux**.
+
+La liste des noms à rattraper était écrite en dur dans le Service Worker. Elle
+ne pouvait pas connaître ceux d'une application tierce : tout ce qui n'y
+figurait pas restait un trou invisible. Elle ne l'est plus.
+`tools/extract-assets.sh` relève **chaque fichier présent à la racine du
+`public/` de l'image** — un ensemble petit et clos par construction, les
+sous-répertoires (`assets/`, `images/`, `dist/`…) n'en font pas partie — les
+dépose dans `disks/appstatic/` et écrit à côté un inventaire `index.json` de ce
+qui a réellement été extrait. Le Service Worker lit cet inventaire une fois et
+s'en sert d'allowlist ; il retombe sur sa liste historique quand l'inventaire
+est absent (sandbox construite avant lui).
+
+**Ce qui n'a pas été retenu : proxifier vers la VM les chemins racine
+inconnus.** La racine du site est l'espace de la **coquille** — `index.html`,
+`main.js`, `sw-proxy.js`, `disks/` — et, sur un Pages de projet, tout ce que le
+dépôt publie par ailleurs. Un repli proxifié ferait revendiquer au proxy un
+espace qui ne lui appartient pas, ferait voyager le cookie de session sur des
+requêtes étrangères à l'application et multiplierait les allers-retours sur le
+**tuyau étroit** — précisément sur des requêtes qui sont des 404. Il ne
+marcherait même pas : ces fichiers sont demandés pendant le chargement de la
+coquille, **avant** que la VM ait booté ; le repli répondrait 503 au lieu de
+404. Un trou plus lent, pas un trou bouché.
+
+La résolution retenue ne route donc rien vers la VM : elle ne fait que
+rediriger un GET same-origin vers un autre chemin statique de la même origine,
+sous `disks/appstatic/`, après un contrôle de **forme** (un seul segment, une
+extension, aucun caractère qui puisse construire un autre chemin). Et les noms
+que la coquille sert elle-même sont exclus en dur, quoi que dise l'inventaire :
+une application qui embarquerait un `public/main.js` ne peut pas prendre la
+place du chargeur qui pilote la VM.
+
 ## Où sont précompilés les assets
 
 Le guest est un **i386**, et deux familles d'outils d'assets ne publient aucun
@@ -613,6 +660,58 @@ verrou yarn/pnpm/bun, que railsbox ne relit pas), l'installation retombe sur
 `npm install` et la construction n'est plus reproductible — c'est un
 avertissement du rapport d'analyse. Et si l'étage amd64 ne produit **aucun**
 asset, la construction s'arrête là.
+
+### Ce que l'étage amd64 remonte dans la sandbox
+
+L'étage n'exportait longtemps que `public/assets` et `app/assets/builds`. C'est
+le compte exact pour sprockets/propshaft et pour `jsbundling-rails` — et pour
+personne d'autre. `vite_rails` écrit dans `public/vite`, Shakapacker dans
+`public/packs`, un `vite build` nu dans ce que dit sa configuration. Ces bundles
+partaient à la poubelle **sans que rien n'échoue** : la construction
+réussissait, la sandbox bootait, et le SPA manquait à l'affichage. Le garde-fou
+« aucun asset produit → interruption » ne l'attrapait pas, puisque Tailwind,
+lui, avait bien produit ses fichiers.
+
+Trois dispositifs répondent à cette panne, du plus automatique au plus explicite.
+
+**1. L'auto-détection**, qui couvre le cas courant sans que le mainteneur écrive
+quoi que ce soit :
+
+| Ce qu'elle trouve | Ce qu'elle ajoute à l'export |
+| --- | --- |
+| `vite_rails` / `vite_ruby` dans le Gemfile.lock | `public/vite` |
+| `shakapacker` / `webpacker` | `public/packs` |
+| `config/vite.json` (`publicOutputDir`) | le répertoire déclaré, tous environnements confondus |
+| `config/shakapacker.yml` (`public_output_path`) | idem, ancres YAML comprises |
+
+**2. `assets.output`**, l'échappatoire, pour ce que personne ne peut deviner —
+un `vite build` appelé directement, un script maison :
+
+```yaml
+assets:
+  scripts: ["build:css", "build:react"]
+  output: ["public/dist"]
+```
+
+**3. L'avertissement de fin d'étage**, la garde qui rattrape les deux autres.
+Juste avant de lancer les scripts, l'étage pose un repère temporel ; juste
+après, il relève les répertoires qui ont été écrits et ne seront pas exportés,
+et les nomme :
+
+```
+⚠ Répertoires produits par les builds mais NON exportés vers la sandbox :
+    public/dist
+  Leur contenu reste sur l'étage amd64 : la sandbox servira la version
+  versionnée dans le dépôt, ou rien du tout. Déclarez-les dans railsbox.yml :
+    assets:
+      output: [public/dist]
+```
+
+C'est un **avertissement**, pas un refus : un répertoire produit et non exporté
+est parfois exactement ce qu'on veut (un rapport de couverture, un cache de
+build). La comparaison élague `node_modules`, `.git`, `tmp`, `log`,
+`vendor/bundle`, `.bundle`, `storage` et `coverage` — sans quoi elle coûterait
+plus cher que ce qu'elle rapporte.
 
 ## Le cache des artefacts
 

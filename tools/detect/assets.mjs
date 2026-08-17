@@ -16,6 +16,7 @@
 // dans le disque applicatif i386. Le guest n'exécute jamais ces binaires.
 //
 // Ce module est pur : il ne lit aucun fichier, il classe.
+import { DEFAULT_OUTPUT_DIRS, mergeOutputDirs } from "./asset-output.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 
 /** @typedef {import("./findings.mjs").Finding} Finding */
@@ -111,6 +112,7 @@ export function npmInstallCommand(lockfiles) {
  * @property {readonly string[]} tools outils front déclarés dans package.json
  * @property {readonly string[]} binaryGems gems d'assets à binaire précompilé
  * @property {string} install commande d'installation npm, vide sans package.json
+ * @property {readonly string[]} output répertoires remontés de l'étage amd64 vers le disque
  */
 
 /**
@@ -118,15 +120,19 @@ export function npmInstallCommand(lockfiles) {
  *
  * La fonction est idempotente : rejouée sur un manifeste déjà planifié (après
  * fusion d'un railsbox.yml, par exemple), elle conserve la commande
- * d'installation déjà déduite des verrous — que le manifeste ne transporte pas.
- * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string}, specs?: Map<string, string>, lockfiles?: readonly string[]}} input contexte d'analyse
+ * d'installation déjà déduite des verrous — que le manifeste ne transporte pas
+ * — ainsi que les répertoires de sortie déjà retenus.
+ * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[]}} input contexte d'analyse
  * @returns {{plan: AssetPlan, findings: Finding[]}} plan gelé et diagnostics
  */
-export function planAssets({ assets, specs, lockfiles = [] } = {}) {
+export function planAssets({ assets, specs, lockfiles = [], outputDirs = [] } = {}) {
   const resolved = specs instanceof Map ? specs : new Map();
   const npm = Boolean(assets?.npm);
   const scripts = [...(assets?.scripts ?? [])];
   const tools = [...(assets?.tools ?? [])];
+  // Les deux répertoires par défaut ouvrent TOUJOURS la liste : ils sont la
+  // sortie de assets:precompile et de jsbundling, que rien ne doit retirer.
+  const output = mergeOutputDirs(DEFAULT_OUTPUT_DIRS, outputDirs, assets?.output ?? []);
   const binaryGems = binaryAssetGems(resolved);
   const pipeline = ASSET_PIPELINE_GEMS.some((gem) => resolved.has(gem));
   const stage = chooseStage({ npm, binaryGems, pipeline });
@@ -160,6 +166,7 @@ export function planAssets({ assets, specs, lockfiles = [] } = {}) {
       tools: Object.freeze(tools),
       binaryGems: Object.freeze(binaryGems),
       install,
+      output: Object.freeze(output),
     }),
     findings,
   };
