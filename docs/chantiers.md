@@ -317,7 +317,8 @@ complet de PostgreSQL.
 - `tools/build-v86-image/split-config.mjs` (`BASE_SYSTEM_PACKAGES`)
 - `tools/detect/detect.mjs` (`SUPPORTED_ADAPTERS`, `UNSUPPORTED_ADAPTERS`)
 - `.github/workflows/publier-base.yml` (vérifications de la base)
-- `docs/decisions/0005-…md` (à créer)
+- `docs/decisions/0006-…md` (à créer — 0005 est pris par l'espace de noms de
+  l'application)
 
 ### Critère de réussite
 
@@ -336,6 +337,24 @@ requête/réponse par construction. Le README évoque le long-polling comme pist
 ce n'est pas un chantier de contribution, c'est un changement de modèle qui
 demanderait son propre ADR et une refonte du protocole `@RIB1`. Si vous voulez
 vous y attaquer, ouvrez d'abord une issue de discussion.
+
+**Une base par patch de Ruby** non plus. `base:` désigne une série et une
+révision (`3.3-r2`), jamais un patch : le Ruby exécuté dans la VM est celui
+compilé dans la base (`ARG RUBY_VERSION`, `tools/build-v86-image/base/Dockerfile`),
+et la clé `ruby:` de `railsbox.yml` ne pilote que l'étage amd64 de précompilation
+(`assets-amd64.Dockerfile`). L'arbitrage est fait et il est négatif : une base
+est un artefact **immuable** de 1,45 Go en 363 morceaux, plus noyau, initrd et
+instantané ; une par patch signifierait republier tout cela quatre à six fois par
+an et par série, **garder les anciennes indéfiniment** (une sandbox publiée
+désigne son artefact par nom), perdre la mutualisation du cache d'artefacts — la
+raison pour laquelle un visiteur ne télécharge que ~32 Mo — et multiplier la
+matrice de validation. Le levier existant est le bon : assouplir la contrainte du
+`Gemfile` (`~> 3.3.10` accepte le 3.3.12 de la base), ou publier une **révision**
+de base (`base-build.sh --ruby <x.y.z>` → `3.3-r3`) quand un patch précis est
+réellement indispensable. Ce qui manque n'est pas une entrée de workflow mais un
+diagnostic : rien ne signale aujourd'hui qu'un `ruby:` demandé diffère du patch
+réellement embarqué par la base — cela relève du classement des échecs
+(chantier 4).
 
 **Les micro-optimisations du chemin chaud série** non plus : `bench-serial.mjs`
 mesure déjà ce coût, et les assets — ~90 % du trafic — ne passent plus par le
