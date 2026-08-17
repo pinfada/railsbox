@@ -259,7 +259,10 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "AUTO_LOGIN_INITIALIZER=$AUTO_LOGIN_INITIALIZER" \
-  --build-arg "FORCE_SSL_INITIALIZER=$FORCE_SSL_INITIALIZER" \n  --build-arg "SYSTEM_PACKAGES=${SYSTEM_PACKAGES:-}" \n  --build-arg "APP_DISK_MB=$APP_DISK_MB" \n  --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
+  --build-arg "FORCE_SSL_INITIALIZER=$FORCE_SSL_INITIALIZER" \
+  --build-arg "SYSTEM_PACKAGES=${SYSTEM_PACKAGES:-}" \
+  --build-arg "APP_DISK_MB=$APP_DISK_MB" \
+  --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
   "$APP_DIR"
 
 echo "→ Export de l'arbre /app…"
