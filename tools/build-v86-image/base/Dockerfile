@@ -13,10 +13,10 @@
 # Le bundle NE vit PAS dans la base : seul le runtime Ruby + la toolchain (pour
 # compiler les gems natives i386 au build du disque app) + les bibliothèques
 # système y figurent. On code en dur les besoins couverts (sqlite3, PostgreSQL,
-# nokogiri→libxml2) ; une base pleinement générique embarquerait l'union des
-# bibliothèques système courantes. La liste doit rester synchronisée avec
-# BASE_SYSTEM_PACKAGES (split-config.mjs), qui refuse en amont une application
-# réclamant autre chose.
+# nokogiri→libxml2, libvips→traitement d'images) ; une base pleinement générique
+# embarquerait l'union des bibliothèques système courantes. La liste doit rester
+# synchronisée avec PACKAGE_BASE_REVISIONS (split-config.mjs), qui refuse en
+# amont une application réclamant autre chose.
 
 ARG RUBY_VERSION=3.3.12
 
@@ -49,11 +49,47 @@ ENV DEBIAN_FRONTEND=noninteractive
 # libsqlite3-dev + libxml2-dev/libxslt1-dev : besoins de la démo sqlite3 +
 # nokogiri. libpq-dev + postgresql : la gem pg et son serveur (voir plus bas,
 # le cluster n'est PAS créé ici).
+#
+# Traitement d'images (révision 3.3-r3). Coûts MESURÉS en i386 bookworm, en
+# taille installée marginale par-dessus la révision précédente :
+#
+#   libvips42 + libvips-tools     +100 Mo   NON NÉGOCIABLE — libvips est le
+#                                           processeur de variantes par défaut
+#                                           de Rails 7+ (`variant_processor =
+#                                           :vips`). Toute application qui
+#                                           redimensionne une image en dépend.
+#   imagemagick                     +3 Mo   mini_magick / l'autre processeur de
+#                                           variantes. Presque gratuit : ses
+#                                           dépendances sont déjà tirées par
+#                                           libvips.
+#   poppler-utils                   +0 Mo   pdftoppm — aperçus PDF d'Active
+#                                           Storage. Les bibliothèques poppler
+#                                           viennent déjà avec libvips ; seuls
+#                                           les exécutables s'ajoutent.
+#   libsodium-dev                   +1 Mo   rbnacl.
+#   libcurl4-openssl-dev            +1 Mo   curb / patron.
+#   libicu-dev                      +0 Mo   charlock_holmes (déjà tiré
+#                                           transitivement — on le déclare pour
+#                                           en faire une promesse, pas un hasard).
+#
+# ÉCARTÉS, et pourquoi (chaque mégaoctet pèse sur TOUTES les sandboxes) :
+#   libvips-dev                   +170 Mo   inutile : ruby-vips est une liaison
+#                                           FFI, elle dlopen libvips.so.42 et ne
+#                                           compile aucun en-tête.
+#   libmagickwand-dev (rmagick)    +80 Mo   rmagick est marginal face à
+#                                           mini_magick ; refus explicite.
+#   ffmpeg                        +297 Mo   aperçus vidéo d'Active Storage :
+#                                           usage rare, coût prohibitif (il
+#                                           TRIPLERAIT le poids ajouté ici).
+#   libmagic-dev                    +8 Mo   ruby-filemagic ; Rails détecte les
+#                                           types MIME avec Marcel, en Ruby pur.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       linux-image-686 initramfs-tools \
       build-essential libyaml-dev zlib1g-dev libssl-dev libffi-dev \
       libgmp-dev libreadline-dev bison pkg-config patch \
-      libxml2-dev libxslt1-dev libsqlite3-dev \
+      libxml2-dev libxslt1-dev libsqlite3-dev libicu-dev \
+      libvips42 libvips-tools imagemagick poppler-utils \
+      libsodium-dev libcurl4-openssl-dev \
       redis-server \
       postgresql postgresql-client libpq-dev \
       python3 iproute2 procps openssl curl ca-certificates git \

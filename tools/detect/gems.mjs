@@ -12,16 +12,33 @@ import { SEVERITY, createFinding } from "./findings.mjs";
  */
 
 /**
- * Gems à extension native connues et bibliothèques système qu'elles réclament.
- * Table volontairement fixe : une détection heuristique produirait des faux
- * positifs, et l'image de base ne peut embarquer qu'un jeu de libs maîtrisé.
+ * Gems réclamant une bibliothèque (ou un exécutable) système, et ce qu'elles
+ * réclament. Table volontairement fixe : une détection heuristique produirait
+ * des faux positifs, et l'image de base ne peut embarquer qu'un jeu de libs
+ * maîtrisé.
+ *
+ * « Native » est ici à prendre au sens large : la table recense aussi des gems
+ * en Ruby pur dont la dépendance système est réelle mais différée. `ruby-vips`
+ * est une liaison FFI — elle ne compile rien, elle `dlopen` libvips au premier
+ * appel, et son absence ne se voit qu'à l'exécution, dans le navigateur.
+ * `mini_magick` se contente d'appeler l'exécutable d'ImageMagick. Les traiter
+ * comme les autres est le seul moyen de refuser AVANT de construire.
  */
 export const NATIVE_GEMS = Object.freeze({
   bcrypt: Object.freeze([]),
+  charlock_holmes: Object.freeze(["libicu"]),
+  curb: Object.freeze(["libcurl"]),
+  ffi: Object.freeze(["libffi"]),
   grpc: Object.freeze([]),
+  // mini_magick n'a pas d'extension native : elle appelle `convert`/`magick`.
+  // Sans le paquet imagemagick, l'échec est un ENOENT à l'exécution.
+  mini_magick: Object.freeze(["imagemagick"]),
   mysql2: Object.freeze(["libmysqlclient"]),
   nokogiri: Object.freeze(["libxml2", "libxslt"]),
   pg: Object.freeze(["libpq"]),
+  rbnacl: Object.freeze(["libsodium"]),
+  rmagick: Object.freeze(["libmagickwand"]),
+  "ruby-filemagic": Object.freeze(["libmagic"]),
   "ruby-vips": Object.freeze(["libvips"]),
   sassc: Object.freeze(["libsass"]),
   sqlite3: Object.freeze(["libsqlite3"]),

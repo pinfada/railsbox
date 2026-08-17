@@ -45,6 +45,64 @@ ENV RAILS_ENV=production \
 
 WORKDIR /app
 
+# ---------------------------------------------------------------------------
+# Surcouche de paquets système (ADR 0006)
+# ---------------------------------------------------------------------------
+# Ce Dockerfile-ci tourne sur le runner de CI, AVEC le réseau — contrairement au
+# guest, qui n'en a aucun. On peut donc y faire un apt-get. Ce qu'on ne peut pas
+# faire, c'est le laisser écrire dans /usr : ce répertoire vit sur le rootfs de
+# base, disque séparé, immuable et mutualisé entre toutes les sandboxes. Seul
+# /app voyage avec l'application.
+#
+# D'où la manœuvre : installer normalement (les gems natives compilent alors
+# contre les en-têtes, ici, dans ce conteneur), puis RELOCALISER les fichiers
+# des paquets nouvellement installés sous /app/opt/systeme, et écrire le script
+# qui les remet dans le chemin de recherche du guest. Les gems compilées, elles,
+# vivent déjà sur le disque applicatif (BUNDLE_PATH=/app/vendor/bundle) et
+# n'exigent que le SONAME à l'exécution — LD_LIBRARY_PATH suffit.
+#
+# Le script d'activation est sourcé par app-env.sh, sur le DISQUE APPLICATIF :
+# aucune modification de la base n'est nécessaire, la surcouche fonctionne donc
+# aussi sur les bases déjà publiées.
+#
+# SÉCURITÉ : SYSTEM_PACKAGES vient de la table gem → paquets et de la clé
+# `system_packages:` de railsbox.yml, donc de code TIERS. Les noms sont validés
+# en liste blanche stricte par tools/detect/paquets-systeme.mjs (grammaire
+# Debian, premier caractère alphanumérique — donc aucune option apt déguisée) et
+# le `--` ci-dessous ferme définitivement la porte : tout ce qui suit est un
+# opérande, jamais une option.
+# L'installation précède `bundle install` : c'est ce qui permet à une gem
+# native de compiler contre les en-têtes fraîchement posées. La relocalisation,
+# elle, vient bien plus bas — après `COPY . .`, qui écraserait sinon l'arbre
+# relocalisé si l'application possédait elle-même un dossier `opt/`.
+ARG SYSTEM_PACKAGES=""
+RUN <<'RIB_SYSTEME_INSTALL'
+set -eu
+: > /tmp/rib-paquets-avant
+if [ -z "${SYSTEM_PACKAGES}" ]; then
+  echo "[build] aucune surcouche système : la base fournit tout"
+  exit 0
+fi
+# Garde-fou de dernier recours, indépendant de la validation en amont : un nom
+# qui ne commence pas par une lettre ou un chiffre, ou qui contient autre chose
+# que la grammaire Debian, ne peut pas devenir une option d'apt-get.
+for nom in ${SYSTEM_PACKAGES}; do
+  case "$nom" in
+    [a-z0-9]*) ;;
+    *) echo "[build] nom de paquet système refusé : ${nom}" >&2; exit 1 ;;
+  esac
+  case "$nom" in
+    *[!a-z0-9+.-]*) echo "[build] nom de paquet système refusé : ${nom}" >&2; exit 1 ;;
+  esac
+done
+echo "[build] surcouche système demandée : ${SYSTEM_PACKAGES}"
+dpkg-query -W -f='${Package}\n' | sort > /tmp/rib-paquets-avant
+apt-get update
+# shellcheck disable=SC2086
+apt-get install -y --no-install-recommends -- ${SYSTEM_PACKAGES}
+rm -rf /var/lib/apt/lists/*
+RIB_SYSTEME_INSTALL
+
 # Bundle d'abord (couche cachée tant que le Gemfile ne bouge pas). Le lockfile
 # du dépôt ne connaît souvent que x86_64-linux : on ajoute la plateforme i386
 # (x86-linux) + ruby pour que les gems natives compilent avec la toolchain base.
@@ -55,6 +113,79 @@ COPY . .
 # COPY . . a rétabli le Gemfile.lock du dépôt : on ré-ajoute la plateforme i386,
 # sinon bundle exec refuse le bundle pourtant installé.
 RUN bundle lock --add-platform x86-linux ruby && bundle check
+
+# Relocalisation de la surcouche (ADR 0006). Les paquets sont installés dans
+# /usr, qui vit sur le rootfs de base — disque séparé, immuable, mutualisé. On
+# recopie donc les fichiers des paquets NOUVELLEMENT installés sous
+# /app/opt/systeme, seul arbre qui voyage avec l'application, et l'on écrit le
+# script qui les remet dans le chemin de recherche du guest.
+#
+# Après `COPY . .` à dessein : une application possédant un dossier `opt/`
+# écraserait sinon l'arbre relocalisé.
+ARG APP_DISK_MB=512
+RUN <<'RIB_SYSTEME_RELOC'
+set -eu
+RACINE=/app/opt/systeme
+[ -s /tmp/rib-paquets-avant ] || { echo "[build] pas de surcouche à relocaliser"; exit 0; }
+
+apres=$(mktemp); liste=$(mktemp)
+dpkg-query -W -f='${Package}\n' | sort > "$apres"
+nouveaux=$(comm -13 /tmp/rib-paquets-avant "$apres")
+echo "[build] $(printf '%s\n' "$nouveaux" | grep -c .) paquets nouvellement installés"
+for p in $nouveaux; do dpkg -L "$p"; done | sort -u > "$liste"
+
+mkdir -p "$RACINE"
+while IFS= read -r brut; do
+  # Documentation, manuels et traductions : inutiles dans une VM sans terminal,
+  # et ce sont eux qui gonflent le plus vite un disque applicatif de 512 Mo.
+  case "$brut" in
+    /usr/share/doc/*|/usr/share/man/*|/usr/share/lintian/*|/usr/share/locale/*) continue ;;
+    /) continue ;;
+  esac
+  # Debian a fusionné /usr : /lib, /bin et /sbin sont des LIENS vers /usr/…, et
+  # dpkg -L rend les deux formes. Sans cette normalisation, la copie tente de
+  # créer un répertoire là où un lien existe déjà.
+  parent=$(readlink -f "$(dirname "$brut")" 2>/dev/null || dirname "$brut")
+  chemin="$parent/$(basename "$brut")"
+  if [ -d "$chemin" ] && [ ! -L "$chemin" ]; then mkdir -p "$RACINE$chemin"; continue; fi
+  [ -e "$chemin" ] || [ -L "$chemin" ] || continue
+  mkdir -p "$RACINE$(dirname "$chemin")"
+  cp -a "$chemin" "$RACINE$chemin"
+done < "$liste"
+
+poids=$(du -sm "$RACINE" | cut -f1)
+echo "[build] surcouche relocalisée : ${poids} Mo dans ${RACINE}"
+# Le disque applicatif a une géométrie FIXE de 512 Mo (ADR 0002) partagée par
+# l'application, son bundle, sa base seedée ET la surcouche. On tranche ici,
+# avec le chiffre : mesuré, ffmpeg pèse 623 Mo à lui seul et ne tiendra jamais.
+plafond=$(( APP_DISK_MB * 3 / 5 ))
+if [ "$poids" -gt "$plafond" ]; then
+  echo "✗ La surcouche système pèse ${poids} Mo, au-delà des ${plafond} Mo qu'un" >&2
+  echo "  disque applicatif de ${APP_DISK_MB} Mo peut lui céder sans étouffer" >&2
+  echo "  l'application, son bundle et sa base." >&2
+  echo "  Retirez des paquets de system_packages:, ou demandez leur entrée dans la" >&2
+  echo "  base mutualisée avec le gabarit « Ma stack n'est pas prise en charge »." >&2
+  exit 1
+fi
+
+mkdir -p /app/.railsbox
+cat > /app/.railsbox/systeme.sh <<'ACTIVATION'
+# Surcouche de paquets système, relocalisée sur le disque applicatif (ADR 0006).
+# Sourcée par app-env.sh, après le montage de /app par start-app.sh — donc sans
+# rien exiger de la base, qui reste immuable et fonctionne telle quelle.
+RIB_SYS=/app/opt/systeme
+if [ -d "$RIB_SYS" ]; then
+  for rep in "$RIB_SYS/usr/lib/i386-linux-gnu" "$RIB_SYS/usr/lib"; do
+    [ -d "$rep" ] && LD_LIBRARY_PATH="$rep${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  done
+  export LD_LIBRARY_PATH
+  for rep in "$RIB_SYS/usr/bin" "$RIB_SYS/usr/sbin"; do
+    [ -d "$rep" ] && PATH="$rep:$PATH"
+  done
+  export PATH
+fi
+ACTIVATION
+RIB_SYSTEME_RELOC
 
 # Auto-connexion du visiteur (contrainte produit : arriver sur une démonstration
 # peuplée, session ouverte). Déposé dans l'arbre de l'application plutôt que
@@ -221,6 +352,14 @@ RUN <<'RIB_APP_ENV'
 set -eu
 mkdir -p /app/.railsbox
 {
+  # EN PREMIER : la surcouche système (ADR 0006). LD_LIBRARY_PATH et PATH
+  # doivent être posés avant tout le reste — le cluster PostgreSQL comme Puma
+  # sont lancés par start-app.sh après ce sourcing, et une gem FFI cherche sa
+  # bibliothèque au premier `require`. Le test d'existence garde le fichier
+  # facultatif : sans surcouche, il n'est pas écrit.
+  # `if` plutôt que `[ … ] && …` : start-app.sh tourne sous `set -e`, et un
+  # test faux en fin de fichier sourcé y ferait remonter un état d'échec.
+  echo 'if [ -f /app/.railsbox/systeme.sh ]; then . /app/.railsbox/systeme.sh; fi'
   echo "export RAILSBOX_SANDBOX=1"
   echo "export RAILS_RELATIVE_URL_ROOT=${MOUNT_PREFIX}/app"
   echo "export RAILSBOX_DATABASE=${DATABASE}"

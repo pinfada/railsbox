@@ -50,12 +50,22 @@ export const REMEDES = Object.freeze({
     "Le rapport d'analyse figure juste au-dessus dans l'extrait, avec son code et son remède : " +
     "corrigez-le dans l'application (ou dans railsbox.yml) avant de relancer.",
   "base-paquet-manquant":
-    "Ajoutez ces paquets à tools/build-v86-image/base/Dockerfile puis republiez la base " +
-    "(base-build.sh) : le jeu de bibliothèques de la base mutualisée est figé, le disque " +
-    "applicatif ne peut rien y ajouter.",
+    "Le refus, juste au-dessus dans l'extrait, dit quoi faire : si les paquets existent dans une " +
+    "base plus récente, épinglez-la (entrée « base: » du workflow) ; si aucune ne les fournit, " +
+    "ouvrez une issue « Ma stack n'est pas prise en charge » — le jeu de bibliothèques de la base " +
+    "mutualisée est figé, le disque applicatif ne peut rien y ajouter.",
   "gem-native-entete-manquante":
     "Ajoutez le paquet nommé ci-dessus à tools/build-v86-image/base/Dockerfile puis republiez la " +
     "base (base-build.sh), ou retirez la gem du groupe installé dans la sandbox.",
+  "surcouche-paquet-inconnu":
+    "Vérifiez le nom sur packages.debian.org, série bookworm, architecture i386 : railsbox " +
+    "installe ce que vous nommez, il ne traduit pas. Un paquet absent de i386 ne peut être fourni " +
+    "d'aucune façon — retirez-le de system_packages: ou changez de gem.",
+  "surcouche-trop-lourde":
+    "Le disque applicatif fait 512 Mo, application, bundle et base seedée compris (ADR 0002). " +
+    "Retirez des paquets de system_packages:, ou demandez leur entrée dans la base mutualisée " +
+    "avec le gabarit « Ma stack n'est pas prise en charge » — c'est le seul cas où la base doit " +
+    "grossir malgré le coût imposé à toutes les sandboxes.",
   "base-sans-postgres":
     "Épinglez une base au moins aussi récente que 3.3-r2 (entrée « base: » du workflow) : " +
     "PostgreSQL n'existe pas dans les bases antérieures.",
@@ -167,7 +177,10 @@ const PAQUET_PAR_INDICE = Object.freeze([
   [/sqlite3\.h|sqlite3ext\.h/i, "libsqlite3-dev"],
   [/libxml\/|xml2-config|libxml2 is missing/i, "libxml2-dev"],
   [/libxslt|xslt-config/i, "libxslt1-dev"],
-  [/vips\/vips\.h|libvips/i, "libvips-dev"],
+  // ruby-vips ne compile rien : elle dlopen libvips.so.42. C'est donc le
+  // paquet RUNTIME qu'il faut nommer, pas les en-têtes.
+  [/vips\/vips\.h|libvips|Could not open library 'vips'/i, "libvips42 libvips-tools"],
+  [/Could not open library 'sodium'|libsodium/i, "libsodium-dev"],
   [/mysql\.h|mysql_config|mysqlclient/i, "libmysqlclient-dev"],
   [/MagickWand|wand\/MagickWand\.h|ImageMagick/i, "libmagickwand-dev"],
   [/ffi\.h|libffi/i, "libffi-dev"],
@@ -184,11 +197,14 @@ const PAQUET_PAR_GEM = Object.freeze({
   sqlite3: "libsqlite3-dev",
   nokogiri: "libxml2-dev libxslt1-dev",
   mysql2: "libmysqlclient-dev",
-  "ruby-vips": "libvips-dev",
-  vips: "libvips-dev",
+  "ruby-vips": "libvips42 libvips-tools",
+  vips: "libvips42 libvips-tools",
+  mini_magick: "imagemagick",
   rmagick: "libmagickwand-dev",
   charlock_holmes: "libicu-dev",
   curb: "libcurl4-openssl-dev",
+  rbnacl: "libsodium-dev",
+  "ruby-filemagic": "libmagic-dev",
   ffi: "libffi-dev",
 });
 
@@ -363,6 +379,23 @@ const REGLES = Object.freeze([
     motif:
       /Failed to build gem native extension|Can't find the '?[\w.+-]+'? header|Can't find (?:mysql_config|pg_config)|is missing\.\s*(?:Please|Try)|(?:^|[\s'"])[\w+/-]+\.h: No such file or directory/,
     message: (_m, contexte) => decrireGemNative(contexte.texte),
+  },
+  {
+    code: "surcouche-paquet-inconnu",
+    categorie: CATEGORIES.DEPENDANCE_SYSTEME,
+    rang: 1,
+    motif:
+      /E: Unable to locate package ([\w+.-]+)|E: Package '([\w+.-]+)' has no installation candidate/,
+    message: (m) =>
+      `Le paquet « ${(m[1] ?? m[2]).trim()} » n'existe pas dans Debian bookworm i386.`,
+  },
+  {
+    code: "surcouche-trop-lourde",
+    categorie: CATEGORIES.DEPENDANCE_SYSTEME,
+    rang: 1,
+    motif: /La surcouche syst[èe]me p[èe]se (\d+) Mo/,
+    message: (m) =>
+      `La surcouche système pèse ${m[1]} Mo : le disque applicatif ne peut pas l'absorber.`,
   },
   {
     code: "base-sans-postgres",

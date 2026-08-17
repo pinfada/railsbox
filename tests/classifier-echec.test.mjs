@@ -55,6 +55,39 @@ test("un paquet absent de la base est nommé tel quel", () => {
   assert.match(diagnostic.message, /libvips-dev/);
 });
 
+test("un paquet inexistant en i386 est nommé, avec le seul remède possible", () => {
+  // Arrange : la surcouche installe ce qu'on lui nomme, elle ne traduit pas.
+  // Un nom absent de l'archive i386 ne peut être fourni d'aucune façon —
+  // c'est le refus qui reste après l'ADR 0006.
+  const diagnostic = classer(
+    [
+      "#12 3.104 [build] surcouche système demandée : libtruc-machin",
+      "#12 4.201 E: Unable to locate package libtruc-machin",
+    ].join("\n"),
+  );
+
+  assert.equal(diagnostic.code, "surcouche-paquet-inconnu");
+  assert.equal(diagnostic.categorie, CATEGORIES.DEPENDANCE_SYSTEME);
+  assert.match(diagnostic.message, /libtruc-machin/);
+  assert.match(diagnostic.remede, /packages\.debian\.org/);
+});
+
+test("une surcouche qui déborde du disque applicatif est chiffrée", () => {
+  // ffmpeg pèse 623 Mo relocalisés (mesuré) : le disque applicatif en fait 512,
+  // application et bundle compris. Le diagnostic porte le chiffre.
+  const diagnostic = classer(
+    [
+      "#17 4.607 [build] surcouche relocalisée : 623 Mo dans /app/opt/systeme",
+      "#17 4.607 ✗ La surcouche système pèse 623 Mo, au-delà des 307 Mo qu'un",
+    ].join("\n"),
+  );
+
+  assert.equal(diagnostic.code, "surcouche-trop-lourde");
+  assert.equal(diagnostic.categorie, CATEGORIES.DEPENDANCE_SYSTEME);
+  assert.match(diagnostic.message, /623 Mo/);
+  assert.match(diagnostic.remede, /system_packages/);
+});
+
 test("une extension native nomme la gem ET le paquet Debian à ajouter", () => {
   const diagnostic = classer(
     [
@@ -501,7 +534,12 @@ test("le bloc Markdown porte étape, catégorie, extrait et remède", () => {
   assert.match(bloc, /\*\*Étape\*\* : Construction du disque applicatif/);
   assert.match(bloc, /\*\*Catégorie\*\* : .+ \(`base-paquet-manquant`\)/);
   assert.match(bloc, /```text\n/);
-  assert.match(bloc, /\*\*Remède\*\* : Ajoutez ces paquets/);
+  // Le remède ne redit pas « ajoutez ces paquets » : le refus imprimé plus haut
+  // dans le journal nomme déjà la révision de base à épingler, ou l'issue à
+  // ouvrir. Il y renvoie, et le vérifier ici empêche les deux de diverger.
+  assert.match(bloc, /\*\*Remède\*\* : Le refus, juste au-dessus/);
+  assert.match(bloc, /épinglez-la/);
+  assert.match(bloc, /Ma stack n'est pas prise en charge/);
   assert.ok(bloc.endsWith("\n"));
 });
 

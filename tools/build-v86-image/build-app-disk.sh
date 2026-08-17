@@ -69,6 +69,15 @@ APP_DIR="$(cd "$APP_DIR" && pwd)"
 # Dockerfile n'existent pas sans lui.
 export DOCKER_BUILDKIT=1
 
+# Révision de base épinglée, tirée du tag de --base. Elle décide de la frontière
+# entre ce que la base mutualisée fournit déjà et ce que la surcouche doit
+# installer sur le disque applicatif (ADR 0006). Un tag hors convention (image
+# locale sans tag, empreinte sha256) laisse la répartition se faire sur la base
+# la plus récente que connaît le dépôt — les sondes Docker plus bas rattrapent
+# alors le cas.
+BASE_REVISION=""
+case "$BASE_IMAGE" in *:*) BASE_REVISION="${BASE_IMAGE##*:}" ;; esac
+
 echo "→ Analyse de l'application ($APP_DIR)…"
 ARGS_FILE="$(mktemp)"
 WORK_DIR="$(mktemp -d)"
@@ -84,8 +93,7 @@ trap 'rm -rf "$WORK_DIR" "$ARGS_FILE"' EXIT
 # analyse même. Supposer 3.3-r2 refuserait à tort une application d'une autre
 # série. Sans --base, la vérification est simplement annoncée comme non faite —
 # le workflow, lui, la passe toujours, et c'est là que les neuf minutes vivent.
-if ! node "$SCRIPT_DIR/manifest-to-args.mjs" "$APP_DIR" "$NAME" \
-     --base "$BASE_IMAGE" > "$ARGS_FILE"; then
+if ! node "$SCRIPT_DIR/manifest-to-args.mjs" "$APP_DIR" "$NAME" \n     ${BASE_REVISION:+--base "$BASE_REVISION"} > "$ARGS_FILE"; then
   echo "✗ Construction refusée : voir le rapport ci-dessus." >&2
   exit 1
 fi
@@ -93,17 +101,6 @@ fi
 . "$ARGS_FILE"
 
 if [ "$SEED_OVERRIDE_SET" -eq 1 ]; then SEED_COMMAND="$SEED_OVERRIDE"; fi
-
-# La base est mutualisée : son jeu de bibliothèques système est figé à sa
-# construction et le disque applicatif ne peut rien y ajouter. Une gem native
-# réclamant autre chose échouerait à la compilation, loin de la cause — on
-# refuse ici, avec le nom des paquets et le remède.
-MISSING="$(node "$SCRIPT_DIR/split-config.mjs" --check-packages "${EXTRA_PACKAGES:-}")" || {
-  echo "✗ La base ne fournit pas les bibliothèques système : $MISSING" >&2
-  echo "  Ajoutez ces paquets à tools/build-v86-image/base/Dockerfile puis reconstruisez" >&2
-  echo "  la base (base-build.sh) — le disque applicatif ne peut pas les installer." >&2
-  exit 1
-}
 
 SERIES="$(echo "$RUBY_VERSION" | cut -d. -f1,2)"
 [ -n "$BASE_IMAGE" ] || BASE_IMAGE="railsbox-base-$SERIES"
@@ -127,6 +124,24 @@ if [ "${WITH_POSTGRES:-0}" = 1 ]; then
   fi
 fi
 
+# Surcouche système : ce que la base épinglée ne fournit pas est installé au
+# build du disque applicatif puis relocalisé sur celui-ci (ADR 0006). La
+# répartition a été calculée par manifest-to-args à partir de BASE_REVISION ;
+# on la SONDE ici sur l'image réelle, car un tag hors convention (image locale,
+# empreinte) n'a rien pu dire. Un paquet que la base fournit déjà et que la
+# sonde ne trouve pas rejoint la surcouche : mieux vaut l'installer deux fois
+# que produire une sandbox qui plante au premier redimensionnement.
+for sonde_paire in "libvips42:vips" "imagemagick:convert"; do
+  paquet="${sonde_paire%%:*}"
+  outil="${sonde_paire##*:}"
+  case " ${EXTRA_PACKAGES:-} " in *" $paquet "*) ;; *) continue ;; esac
+  case " ${SYSTEM_PACKAGES:-} " in *" $paquet "*) continue ;; esac
+  if ! docker run --rm --platform linux/386 "$BASE_IMAGE" sh -c "command -v $outil" >/dev/null 2>&1; then
+    echo "  ⚠ L'image de base $BASE_IMAGE ne fournit pas « $outil » : $paquet passe en surcouche."
+    SYSTEM_PACKAGES="${SYSTEM_PACKAGES:+$SYSTEM_PACKAGES }$paquet"
+  fi
+done
+
 # Le nombre de variables est affiché : un bloc `env:` silencieusement ignoré
 # est une panne très difficile à diagnostiquer depuis le navigateur.
 ENV_COUNT="$(printf '%s' "${APP_ENV_MANIFEST:-}" | grep -c '^export ' || true)"
@@ -149,6 +164,16 @@ fi
 echo "  Environnement déclaré : $ENV_COUNT variable(s)"
 echo "  Montée sous : ${MOUNT_PREFIX}/app"
 echo "  Assets : précompilation « ${ASSETS_STAGE:-aucun} »${BINARY_ASSET_GEMS:+ (${BINARY_ASSET_GEMS})}"
+if [ -n "${SYSTEM_PACKAGES:-}" ]; then
+  echo "  Surcouche système : ${SYSTEM_PACKAGES} (installée sur le disque applicatif)"
+  if [ -n "${SYSTEM_PACKAGES_HINT:-}" ]; then
+    echo "    ↪ la base ${SYSTEM_PACKAGES_HINT} en fournit tout ou partie : l'épingler coûterait"
+    echo "      moins cher (rootfs mutualisé, lu par morceaux) que la surcouche, qui pèse"
+    echo "      sur les 512 Mo du disque applicatif."
+  fi
+else
+  echo "  Surcouche système : aucune (la base fournit tout)"
+fi
 if [ -n "${AUTO_LOGIN_INITIALIZER:-}" ]; then
   echo "  Auto-connexion : activée"
 else
@@ -234,8 +259,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "AUTO_LOGIN_INITIALIZER=$AUTO_LOGIN_INITIALIZER" \
-  --build-arg "FORCE_SSL_INITIALIZER=$FORCE_SSL_INITIALIZER" \
-  --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
+  --build-arg "FORCE_SSL_INITIALIZER=$FORCE_SSL_INITIALIZER" \n  --build-arg "SYSTEM_PACKAGES=${SYSTEM_PACKAGES:-}" \n  --build-arg "APP_DISK_MB=$APP_DISK_MB" \n  --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
   "$APP_DIR"
 
 echo "→ Export de l'arbre /app…"

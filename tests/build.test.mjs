@@ -15,6 +15,7 @@ import {
   formatAssignments,
   formatEnvFragment,
   resolveRubyVersion,
+  splitPackages,
 } from "../tools/build-v86-image/manifest-to-args.mjs";
 
 // --- Fixtures partagées ------------------------------------------------------
@@ -125,6 +126,125 @@ test("extraPackages n'installe ni PostgreSQL ni Redis pour une application sqlit
 
   // Assert
   assert.deepEqual(packages, ["libsqlite3-dev"]);
+});
+
+test("extraPackages traduit libvips en paquets de RUNTIME, sans les en-têtes", () => {
+  // Arrange : la pile d'image_processing sur une application PostgreSQL.
+  const manifest = {
+    database: "postgresql",
+    nativeGems: [
+      { name: "ruby-vips", systemLibs: ["libvips"] },
+      { name: "mini_magick", systemLibs: ["imagemagick"] },
+    ],
+    services: { redis: false },
+  };
+
+  // Act
+  const packages = extraPackages(manifest);
+
+  // Assert : libvips-dev est absent à dessein — ruby-vips est une liaison FFI,
+  // elle dlopen libvips.so.42. Embarquer les en-têtes de toute la pile GLib
+  // coûterait 170 Mo mesurés à TOUTES les sandboxes, pour rien.
+  assert.deepEqual(packages, [
+    "imagemagick",
+    "libpq-dev",
+    "libvips-tools",
+    "libvips42",
+    "postgresql",
+    "postgresql-client",
+  ]);
+  assert.equal(packages.includes("libvips-dev"), false);
+});
+
+test("splitPackages route vers la base ou la surcouche selon la révision épinglée", () => {
+  // Arrange : la pile d'image_processing, la seule variable étant la base.
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [
+      { name: "ruby-vips", systemLibs: ["libvips"] },
+      { name: "mini_magick", systemLibs: ["imagemagick"] },
+    ],
+    services: { redis: false },
+  };
+
+  // Act
+  const surR2 = splitPackages(manifest, "3.3-r2");
+  const surR3 = splitPackages(manifest, "3.3-r3");
+
+  // Assert : c'est la règle qui met fin à l'accumulation (ADR 0006). Sur une
+  // base ancienne, le traitement d'images passe en surcouche applicative au
+  // lieu d'être refusé ; sur la base qui le porte, il ne coûte rien de plus.
+  assert.deepEqual(surR2.overlay, ["imagemagick", "libvips-tools", "libvips42"]);
+  assert.deepEqual(surR2.base, ["libsqlite3-dev"]);
+  assert.equal(surR2.hint, "3.3-r3");
+  assert.deepEqual(surR3.overlay, []);
+  assert.deepEqual(surR3.base, surR3.all);
+  // Rien à conseiller quand la base épinglée suffit déjà.
+  assert.equal(surR3.hint, null);
+});
+
+test("splitPackages envoie en surcouche ce qu'aucune base ne fournit", () => {
+  // Arrange : rmagick, écartée de la base pour ses 80 Mo.
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "rmagick", systemLibs: ["libmagickwand"] }],
+    services: { redis: false },
+  };
+
+  // Act
+  const { overlay, hint } = splitPackages(manifest, "3.3-r3");
+
+  // Assert : la surcouche est la réponse, et aucune épingle ne l'éviterait.
+  assert.deepEqual(overlay, ["libmagickwand-dev"]);
+  assert.equal(hint, null);
+});
+
+test("splitPackages fait entrer les paquets déclarés dans railsbox.yml", () => {
+  // Arrange : ce qu'aucune gem ne trahit — un exécutable appelé en system().
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [],
+    services: { redis: false },
+    systemPackages: ["ffmpeg", "poppler-utils"],
+  };
+
+  // Act
+  const { overlay, base } = splitPackages(manifest, "3.3-r3");
+
+  // Assert : poppler-utils est déjà dans la base 3.3-r3, ffmpeg jamais.
+  assert.deepEqual(overlay, ["ffmpeg"]);
+  assert.ok(base.includes("poppler-utils"));
+});
+
+test("extraPackages écarte un paquet déclaré hostile même sans passer par le manifeste", () => {
+  // Défense en profondeur : extraPackages est appelable avec un manifeste de
+  // provenance quelconque, et sa sortie part dans un apt-get (ADR 0006).
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [],
+    services: { redis: false },
+    systemPackages: ["--allow-unauthenticated", "libvips42", "; rm -rf /"],
+  };
+
+  const packages = extraPackages(manifest);
+
+  assert.deepEqual(packages, ["libsqlite3-dev", "libvips42"]);
+});
+
+test("extraPackages n'invente rien pour une bibliothèque écartée de la base", () => {
+  // Arrange : rmagick coûterait 80 Mo à toutes les sandboxes. Le paquet est
+  // nommé quand même — c'est ce nom qui rend le refus lisible en aval.
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "rmagick", systemLibs: ["libmagickwand"] }],
+    services: { redis: false },
+  };
+
+  // Act
+  const packages = extraPackages(manifest);
+
+  // Assert
+  assert.deepEqual(packages, ["libmagickwand-dev", "libsqlite3-dev"]);
 });
 
 // --- Pipeline d'assets -------------------------------------------------------
