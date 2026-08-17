@@ -15,6 +15,7 @@ import {
   rootStaticCandidate,
   rootStaticPath,
   staticAssetPath,
+  relaxFrameAncestors,
 } from "../public/shared/proxy-logic.js";
 
 const SELF = { origin: "http://localhost:8080", host: "localhost:8080" };
@@ -488,4 +489,45 @@ test("parseRootStaticIndex tolère un inventaire absent ou informe", () => {
   assert.deepEqual(parseRootStaticIndex({}), []);
   assert.deepEqual(parseRootStaticIndex("favicon.ico"), []);
   assert.deepEqual(parseRootStaticIndex(["robots.txt"]), ["robots.txt"]);
+});
+
+// L'application impose parfois qu'on ne l'encadre pas — et railsbox, lui,
+// IMPOSE l'iframe. Défaut trouvé sur la première application tierce : boot
+// réussi, requête 200, et un cadre vide portant « refuse la connexion », sans
+// rien dans le journal. Deux en-têtes en cause, souvent les deux à la fois.
+test("l'interdiction d'encadrement de l'application est levée, la protection reste", () => {
+  // Arrange : ce que pose une application Rails durcie (X-Frame-Options: DENY
+  // par default_headers, frame-ancestors :none par la CSP de production).
+  const brut = [
+    ["content-type", "text/html; charset=utf-8"],
+    ["x-frame-options", "DENY"],
+    ["content-security-policy", "default-src 'self'; frame-ancestors 'none'; object-src 'none'"],
+  ];
+
+  // Act
+  const headers = prepareProxyHeaders(brut, {
+    origin: "https://exemple.test",
+    host: "exemple.test",
+  });
+
+  // Assert
+  assert.equal(headers.get("x-frame-options"), null, "l'en-tête hérité doit disparaître");
+  const politiques = headers.get("content-security-policy") ?? "";
+  assert.doesNotMatch(politiques, /frame-ancestors 'none'/, "'none' annulerait notre 'self'");
+  assert.match(politiques, /frame-ancestors 'self'/, "l'encadrement reste limité à notre origine");
+  // Le reste de la politique de l'application n'est pas touché : on détend une
+  // directive, on ne réécrit pas sa sécurité.
+  assert.match(politiques, /object-src 'none'/);
+});
+
+test("relaxFrameAncestors ne touche qu'à sa directive", () => {
+  assert.equal(
+    relaxFrameAncestors("default-src 'self'; frame-ancestors https://ami.test; img-src *"),
+    "default-src 'self'; frame-ancestors 'self'; img-src *",
+  );
+  // Une politique sans frame-ancestors passe telle quelle : rien à détendre.
+  assert.equal(relaxFrameAncestors("default-src 'self'"), "default-src 'self'");
+  // Casse et espaces multiples : la directive reste reconnue.
+  assert.equal(relaxFrameAncestors("Frame-Ancestors   'none'"), "frame-ancestors 'self'");
+  assert.equal(relaxFrameAncestors("   "), null);
 });

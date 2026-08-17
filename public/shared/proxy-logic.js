@@ -426,11 +426,68 @@ export function prepareProxyHeaders(rawHeaders, self, basePath = "/") {
   }
   headers.set("Cross-Origin-Embedder-Policy", "require-corp");
   headers.set("Cross-Origin-Resource-Policy", "same-origin");
+  relaxFramingHeaders(headers);
   const isHtml = (headers.get("content-type") ?? "").includes("text/html");
   if (isHtml) {
     headers.append("Content-Security-Policy", APP_DOCUMENT_CSP);
   }
   return headers;
+}
+
+/**
+ * Lève l'interdiction d'affichage en cadre posée par l'application.
+ *
+ * railsbox IMPOSE l'iframe : c'est ainsi que la sandbox montre l'application.
+ * Or `X-Frame-Options: DENY` et `frame-ancestors 'none'` sont des durcissements
+ * recommandés, présents dans quantité d'applications Rails en production — la
+ * nôtre de démonstration ne les a simplement jamais eus. Une application non
+ * modifiée qui les porte s'affichait donc en « refus de connexion », sans que
+ * rien dans le journal ne le dise : le boot réussit, la requête répond 200, et
+ * le navigateur refuse en silence de peindre le cadre.
+ *
+ * La protection n'est pas supprimée, elle est RAMENÉE AU BON NIVEAU : notre
+ * propre CSP applique `frame-ancestors 'self'` à tout document proxifié, si
+ * bien qu'un site tiers ne peut toujours pas encadrer l'application. On retire
+ * donc l'en-tête hérité (que le CSP niveau 3 rendrait de toute façon
+ * prioritaire) et l'on détend la seule directive `frame-ancestors` des
+ * politiques de l'application, sans toucher au reste de ces politiques.
+ *
+ * Le faire ICI plutôt que par un initialiseur déposé dans l'arbre applicatif
+ * couvre aussi ce qu'aucune configuration Rails ne trahit : un en-tête posé
+ * par un middleware Rack, une gem, ou un reverse-proxy embarqué.
+ * @param {Headers} headers en-têtes de la réponse de la VM, modifiés en place
+ */
+function relaxFramingHeaders(headers) {
+  headers.delete("x-frame-options");
+  for (const nom of ["content-security-policy", "content-security-policy-report-only"]) {
+    const politique = headers.get(nom);
+    if (politique === null) continue;
+    const detendue = relaxFrameAncestors(politique);
+    if (detendue === null) headers.delete(nom);
+    else headers.set(nom, detendue);
+  }
+}
+
+/**
+ * Remplace la valeur de `frame-ancestors` par `'self'` dans une politique,
+ * en laissant les autres directives intactes.
+ *
+ * Les politiques multiples s'INTERSECTENT (CSP niveau 3) : laisser passer un
+ * `frame-ancestors 'none'` de l'application annulerait le `'self'` que nous
+ * ajoutons, quel que soit l'ordre. La directive est donc réécrite là où elle
+ * est déclarée, plutôt que contredite ailleurs.
+ * @param {string} politique valeur d'un en-tête Content-Security-Policy
+ * @returns {string | null} politique réécrite, ou null si elle devient vide
+ */
+export function relaxFrameAncestors(politique) {
+  const directives = String(politique)
+    .split(";")
+    .map((directive) => directive.trim())
+    .filter((directive) => directive !== "")
+    .map((directive) =>
+      /^frame-ancestors(\s|$)/i.test(directive) ? "frame-ancestors 'self'" : directive,
+    );
+  return directives.length === 0 ? null : directives.join("; ");
 }
 
 /**
