@@ -166,6 +166,18 @@ test. C'est le point d'entrée le plus court du dépôt, et le plus directement
 utile à un mainteneur tiers — un diagnostic qui constate sans dire quoi faire
 le renvoie au journal, c'est-à-dire au point de départ.
 
+Une variante de ce chantier vaut mieux que lui : **remonter le diagnostic en
+amont**, quand la détection dispose déjà de l'information. Le premier
+intégrateur tiers l'a démontré sur `bundle-version-ruby` — un
+`Bundler::RubyVersionMismatch` classé correctement, mais neuf minutes après le
+début de la construction, alors que `tools/detect` connaissait la contrainte du
+Gemfile et que la table `BASE_RUBY_VERSIONS` (`tools/detect/bases.mjs`) connaît
+le Ruby de la base. Le cas est désormais refusé avant le premier `docker build`
+(`ruby-version-incompatible`), et le motif du classifieur ne sert plus que de
+filet pour les contraintes qu'aucune analyse statique ne voit. Quand un code
+d'échec aval peut devenir un refus amont, c'est ce qu'il faut faire : un remède
+lu en dix secondes vaut mieux que le même remède lu après neuf minutes.
+
 ### Fichiers concernés
 
 - `tools/build-v86-image/classifier-echec.mjs` (`CATEGORIES`, `REMEDES`, motifs)

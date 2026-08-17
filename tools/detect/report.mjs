@@ -3,6 +3,7 @@
 // faire oblige l'utilisateur à lire le code, ce qui est un échec de produit.
 import { ASSET_STAGE } from "./assets.mjs";
 import { SEVERITY } from "./findings.mjs";
+import { satisfiesRubyRequirement } from "./ruby-requirement.mjs";
 
 /** @typedef {import("./findings.mjs").Finding} Finding */
 /** @typedef {import("./manifest.mjs").Manifest} Manifest */
@@ -25,6 +26,39 @@ export const REMEDIES = Object.freeze({
   "unresolvable-ruby-series":
     "Série de Ruby inconnue de railsbox : épinglez une version complète (ruby: X.Y.Z) " +
     "dans railsbox.yml.",
+  "ruby-version-incompatible":
+    'Relâchez la contrainte du Gemfile (ruby "~> 3.3.10" plutôt que ruby "3.3.10"), ou ' +
+    "épinglez une base qui fournit la version exigée (entrée base: du workflow). La clé " +
+    "ruby: de railsbox.yml ne change PAS l'interpréteur du guest : il est compilé dans " +
+    "l'image de base.",
+  "ruby-key-series-mismatch":
+    "Alignez ruby: sur la série de la base utilisée, ou choisissez une base de la série " +
+    "voulue avec l'entrée base: du workflow — la clé ruby: ne pilote que la série et " +
+    "l'image de l'étage amd64.",
+  "ruby-key-series-only":
+    "Rien à faire : la clé ruby: ne choisit que la série (donc la base) et l'image de " +
+    "l'étage amd64 de précompilation. Pour changer le Ruby du guest, changez de base.",
+  "base-ruby-unknown":
+    "Ajoutez la version de base à BASE_RUBY_VERSIONS (tools/detect/bases.mjs) après " +
+    "l'avoir publiée, sinon la contrainte Ruby du Gemfile ne peut pas être vérifiée.",
+  "force-ssl-enabled":
+    "Rien à faire : railsbox pose un initialiseur qui désactive force_ssl DANS LE GUEST " +
+    "(la sandbox n'a pas de terminaison TLS). Pour le conserver malgré tout, déclarez " +
+    'RAILSBOX_KEEP_FORCE_SSL: "1" dans le bloc env: de railsbox.yml.',
+  "force-ssl-kept":
+    "RAILSBOX_KEEP_FORCE_SSL neutralise la parade de railsbox : l'application redirigera " +
+    "en 301 vers https et ses cookies seront « secure ». Retirez la variable du bloc env: " +
+    "de railsbox.yml si la démonstration ne répond plus.",
+  "missing-sqlite3-gem":
+    'Ajoutez `gem "sqlite3"` au Gemfile puis relancez `bundle install`, ou déclarez ' +
+    "database: postgresql dans railsbox.yml si l'application parle à PostgreSQL.",
+  "sqlite3-gem-missing-in-production":
+    'Sortez gem "sqlite3" du groupe :development de votre Gemfile (ou ajoutez-la), puis ' +
+    "relancez bundle install : le bundle de la VM est installé sans les groupes " +
+    "development et test.",
+  "sqlite3-fallback-unavailable":
+    'Sortez gem "sqlite3" du groupe :development si vous voulez pouvoir déclarer ' +
+    "database: sqlite3 dans railsbox.yml ; sinon rien à faire, PostgreSQL est embarqué.",
   "missing-gemfile-lock":
     "Lancez `bundle install` pour produire Gemfile.lock : sans lui, gems natives et services " +
     "restent invisibles.",
@@ -100,8 +134,14 @@ function summaryLines(manifest) {
   const rubySource = manifest.rubySource ? ` (source : ${manifest.rubySource})` : "";
   const lines = [
     field("Ruby", manifest.ruby ? `${manifest.ruby}${rubySource}` : null),
+    // Deux lignes distinctes, et c'est le point : « Ruby » est ce que déclare
+    // l'application (et ce qui choisit la série, donc la base et l'image de
+    // l'étage amd64) ; « Ruby du guest » est ce que la VM exécutera vraiment.
+    field("Ruby du guest", describeGuestRuby(manifest)),
+    field("Contrainte Ruby", describeRubyRequirement(manifest)),
     field("Rails", manifest.rails),
     field("Base de données", manifest.database),
+    field("force_ssl", describeSsl(manifest.ssl)),
     field("Assets", describeAssets(manifest.assets)),
     field("Gems natives", describeNativeGems(manifest.nativeGems)),
     field("Services", describeServices(manifest.services)),
@@ -116,6 +156,53 @@ function summaryLines(manifest) {
     lines.push(field("Variables d'env", names.length > 0 ? names.join(", ") : null));
   }
   return lines;
+}
+
+/**
+ * Décrit le Ruby réellement exécuté par la VM et d'où il vient.
+ * @param {Manifest} manifest manifeste (détecté ou fusionné)
+ * @returns {string|null} description, ou `null` si la base est inconnue
+ */
+function describeGuestRuby(manifest) {
+  if (!manifest.baseRuby) return null;
+  return `${manifest.baseRuby} (fourni par la base ${manifest.base}, non modifiable)`;
+}
+
+/**
+ * Décrit la contrainte de Ruby que Bundler fera respecter, et son verdict.
+ * @param {Manifest} manifest manifeste (détecté ou fusionné)
+ * @returns {string|null} description, ou `null` si le Gemfile n'exige rien
+ */
+function describeRubyRequirement(manifest) {
+  const requirement = manifest.rubyRequirement;
+  if (!requirement) return "aucune (le Gemfile ne déclare pas de directive ruby)";
+  const declared = requirement.requirements.join(", ");
+  if (!manifest.baseRuby) return `${declared} (source : ${requirement.source})`;
+  const verdict = satisfiesRubyRequirement(manifest.baseRuby, requirement.requirements);
+  const mot =
+    verdict === false ? "NON satisfaite" : verdict === true ? "satisfaite" : "non vérifiée";
+  return `${declared} (source : ${requirement.source}) — ${mot} par ${manifest.baseRuby}`;
+}
+
+/** Libellés français des états de `config.force_ssl`. */
+const SSL_LABELS = Object.freeze({
+  actif: "actif dans production.rb",
+  inactif: "désactivé dans production.rb",
+  "conditionnel-actif": "conditionnel, actif par défaut",
+  "conditionnel-inactif": "conditionnel, inactif par défaut",
+  inconnu: "expression non analysée",
+});
+
+/**
+ * Décrit le réglage `config.force_ssl` et ce que railsbox en fait.
+ * @param {Manifest["ssl"]} [ssl] section `ssl` du manifeste
+ * @returns {string|null} description, ou `null` si le fichier est absent
+ */
+function describeSsl(ssl) {
+  if (!ssl || !ssl.forceSsl) return null;
+  const label = SSL_LABELS[ssl.forceSsl] ?? ssl.forceSsl;
+  const suite = ssl.enforced ? " — neutralisé dans le guest par railsbox" : "";
+  return `${label}${suite}`;
 }
 
 /**

@@ -92,6 +92,109 @@ export function collectNativeGems(specs) {
 }
 
 /**
+ * Groupes exclus du bundle installé dans la VM.
+ *
+ * app.Dockerfile pose `BUNDLE_WITHOUT="development:test"` : une gem confinée à
+ * ces groupes n'est PAS installée. Le Gemfile.lock, lui, la mentionne quand
+ * même — d'où l'illusion, très coûteuse, qu'elle sera disponible.
+ */
+export const EXCLUDED_GROUPS = Object.freeze(["development", "test"]);
+
+// Ouvertures de bloc à suivre pour que les `end` se referment sur le bon
+// niveau : sans cela, le `end` d'un `platforms … do` fermerait le `group … do`
+// englobant et toutes les gems suivantes changeraient de groupe.
+const BLOCK_OPENER = /(?:^|\s)do(?:\s*\|[^|]*\|)?\s*$/;
+const KEYWORD_OPENER = /^(?:if|unless|case|begin|while|until|def|class|module)\b/;
+const GROUP_LINE = /^group\s+(.+?)\s+do\b/;
+const GEM_LINE = /^gem\s+["']([^"']+)["']\s*(.*)$/;
+const GROUP_OPTION = /\bgroups?:\s*(\[[^\]]*\]|:[A-Za-z_][A-Za-z0-9_]*)/;
+const SYMBOL = /[:"']([A-Za-z_][A-Za-z0-9_]*)["']?/g;
+
+/**
+ * Extrait les noms de groupes d'une liste Ruby (`:development, :test`).
+ * @param {string} text fragment déclarant les groupes
+ * @returns {string[]} noms de groupes
+ */
+function parseGroupNames(text) {
+  return [...String(text).matchAll(SYMBOL)].map((match) => match[1]);
+}
+
+/**
+ * Associe chaque gem déclarée dans un Gemfile à ses groupes Bundler.
+ *
+ * Une gem hors de tout `group` a une liste VIDE : c'est le groupe `default`,
+ * toujours installé.
+ * @param {string|null|undefined} gemfileText contenu du Gemfile
+ * @returns {Map<string, string[]>} nom de gem vers groupes déclarés
+ */
+export function parseGemfileGroups(gemfileText) {
+  /** @type {Map<string, string[]>} */
+  const groups = new Map();
+  if (typeof gemfileText !== "string") return groups;
+  /** @type {string[][]} */
+  const stack = [];
+  for (const rawLine of gemfileText.split(/\r?\n/)) {
+    const line = rawLine.split("#")[0].trim();
+    if (line === "") continue;
+    if (/^end\b/.test(line)) {
+      stack.pop();
+      continue;
+    }
+    const gem = GEM_LINE.exec(line);
+    if (gem) {
+      const inherited = stack.flat();
+      const option = GROUP_OPTION.exec(gem[2]);
+      const declared = option ? parseGroupNames(option[1]) : [];
+      const merged = [...new Set([...inherited, ...declared])];
+      // Une gem déclarée deux fois (plateformes distinctes, condition) cumule
+      // ses groupes : elle est dans le bundle de production dès qu'UNE de ses
+      // déclarations l'y met.
+      groups.set(gem[1], groups.has(gem[1]) ? union(groups.get(gem[1]), merged) : merged);
+      continue;
+    }
+    const group = GROUP_LINE.exec(line);
+    if (group) {
+      stack.push(parseGroupNames(group[1]));
+      continue;
+    }
+    if (BLOCK_OPENER.test(line) || KEYWORD_OPENER.test(line)) stack.push([]);
+  }
+  return groups;
+}
+
+/**
+ * Fusionne deux listes de groupes sans doublon.
+ *
+ * Une liste vide signifie « groupe default » : la fusionner avec une liste
+ * nommée doit garder le default, sinon une gem déclarée à la fois hors groupe
+ * et dans `:development` paraîtrait confinée au développement.
+ * @param {string[]} left première déclaration
+ * @param {string[]} right seconde déclaration
+ * @returns {string[]} groupes cumulés
+ */
+function union(left, right) {
+  const merged = new Set([...left, ...right]);
+  if (left.length === 0 || right.length === 0) merged.add("default");
+  return [...merged];
+}
+
+/**
+ * Indique si une gem fait partie du bundle installé dans la VM.
+ *
+ * Bundler n'exclut une gem que si TOUS ses groupes sont exclus : une gem
+ * déclarée `group: [:development, :production]` reste installée.
+ * @param {Map<string, string[]>} groups table issue de {@link parseGemfileGroups}
+ * @param {string} name nom de la gem
+ * @returns {boolean} vrai si la gem est installée en production
+ */
+export function isInProductionBundle(groups, name) {
+  const declared = groups.get(name);
+  if (declared === undefined) return false;
+  if (declared.length === 0) return true;
+  return !declared.every((group) => EXCLUDED_GROUPS.includes(group));
+}
+
+/**
  * Déduit les services d'arrière-plan nécessaires à partir des gems résolues.
  * @param {Map<string, string>} specs gems résolues
  * @returns {{redis: boolean, sidekiq: boolean}} services à démarrer dans la VM

@@ -282,7 +282,7 @@ deviner.
 Un fichier à la racine de l'application complète ou corrige l'auto-détection :
 
 ```yaml
-ruby: 3.3.12 # sinon .ruby-version, Gemfile, puis Gemfile.lock
+ruby: 3.3.12 # SÉRIE seulement — voir l'encadré ci-dessous
 database: sqlite3 # sinon config/database.yml, puis la gem pg du lock
 seed:
   command: "bin/rails db:seed" # exécuté au BUILD, avant la capture d'instantané
@@ -298,6 +298,69 @@ toute autre déclenche un diagnostic. Dans le bloc `assets:`, seule la clé
 `scripts` est lue : toute autre y est ignorée avec un avertissement. `database` accepte `postgresql` ou
 `sqlite3`. Les valeurs `env:` sont traitées comme des **données inertes**,
 jamais évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
+
+#### `ruby:` ne choisit PAS la version de Ruby
+
+L'interpréteur est **compilé dans l'image de base mutualisée** (ADR 0004), qui
+est immuable : le disque applicatif ne peut pas en changer. La base `3.3-r2`
+fournit **Ruby 3.3.12**, et c'est ce que votre application exécutera quoi que
+vous écriviez ici. La clé `ruby:` — comme `.ruby-version` ou la directive
+`ruby` du Gemfile — ne pilote que deux choses : la **série**, donc quelle base
+est retenue, et l'image `ruby:X.Y.Z-slim` de l'étage amd64 de précompilation
+des assets. Pour changer le Ruby du guest, il faut changer de base (entrée
+`base:` du workflow).
+
+Corollaire, et c'est le refus le plus utile de la détection : un Gemfile qui
+épingle une **égalité stricte** incompatible est refusé **avant** la
+construction, pas au milieu du `bundle install` neuf minutes plus tard.
+
+```
+- [ruby-version-incompatible] Le Gemfile exige Ruby « 3.3.10 » (source : Gemfile) ;
+  la base 3.3-r2 fournit 3.3.12.
+  Remède : Relâchez la contrainte du Gemfile (ruby "~> 3.3.10" plutôt que
+  ruby "3.3.10"), ou épinglez une base qui fournit la version exigée.
+```
+
+Seul ce qui est **réellement** incompatible est refusé : `ruby "~> 3.3.10"`,
+`ruby "~> 3.3"`, `ruby ">= 3.1", "< 3.5"` et un `.ruby-version` **seul**
+(que Bundler ne fait pas respecter) passent tous. `ruby file: ".ruby-version"`,
+lui, est bien une égalité stricte et suit la même règle que l'écriture
+littérale.
+
+#### `config.force_ssl` est neutralisé dans le guest
+
+La sandbox n'a **aucune terminaison TLS** : Puma écoute en clair et le pont
+série transporte des octets. Une application en `config.force_ssl` — le défaut
+d'un `rails new` depuis Rails 7 — répondrait 301 vers https en boucle et
+n'émettrait que des cookies `secure`. railsbox dépose donc dans votre arbre
+applicatif un initialiseur (`config/initializers/zzz_railsbox_force_ssl.rb`,
+généré, gardé par `RAILSBOX_SANDBOX`) qui remet `config.force_ssl` à faux —
+comme il le fait déjà pour l'auto-connexion. **Vous n'avez rien à modifier.**
+
+Le rapport d'analyse le mentionne en `[force-ssl-enabled]` (info, pas
+avertissement : railsbox s'en charge). Pour observer le comportement d'origine,
+désarmez la parade :
+
+```yaml
+env:
+  RAILSBOX_KEEP_FORCE_SSL: "1"
+```
+
+#### `database: sqlite3` pose une vraie `DATABASE_URL`
+
+La construction tourne en `RAILS_ENV=production`. Sans `DATABASE_URL`, une
+application dont le bloc `production:` de `config/database.yml` est
+PostgreSQL-only lirait ce fichier et ignorerait la clé `database: sqlite3`.
+railsbox pose donc `DATABASE_URL=sqlite3:storage/production.sqlite3` — au build
+comme au démarrage du guest — ce qui prime sur `database.yml` : l'override est
+réel.
+
+Reste une condition que la clé ne peut pas créer : la gem `sqlite3` doit être
+**dans le bundle de production**. Le bundle de la VM est installé avec
+`BUNDLE_WITHOUT="development:test"` ; une gem rangée dans `group :development`
+— cas très courant d'une application déployée sur PostgreSQL — n'y sera pas, et
+la détection refuse plutôt que de laisser l'application échouer sur un
+`LoadError` dans le navigateur.
 
 ### Données de démonstration et auto-connexion
 
@@ -319,7 +382,7 @@ contenir.
 | --- | --- | --- |
 | `app-path` | `.` | chemin de l'application Rails dans le dépôt appelant |
 | `name` | nom du dépôt | nom court de la sandbox (assaini dans tous les cas) |
-| `base` | `3.3-r2` | version de la base railsbox (convient à SQLite comme à PostgreSQL) |
+| `base` | `3.3-r2` | version de la base railsbox (convient à SQLite comme à PostgreSQL) — **c'est elle qui fixe le Ruby du guest** : `3.3-r2` fournit 3.3.12 |
 | `seed` | (détectée) | commande de seed, si vous voulez la forcer |
 | `publish` | `true` | publier sur `gh-pages`, ou construire seulement |
 | `target-repo` | (le dépôt appelant) | publier ailleurs — exige alors le secret `publish-key` |
@@ -377,8 +440,9 @@ journaux de boot, génère les secrets internes au bon format en un clic, offre 
 champ pour les identifiants de services tiers, puis **injecte le tout dans la VM
 et relance l'application à chaud** — sans reconstruire l'image.
 
-Sur un diagnostic bloquant (base MySQL, série de Ruby inconnue, dossier qui n'est
-pas une application Rails), la construction s'arrête et affiche un **rapport
+Sur un diagnostic bloquant (base MySQL, contrainte de Ruby incompatible avec la
+base, gem `sqlite3` absente du bundle de production, dossier qui n'est pas une
+application Rails), la construction s'arrête et affiche un **rapport
 d'incompatibilité avec un remède par point**, directement dans le résumé du
 workflow.
 

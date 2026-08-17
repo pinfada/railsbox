@@ -78,6 +78,29 @@ else
 fi
 RIB_AUTOLOGIN
 
+# Neutralisation de config.force_ssl DANS LE GUEST (force-ssl.mjs). La sandbox
+# n'a aucune terminaison TLS : Puma écoute en clair et le pont série transporte
+# des octets. Sans cet initialiseur, une application en force_ssl — le défaut
+# d'un `rails new` depuis Rails 7 — répond 301 vers https en boucle et
+# n'émettrait que des cookies « secure ».
+#
+# Déposé dans l'arbre applicatif et non dans la base : la neutralisation doit
+# s'appliquer AVANT la construction de la pile de middlewares de CETTE
+# application, ce que seul un initialiseur permet. Inerte hors sandbox (garde
+# RAILSBOX_SANDBOX), désarmé par RAILSBOX_KEEP_FORCE_SSL=1.
+ARG FORCE_SSL_INITIALIZER=""
+RUN <<'RIB_FORCE_SSL'
+set -eu
+if [ -n "${FORCE_SSL_INITIALIZER}" ]; then
+  mkdir -p config/initializers
+  printf '%s\n' "${FORCE_SSL_INITIALIZER}" > config/initializers/zzz_railsbox_force_ssl.rb
+  ruby -c config/initializers/zzz_railsbox_force_ssl.rb
+  echo "[build] force_ssl neutralisé dans le guest"
+else
+  echo "[build] force_ssl conservé (RAILSBOX_KEEP_FORCE_SSL)"
+fi
+RIB_FORCE_SSL
+
 # Assets précompilés sur l'étage amd64 (tailwindcss-ruby, dartsass-ruby et les
 # chaînes npm n'ont aucun binaire i386 — voir assets-amd64.Dockerfile). Le
 # contexte nommé « railsbox-assets » est TOUJOURS fourni par build-app-disk.sh :
@@ -125,6 +148,7 @@ ARG WITH_POSTGRES=0
 ARG PG_VERSION=15
 ARG PG_DATA_DIR=""
 ARG PG_DATABASE_URL=""
+ARG SQLITE_DATABASE_URL=""
 ARG DB_PREPARE_COMMAND="bundle exec rails db:prepare"
 ARG SEED_COMMAND=""
 ARG SEED_OPTIONAL=0
@@ -133,13 +157,21 @@ set -eu
 if [ "${WITH_REDIS}" = 1 ]; then
   redis-server --daemonize yes --port 6379 --save '' --appendonly no
 fi
+mkdir -p tmp/pids tmp/cache log storage
 if [ "${WITH_POSTGRES}" = 1 ]; then
   export PGDATA="${PG_DATA_DIR}"
   export RIB_PG_VERSION="${PG_VERSION}"
   export DATABASE_URL="${PG_DATABASE_URL}"
   sh /opt/rib/postgres.sh start
+elif [ -n "${SQLITE_DATABASE_URL}" ]; then
+  # Ce build tourne en RAILS_ENV=production : sans DATABASE_URL, l'application
+  # lit le bloc `production:` de son propre config/database.yml — souvent
+  # PostgreSQL-only sur une application déployée, que la clé `database:
+  # sqlite3` de railsbox.yml ne ramenait alors à rien. DATABASE_URL prime sur
+  # database.yml : l'override devient réel, ici comme au démarrage du guest
+  # (même valeur écrite dans app-env.sh plus bas).
+  export DATABASE_URL="${SQLITE_DATABASE_URL}"
 fi
-mkdir -p tmp/pids tmp/cache log storage
 sh -c "${DB_PREPARE_COMMAND}"
 if [ -n "${SEED_COMMAND}" ]; then
   if [ "${SEED_OPTIONAL}" = 1 ]; then
@@ -190,6 +222,11 @@ mkdir -p /app/.railsbox
   if [ "${WITH_POSTGRES}" = 1 ]; then
     echo "export PGDATA=${PG_DATA_DIR}"
     echo "export DATABASE_URL='${PG_DATABASE_URL}'"
+  elif [ -n "${SQLITE_DATABASE_URL}" ]; then
+    # Symétrique de PostgreSQL : sans DATABASE_URL, une application dont le
+    # bloc `production:` pointe ailleurs ignorerait le fichier sqlite3 que la
+    # construction vient pourtant de créer et de peupler.
+    echo "export DATABASE_URL='${SQLITE_DATABASE_URL}'"
   fi
   # En DERNIER : le bloc `env:` du railsbox.yml a le dernier mot, y compris sur
   # DATABASE_URL — une application peut ainsi imposer sa propre chaîne.

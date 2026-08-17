@@ -3,6 +3,8 @@
 // main — le projet s'interdit toute dépendance runtime, et le schéma est assez
 // petit pour que l'analyseur reste plus court qu'une bibliothèque.
 import { SEVERITY, createFinding } from "./findings.mjs";
+import { sqliteDriverFindings } from "./sqlite.mjs";
+import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "./ssl.mjs";
 import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./yaml-subset.mjs";
 
 /** @typedef {import("./findings.mjs").Finding} Finding */
@@ -12,10 +14,16 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * Manifeste de build. Toutes les clés sont optionnelles : le manifeste déclaré
  * ne renseigne qu'une partie de ce que la détection produit.
  * @typedef {object} Manifest
- * @property {string|null} [ruby] version de Ruby retenue
+ * @property {string|null} [ruby] version de Ruby retenue (série, étage amd64)
  * @property {string|null} [rubySource] fichier ayant fourni la version
+ * @property {string|null} [base] version de l'image de base visée
+ * @property {string|null} [baseRuby] Ruby réellement fourni par cette base
+ * @property {{requirements: readonly string[], source: string}|null} [rubyRequirement] contrainte du Gemfile
+ * @property {{forceSsl: string|null, forceSslEnv: string|null, assumeSsl: string|null, enforced: boolean}} [ssl] réglages SSL de production
  * @property {string|null} [rails] version de Rails résolue
  * @property {string|null} [database] adaptateur de base de données
+ * @property {readonly string[]} [databaseAdapters] adaptateurs vus dans config/database.yml
+ * @property {import("./sqlite.mjs").SqliteDriverState} [sqliteDriver] disponibilité du pilote sqlite3
  * @property {string|null} [bundler] version de Bundler ayant produit le lock
  * @property {{npm?: boolean, scripts?: readonly string[], tools?: readonly string[], stage?: string, binaryGems?: readonly string[], install?: string}} [assets] pipeline d'assets et étage de précompilation
  * @property {readonly NativeGem[]} [nativeGems] gems à extension native
@@ -315,7 +323,10 @@ export function mergeManifest(detected, declared) {
     merged[key] = declared[key];
   }
   // La provenance doit suivre la valeur, sinon le rapport ment sur sa source.
-  if (declared.ruby !== undefined) merged.rubySource = "railsbox.yml";
+  if (declared.ruby !== undefined) {
+    merged.rubySource = "railsbox.yml";
+    findings.push(...describeRubyKey(detected, declared.ruby));
+  }
   for (const block of ["seed", "env"]) {
     if (!isObject(declared[block])) continue;
     const base = isObject(detected[block]) ? detected[block] : {};
@@ -323,6 +334,35 @@ export function mergeManifest(detected, declared) {
       recordOverride(findings, `${block}.${key}`, base[key], value);
     }
     merged[block] = { ...base, ...declared[block] };
+  }
+  // `database:` change la base retenue : la disponibilité du pilote doit être
+  // rejugée avec la NOUVELLE valeur. Sans cela, « database: sqlite3 » sur une
+  // application dont la gem sqlite3 vit dans `group :development` passait
+  // l'analyse et échouait dans la VM sur un LoadError.
+  if (declared.database !== undefined && declared.database !== detected.database) {
+    findings.push(
+      ...sqliteDriverFindings({
+        state: detected.sqliteDriver,
+        database: merged.database,
+        adapters: detected.databaseAdapters ?? [],
+      }),
+    );
+  }
+  // La parade de railsbox est désarmée par une variable du bloc `env:`. Le
+  // dire ici, et pas seulement dans la documentation : une application en
+  // force_ssl dont la neutralisation est désarmée répond 301 en boucle, panne
+  // parfaitement opaque depuis un navigateur.
+  if (detected.ssl?.enforced && merged.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE) {
+    findings.push(
+      createFinding(
+        SEVERITY.WARNING,
+        "force-ssl-kept",
+        `${KEEP_FORCE_SSL_VARIABLE}=${KEEP_FORCE_SSL_VALUE} désarme la neutralisation de ` +
+          "config.force_ssl : l'application redirigera en 301 vers https, que le pont série " +
+          "ne sert pas.",
+        { variable: KEEP_FORCE_SSL_VARIABLE },
+      ),
+    );
   }
   if (isObject(declared.assets) && Array.isArray(declared.assets.scripts)) {
     const base = isObject(detected.assets) ? detected.assets : {};
@@ -332,6 +372,48 @@ export function mergeManifest(detected, declared) {
     merged.assets = { ...base, scripts: [...declared.assets.scripts] };
   }
   return { manifest: deepFreeze(merged), findings: Object.freeze(findings) };
+}
+
+/**
+ * Explique ce que la clé `ruby:` de railsbox.yml pilote réellement.
+ *
+ * Elle laisse croire qu'on choisit la version de Ruby : c'est faux. Le Ruby du
+ * guest est compilé dans l'image de base mutualisée et immuable (ADR 0004).
+ * La clé ne désigne que la SÉRIE — donc quelle base sera prise — et l'image
+ * `ruby:X.Y.Z-slim` de l'étage amd64 de précompilation des assets. Un
+ * mainteneur qui y écrit `3.3.10` en croyant contraindre le guest doit le lire
+ * ici plutôt que le découvrir dans un `bundle install` en échec.
+ * @param {Manifest} detected manifeste détecté (porte la base et son Ruby)
+ * @param {string} declared valeur déclarée dans railsbox.yml
+ * @returns {Finding[]} diagnostics
+ */
+function describeRubyKey(detected, declared) {
+  const baseRuby = detected.baseRuby ?? null;
+  const base = detected.base ?? null;
+  if (!baseRuby || !base) return [];
+  const declaredSeries = String(declared).split(".").slice(0, 2).join(".");
+  const baseSeries = baseRuby.split(".").slice(0, 2).join(".");
+  if (declaredSeries !== baseSeries) {
+    return [
+      createFinding(
+        SEVERITY.WARNING,
+        "ruby-key-series-mismatch",
+        `railsbox.yml demande Ruby ${declared} (série ${declaredSeries}) alors que la base ` +
+          `${base} fournit ${baseRuby} : la clé ruby: ne change pas l'interpréteur du guest.`,
+        { declared, provided: baseRuby, base },
+      ),
+    ];
+  }
+  if (declared === baseRuby) return [];
+  return [
+    createFinding(
+      SEVERITY.INFO,
+      "ruby-key-series-only",
+      `railsbox.yml demande Ruby ${declared} : la clé ne choisit que la SÉRIE (${baseSeries}) ` +
+        `et l'image de l'étage amd64 ; le guest exécutera ${baseRuby}, celui de la base ${base}.`,
+      { declared, provided: baseRuby, base },
+    ),
+  ];
 }
 
 /**

@@ -66,8 +66,17 @@ export const REMEDES = Object.freeze({
     "Lancez `bundle lock --add-platform x86-linux` dans l'application et versionnez le " +
     "Gemfile.lock : le guest est un i386, une gem livrée seulement en binaire x86_64 doit " +
     "être épinglée sur une version compilable.",
+  // Ce cas est normalement REFUSÉ EN AMONT depuis que la détection confronte la
+  // directive `ruby` du Gemfile au Ruby de la base (diagnostic
+  // ruby-version-incompatible). Le motif reste, comme filet, pour les
+  // contraintes qu'aucune analyse statique ne voit — une directive calculée,
+  // ou une gem qui impose sa propre exigence de Ruby.
+  //
+  // Le remède ne dit plus « alignez .ruby-version » : ce fichier seul n'engage
+  // pas Bundler, et la clé ruby: de railsbox.yml ne choisit que la série.
   "bundle-version-ruby":
-    "Alignez .ruby-version (ou la clé ruby: de railsbox.yml) sur une série de base publiée : " +
+    'Relâchez la directive `ruby` de votre Gemfile (ruby "~> 3.3.10" plutôt qu\'une égalité ' +
+    "stricte), ou épinglez une base qui fournit la version exigée (entrée base: du workflow) : " +
     "la base fournit un Ruby figé que le disque applicatif ne peut pas remplacer.",
   "bundle-reseau":
     "Relancez la construction : l'incident est presque toujours transitoire. S'il persiste, " +

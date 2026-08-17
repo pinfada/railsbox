@@ -273,7 +273,7 @@ guess.
 A file at the root of the application completes or corrects auto-detection:
 
 ```yaml
-ruby: 3.3.12 # otherwise .ruby-version, Gemfile, then Gemfile.lock
+ruby: 3.3.12 # SERIES only — see the box below
 database: sqlite3 # otherwise config/database.yml, then the pg gem in the lock
 seed:
   command: "bin/rails db:seed" # runs at BUILD time, before the snapshot
@@ -290,6 +290,64 @@ is ignored with a warning), and
 anything else raises a diagnostic. `database` accepts `postgresql` or `sqlite3`.
 `env:` values are treated as **inert data**, never evaluated at build time (see
 [`SECURITY.md`](SECURITY.md)).
+
+#### `ruby:` does NOT pick the Ruby version
+
+The interpreter is **compiled into the shared base image** (ADR 0004), which is
+immutable: the application disk cannot change it. Base `3.3-r2` ships **Ruby
+3.3.12**, and that is what your application will run whatever you write here.
+The `ruby:` key — like `.ruby-version` or the Gemfile's `ruby` directive — only
+drives two things: the **series**, hence which base is selected, and the
+`ruby:X.Y.Z-slim` image of the amd64 asset precompilation stage. To change the
+guest's Ruby you must change base (the workflow's `base:` input).
+
+The corollary is detection's most useful refusal: a Gemfile pinning an
+incompatible **strict equality** is rejected **before** the build, not halfway
+through `bundle install` nine minutes later.
+
+```
+- [ruby-version-incompatible] Le Gemfile exige Ruby « 3.3.10 » (source : Gemfile) ;
+  la base 3.3-r2 fournit 3.3.12.
+```
+
+Only what is **actually** incompatible is refused: `ruby "~> 3.3.10"`,
+`ruby "~> 3.3"`, `ruby ">= 3.1", "< 3.5"` and a `.ruby-version` file **on its
+own** (which Bundler does not enforce) all pass. `ruby file: ".ruby-version"`,
+however, is a strict equality and follows the same rule as the literal form.
+
+#### `config.force_ssl` is neutralised inside the guest
+
+The sandbox has **no TLS termination**: Puma listens in the clear and the serial
+bridge carries bytes. An application with `config.force_ssl` — the default of a
+`rails new` since Rails 7 — would answer 301 to https in a loop and only emit
+`secure` cookies. railsbox therefore drops an initializer into your application
+tree (`config/initializers/zzz_railsbox_force_ssl.rb`, generated, guarded by
+`RAILSBOX_SANDBOX`) that resets `config.force_ssl` to false — exactly as it
+already does for auto-login. **You have nothing to change.**
+
+The analysis report mentions it as `[force-ssl-enabled]` (info, not a warning:
+railsbox handles it). To observe the original behaviour, disarm the workaround:
+
+```yaml
+env:
+  RAILSBOX_KEEP_FORCE_SSL: "1"
+```
+
+#### `database: sqlite3` sets a real `DATABASE_URL`
+
+The build runs with `RAILS_ENV=production`. Without `DATABASE_URL`, an
+application whose `production:` block in `config/database.yml` is
+PostgreSQL-only would read that file and ignore the `database: sqlite3` key.
+railsbox therefore sets `DATABASE_URL=sqlite3:storage/production.sqlite3` — at
+build time and at guest startup — which takes precedence over `database.yml`:
+the override is real.
+
+One condition the key cannot create remains: the `sqlite3` gem must be **in the
+production bundle**. The VM's bundle is installed with
+`BUNDLE_WITHOUT="development:test"`; a gem confined to `group :development` —
+very common on an application deployed against PostgreSQL — will not be there,
+and detection refuses rather than letting the application fail with a
+`LoadError` in the browser.
 
 ### Demo data and auto-login
 
@@ -310,7 +368,7 @@ their session, which no snapshot can contain.
 | --- | --- | --- |
 | `app-path` | `.` | path to the Rails application inside the calling repository |
 | `name` | repository name | short sandbox name (sanitised in all cases) |
-| `base` | `3.3-r2` | railsbox base version (suits SQLite and PostgreSQL alike) |
+| `base` | `3.3-r2` | railsbox base version (suits SQLite and PostgreSQL alike) — **this is what fixes the guest's Ruby**: `3.3-r2` ships 3.3.12 |
 | `seed` | (detected) | seed command, if you want to force one |
 | `publish` | `true` | publish to `gh-pages`, or build only |
 | `target-repo` | (the calling repository) | publish elsewhere — then requires the `publish-key` secret |
@@ -367,7 +425,8 @@ boot logs, generates internal secrets in the right format in one click, offers a
 field for third-party service credentials, then **injects everything into the VM
 and hot-restarts the application** — without rebuilding the image.
 
-On a blocking diagnostic (MySQL database, unknown Ruby series, a directory that
+On a blocking diagnostic (MySQL database, a Ruby constraint incompatible with
+the base, the `sqlite3` gem missing from the production bundle, a directory that
 is not a Rails application), the build stops and prints an **incompatibility
 report with a remedy per item**, right in the workflow summary.
 

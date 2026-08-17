@@ -15,7 +15,9 @@ import { detectApp, readOptionalFile } from "../detect/detect.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
 import { parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
+import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "../detect/ssl.mjs";
 import { buildAutoLoginInitializer } from "./auto-login.mjs";
+import { buildForceSslInitializer } from "./force-ssl.mjs";
 import { formatReport, hasBlocking } from "../detect/report.mjs";
 
 /** @typedef {import("../detect/manifest.mjs").Manifest} Manifest */
@@ -51,6 +53,28 @@ export const DEFAULT_PG_VERSION = "15";
  * jamais dans l'init de la base — dont l'instantané fige les processus.
  */
 export const PG_DATA_DIR = "/app/var/pg";
+
+/**
+ * Emplacement du fichier sqlite3 servi dans la VM, RELATIF à la racine de
+ * l'application.
+ *
+ * Relatif et non absolu : l'arbre est sous /app aussi bien à la construction
+ * (WORKDIR de app.Dockerfile) qu'à l'exécution (start-app.sh monte hdb sur
+ * /app puis `cd /app`), mais un chemin relatif reste correct même si cette
+ * convention change. Rails le résout à partir de Rails.root.
+ */
+export const SQLITE_DATABASE_PATH = "storage/production.sqlite3";
+
+/**
+ * URL de connexion posée quand la base retenue est sqlite3.
+ *
+ * Sans elle, la clé `database: sqlite3` était un vœu pieux : le build tourne
+ * en RAILS_ENV=production et l'application lisait le bloc `production:` de son
+ * propre config/database.yml — souvent PostgreSQL-only sur une application
+ * déployée. DATABASE_URL, elle, a la priorité sur database.yml : l'override
+ * devient réel.
+ */
+export const SQLITE_DATABASE_URL = `sqlite3:${SQLITE_DATABASE_PATH}`;
 
 /** Port du cluster dans la VM : loopback interne, jamais exposé au navigateur. */
 export const PG_PORT = "5432";
@@ -226,10 +250,21 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
   const seedCommand = manifest.seed?.command ?? (hasSeeds ? DEFAULT_SEED : "");
   const withPostgres = manifest.database === "postgresql";
   const postgres = postgresSettings(appName);
+  // Le mainteneur peut vouloir observer le comportement d'origine : la
+  // neutralisation de force_ssl se désarme par une variable du bloc `env:`.
+  const keepForceSsl = manifest.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE;
   return {
     APP_NAME: appName,
     RUBY_VERSION: ruby.version,
+    // Ruby réellement fourni par la base : ne sert à AUCUN étage de
+    // construction, seulement au journal — c'est la valeur que le rapport
+    // oppose à la contrainte du Gemfile, et la voir dans le plan évite de
+    // croire que RUBY_VERSION la pilote.
+    BASE_RUBY_VERSION: manifest.baseRuby ?? "",
     DATABASE: manifest.database ?? "sqlite3",
+    // Override réel de config/database.yml pour une sandbox sqlite3. Vide dès
+    // que PostgreSQL est retenu : PG_DATABASE_URL prend alors le relais.
+    SQLITE_DATABASE_URL: withPostgres ? "" : SQLITE_DATABASE_URL,
     WITH_POSTGRES: withPostgres ? "1" : "0",
     // Version majeure de PostgreSQL fournie par la base Debian bookworm i386.
     // Centralisée ici pour que build.sh et le Dockerfile ne divergent pas.
@@ -266,6 +301,11 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
       autoLogin: manifest.seed?.autoLogin ?? null,
       autoLoginCode: manifest.seed?.autoLoginCode ?? null,
     }),
+    // Neutralisation de config.force_ssl dans le guest. Émise sans condition
+    // sur ce que la détection a lu : le réglage peut venir de application.rb,
+    // d'un concern ou d'une gem, et le critère du projet est qu'une
+    // application NON MODIFIÉE fonctionne.
+    FORCE_SSL_INITIALIZER: buildForceSslInitializer({ enabled: !keepForceSsl }),
   };
 }
 
@@ -293,10 +333,11 @@ function shellQuote(value) {
  * Analyse une application et en déduit manifeste, diagnostics et arguments.
  * @param {string} appDir racine de l'application Rails
  * @param {string} [appName] nom court de l'image (défaut : nom du dossier)
+ * @param {{base?: string}} [options] base visée (fixe le Ruby du guest)
  * @returns {Promise<{manifest: Manifest, findings: readonly any[], args: Record<string, string>, report: string}>} analyse complète
  */
-export async function analyzeApp(appDir, appName) {
-  const detected = await detectApp(appDir);
+export async function analyzeApp(appDir, appName, options = {}) {
+  const detected = await detectApp(appDir, { base: options.base });
   const findings = [...detected.findings];
   let manifest = detected.manifest;
 
@@ -361,16 +402,21 @@ export function defaultAppName(appDir) {
 async function main() {
   const args = process.argv.slice(2);
   const wantsJson = args.includes("--json");
-  const positional = args.filter((value) => !value.startsWith("--"));
+  const baseIndex = args.indexOf("--base");
+  const base = baseIndex === -1 ? undefined : args[baseIndex + 1];
+  const positional = args.filter(
+    (value, index) => !value.startsWith("--") && (baseIndex === -1 || index !== baseIndex + 1),
+  );
   const appDir = positional[0];
   const appName = positional[1];
   if (!appDir) {
     process.stderr.write(
-      "Usage : node tools/build-v86-image/manifest-to-args.mjs <dossier-application> [nom] [--json]\n",
+      "Usage : node tools/build-v86-image/manifest-to-args.mjs <dossier-application> " +
+        "[nom] [--base <version>] [--json]\n",
     );
     return EXIT_USAGE;
   }
-  const analysis = await analyzeApp(appDir, appName);
+  const analysis = await analyzeApp(appDir, appName, { base });
   process.stderr.write(`${analysis.report}\n`);
   if (hasBlocking(analysis.findings)) return EXIT_BLOCKING;
   process.stdout.write(
