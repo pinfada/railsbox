@@ -23,7 +23,7 @@
 // lire le localStorage de l'inspecteur (déjà documenté dans SECURITY.md). Le
 // gain est réel mais borné, et il tient à deux gardes qui vivent ailleurs :
 // le filtre du document coquille sur les messages du worker (proxy-logic.js,
-// `isShellClient`) et le refus des requêtes inter-origine (`crossOriginRefusal`).
+// `isShellClient`) et le refus des requêtes inter-origine (`appRequestRefusal`).
 //
 // PÉRIMÈTRE VOLONTAIREMENT RÉDUIT (ADR 0004 : un visiteur = sa VM = ses
 // cookies, aucun partage possible par construction) :
@@ -34,7 +34,7 @@
 //  - `Secure` et `SameSite` sont conservés, pas appliqués : le « transport »
 //    est un MessagePort interne à l'onglet, pas un réseau. `SameSite` n'a plus
 //    d'objet depuis que le Service Worker REFUSE toute requête `/app/*` dont
-//    l'initiateur est inter-site (`crossOriginRefusal`) : ce refus est
+//    l'initiateur est inter-site (`appRequestRefusal`) : ce refus est
 //    strictement plus fort que `SameSite=Lax`, qui laisserait encore passer
 //    une navigation GET inter-site avec ses cookies ;
 //  - `Path`, `Expires`, `Max-Age` et `HttpOnly`, eux, sont pleinement

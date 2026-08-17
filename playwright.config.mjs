@@ -5,11 +5,17 @@
 //
 // Port 8091 plutôt que 8080 : un serveur de dev ouvert par le développeur ne
 // doit ni être confondu avec celui des tests, ni entrer en conflit avec lui.
+//
+// `reuseExistingServer` réutilise un serveur déjà à l'écoute sur ce port. C'est
+// un piège dès qu'on travaille sur DEUX copies du dépôt (arbres de travail
+// git) : la seconde suite se branche sur le serveur de la première et teste le
+// `sw-proxy.js` DE L'AUTRE COPIE, en silence. `RAILSBOX_PORT` donne à chaque
+// copie son port privé — le défaut, lui, ne change pas.
 import { defineConfig } from "@playwright/test";
 
 import { projetsMoteurs } from "./tests/moteurs.mjs";
 
-const PORT = 8091;
+const PORT = Number(process.env.RAILSBOX_PORT ?? 8091);
 
 export default defineConfig({
   testDir: "tests/e2e",

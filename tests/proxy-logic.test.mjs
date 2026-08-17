@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   APP_PREFIX,
   appPrefix,
-  crossOriginRefusal,
+  appRequestRefusal,
   normalizeBasePath,
   errorPage,
   escapeHtml,
@@ -112,46 +112,172 @@ test("prepareProxyHeaders tolère l'absence d'en-têtes", () => {
   assert.equal(headers.get("location"), null);
 });
 
-// --- Frontière d'origine (HIGH-1) -----------------------------------------
+// --- Frontière de la sandbox (HIGH-1) --------------------------------------
 //
 // Le Service Worker N'INTERCEPTE PAS que ses propres clients : une navigation
 // est routée sur l'URL de la requête, pas sur son initiateur. Un POST forgé
 // depuis un site tiers traverse donc le proxy, qui y attacherait la session du
 // bocal — et le seul jeton d'authenticité ne couvre pas les routes en
-// skip_forgery_protection. Ces cas figent la règle de refus.
+// skip_forgery_protection.
+//
+// Les cas ci-dessous rejouent les SIGNAUX MESURÉS moteur par moteur sur une
+// navigation interceptée (relevé complet dans proxy-logic.js) :
+//  - Chromium pose `Origin` sur les navigations non-GET, rien d'autre ;
+//  - Firefox et WebKit ne posent AUCUN en-tête d'origine — d'où le recours à
+//    `destination` et `referrer`, renseignés sur les trois moteurs ;
+//  - `Sec-Fetch-Site` n'est visible d'un worker sur aucun moteur (il est ajouté
+//    après l'interception) : il n'est gardé qu'en défense supplémentaire.
 
-test("crossOriginRefusal refuse un POST forgé depuis un site tiers", () => {
-  const refus = crossOriginRefusal(
-    { origin: "https://evil.example", secFetchSite: "cross-site" },
+test("appRequestRefusal refuse un POST forgé depuis un site tiers (Chromium)", () => {
+  const refus = appRequestRefusal(
+    {
+      method: "POST",
+      mode: "navigate",
+      destination: "document",
+      origin: "https://evil.example",
+      referrer: "https://evil.example/",
+    },
     ORIGINE,
   );
   assert.ok(refus, "un Origin étranger doit être refusé");
   assert.match(refus, /evil\.example/);
 });
 
-test("crossOriginRefusal refuse une navigation inter-site SANS Origin", () => {
-  // Une navigation GET n'a pas forcément d'Origin : Sec-Fetch-Site est alors
-  // le seul signal, et c'est justement le cas d'un lien forgé.
-  assert.ok(crossOriginRefusal({ origin: null, secFetchSite: "cross-site" }, ORIGINE));
-  // « same-site » = même domaine enregistrable, autre origine : sur github.io,
-  // le Pages du voisin. Ce n'est pas nous.
-  assert.ok(crossOriginRefusal({ origin: null, secFetchSite: "same-site" }, ORIGINE));
+test("appRequestRefusal refuse le POST forgé SANS le moindre en-tête (Firefox, WebKit)", () => {
+  // Le défaut mesuré : sur ces moteurs, la navigation forgée ne porte ni
+  // Origin, ni Sec-Fetch-Site, ni Referer. Seule sa FORME la trahit — une
+  // navigation de premier niveau, ce que l'application n'est jamais.
+  const refus = appRequestRefusal(
+    {
+      method: "POST",
+      mode: "navigate",
+      destination: "document",
+      origin: null,
+      referrer: "http://127.0.0.1:8091/",
+      secFetchSite: null,
+    },
+    ORIGINE,
+  );
+  assert.ok(refus, "le référent étranger suffit déjà");
+
+  const sansReferent = appRequestRefusal(
+    { method: "POST", mode: "navigate", destination: "document", origin: null, referrer: "" },
+    ORIGINE,
+  );
+  assert.ok(sansReferent, "et sans référent non plus, rien ne doit passer");
+  assert.match(sansReferent, /premier niveau/);
 });
 
-test("crossOriginRefusal laisse passer ce que la sandbox produit elle-même", () => {
+test("appRequestRefusal refuse toute navigation de premier niveau, même la nôtre", () => {
+  // Le visiteur qui saisit /app/… à la main tombe de toute façon sur une VM
+  // qui n'a pas booté : rien de légitime n'est perdu, et la règle reste un
+  // prédicat sur la forme, sans exception à contourner.
+  assert.ok(
+    appRequestRefusal(
+      {
+        method: "GET",
+        mode: "navigate",
+        destination: "document",
+        origin: null,
+        referrer: `${ORIGINE}/railsbox-demo/`,
+      },
+      ORIGINE,
+    ),
+  );
+});
+
+test("appRequestRefusal refuse une navigation inter-site annoncée par Sec-Fetch-Site", () => {
+  // Défense supplémentaire : aucun moteur ne l'expose aujourd'hui à un worker,
+  // mais rien n'interdit qu'un moteur le fasse un jour.
+  assert.ok(appRequestRefusal({ origin: null, secFetchSite: "cross-site" }, ORIGINE));
+  // « same-site » = même domaine enregistrable, autre origine : sur github.io,
+  // le Pages du voisin. Ce n'est pas nous.
+  assert.ok(appRequestRefusal({ origin: null, secFetchSite: "same-site" }, ORIGINE));
+});
+
+test("appRequestRefusal refuse notre /app/ mis dans l'iframe d'un attaquant", () => {
+  // frame-ancestors 'self' empêche seulement de RENDRE la réponse : la requête,
+  // elle, a déjà traversé le pont et écrit dans la VM.
+  const avecReferent = appRequestRefusal(
+    {
+      method: "GET",
+      mode: "navigate",
+      destination: "iframe",
+      origin: null,
+      referrer: "https://evil.example/piege",
+    },
+    ORIGINE,
+  );
+  assert.ok(avecReferent, "le référent étranger trahit l'attaquant");
+
+  // Attaquant qui supprime son référent (meta name=referrer) : mesuré, il ne
+  // reste alors AUCUN signal sur Firefox. Une écriture doit donc prouver son
+  // origine au lieu de bénéficier du doute.
+  const sansAucunSignal = appRequestRefusal(
+    { method: "POST", mode: "navigate", destination: "iframe", origin: null, referrer: "" },
+    ORIGINE,
+  );
+  assert.ok(sansAucunSignal, "une écriture non attribuable doit être refusée");
+  assert.match(sansAucunSignal, /attribuable/);
+
+  // Sur Chromium, la même attaque porte une origine opaque : elle n'est pas la
+  // nôtre, donc elle tombe une ligne plus tôt.
+  assert.ok(
+    appRequestRefusal(
+      { method: "POST", mode: "navigate", destination: "iframe", origin: "null", referrer: "" },
+      ORIGINE,
+    ),
+  );
+});
+
+test("appRequestRefusal laisse passer ce que la sandbox produit elle-même", () => {
   const legitimes = [
-    // POST de l'iframe applicative : Origin présent, et c'est le nôtre.
-    { origin: ORIGINE, secFetchSite: "same-origin" },
-    // Navigation same-origin en GET : aucun Origin, seul Sec-Fetch-Site parle.
-    { origin: null, secFetchSite: "same-origin" },
-    // Saisie directe ou marque-page du visiteur.
-    { origin: null, secFetchSite: "none" },
-    // Navigateur qui ne pose pas Fetch Metadata : rien ne prouve un abus.
-    { origin: null, secFetchSite: null },
+    // Navigation de l'iframe créée par la coquille (GET) : Firefox/WebKit ne
+    // donnent que le référent, Chromium non plus n'a pas d'Origin sur un GET.
+    {
+      method: "GET",
+      mode: "navigate",
+      destination: "iframe",
+      origin: null,
+      referrer: `${ORIGINE}/railsbox-demo/`,
+    },
+    // Soumission du formulaire « New post » DANS l'iframe : Chromium.
+    {
+      method: "POST",
+      mode: "navigate",
+      destination: "iframe",
+      origin: ORIGINE,
+      referrer: `${ORIGINE}/railsbox-demo/app/posts/new`,
+      secFetchSite: "same-origin",
+    },
+    // La même, sur Firefox et WebKit : le référent seul l'atteste.
+    {
+      method: "POST",
+      mode: "navigate",
+      destination: "iframe",
+      origin: null,
+      referrer: `${ORIGINE}/railsbox-demo/app/posts/new`,
+    },
+    // fetch() de la coquille (la recette live crée un billet ainsi) : ce n'est
+    // pas une navigation, donc hors de la règle de forme.
+    {
+      method: "POST",
+      mode: "cors",
+      destination: "",
+      origin: null,
+      referrer: `${ORIGINE}/railsbox-demo/`,
+    },
+    // fetch() de l'application, référent supprimé par l'application : une
+    // sous-ressource n'est interceptée que pour un client contrôlé, donc
+    // same-origin par construction — rien à prouver.
+    { method: "POST", mode: "same-origin", destination: "", origin: null, referrer: "" },
+    // Requête dont le référent n'est pas résolu (« about:client ») : ce n'est
+    // pas une origine étrangère, c'est une absence.
+    { method: "GET", mode: "cors", destination: "", origin: null, referrer: "about:client" },
   ];
   for (const signaux of legitimes) {
     assert.equal(
-      crossOriginRefusal(signaux, ORIGINE),
+      appRequestRefusal(signaux, ORIGINE),
       null,
       `aurait dû passer: ${JSON.stringify(signaux)}`,
     );

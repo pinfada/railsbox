@@ -24,7 +24,7 @@
 import { sanitizeCookieHeader, sanitizeMethod } from "./shared/request-codec.js";
 import {
   appPrefix,
-  crossOriginRefusal,
+  appRequestRefusal,
   errorPage,
   isShellClient,
   prepareProxyHeaders,
@@ -513,13 +513,22 @@ async function withIsolationHeaders(request) {
  * @param {URL} url
  */
 async function proxyToVm(request, url) {
-  // Frontière d'origine, AVANT tout le reste : une navigation initiée par un
-  // site tiers arrive bel et bien ici (voir crossOriginRefusal), et le bocal y
-  // attacherait la session de l'application. Le worker est le seul étage qui
+  // Frontière de la sandbox, AVANT tout le reste : une navigation initiée par
+  // un site tiers arrive bel et bien ici (voir appRequestRefusal), et le bocal
+  // y attacherait la session de l'application. Le worker est le seul étage qui
   // connaisse l'origine publique — donc le seul qui puisse trancher.
-  const refus = crossOriginRefusal(
+  //
+  // On lui passe la FORME de la requête et pas seulement ses en-têtes : sur
+  // Firefox et WebKit, une navigation interceptée n'en porte aucun qui parle
+  // d'origine (mesuré), alors que `mode`, `destination` et `referrer` sont
+  // renseignés sur les trois moteurs.
+  const refus = appRequestRefusal(
     {
+      method: request.method,
+      mode: request.mode,
+      destination: request.destination,
       origin: request.headers.get("origin"),
+      referrer: request.referrer,
       secFetchSite: request.headers.get("sec-fetch-site"),
     },
     sw.location.origin,

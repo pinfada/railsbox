@@ -87,7 +87,7 @@ export function rootStaticPath(pathname, basePath = "/") {
   return ROOT_STATIC_FILES.has(bare) ? `${base}${ROOT_STATIC_ROOT}${bare}` : null;
 }
 
-// --- Frontière d'origine du proxy -----------------------------------------
+// --- Frontière de la sandbox ----------------------------------------------
 //
 // UN SERVICE WORKER N'INTERCEPTE PAS QUE SES PROPRES CLIENTS. On l'a cru, et
 // c'est faux : l'algorithme *Handle Fetch* route une requête de NAVIGATION
@@ -99,38 +99,126 @@ export function rootStaticPath(pathname, basePath = "/") {
 // couvre pas les routes en `skip_forgery_protection` / `null_session`,
 // fréquentes sur les contrôleurs API des applications non modifiées visées.
 //
-// La parade est ici et nulle part ailleurs : le guest ne connaît pas l'origine
-// publique (c'est pourquoi `request-codec.js` retire `Origin`), mais le worker,
-// lui, la connaît. On CONTRÔLE donc au lieu de RETIRER.
+// LES EN-TÊTES NE SUFFISENT PAS — C'EST MESURÉ, pas supposé. Un relevé complet
+// de la `Request` d'une navigation interceptée, sur les trois moteurs, donne :
 //
-// Deux signaux, complémentaires parce qu'aucun n'est présent partout :
-//  - `Origin` : posé sur toute requête non-GET/HEAD, donc sur le POST forgé —
-//    mais absent d'une navigation GET, y compris same-origin ;
-//  - `Sec-Fetch-Site` : posé sur les navigations comme sur les sous-ressources,
-//    y compris quand `Origin` manque. `none` = saisie/marque-page du visiteur,
-//    `same-origin` = notre coquille ou notre iframe : les deux sont légitimes.
+//   signal                | Chromium              | Firefox | WebKit
+//   ----------------------|-----------------------|---------|--------
+//   en-tête Origin        | navigations non-GET   | jamais  | jamais
+//   en-tête Sec-Fetch-*   | jamais                | jamais  | jamais
+//   request.mode          | oui                   | oui     | oui
+//   request.destination   | oui                   | oui     | oui
+//   request.referrer      | oui                   | oui     | oui
+//   event.clientId        | vide sur navigation   | vide    | vide
+//
+// `Sec-Fetch-Site` est ajouté APRÈS l'interception (couche réseau) : un worker
+// ne le voit sur aucun moteur. Une défense qui ne repose que sur `Origin` et
+// `Sec-Fetch-Site` est donc aveugle sur Firefox et WebKit — elle l'était.
+//
+// La règle s'appuie sur ce qui EXISTE partout, la forme de la requête :
+//
+//  1. tout signal d'origine qui contredit la nôtre (`Origin` étranger — y
+//     compris l'opaque « null » —, `Sec-Fetch-Site` inter-site, référent
+//     étranger) refuse la requête ;
+//  2. `destination === "document"` refuse : l'application n'est JAMAIS une
+//     navigation de premier niveau, elle ne vit que dans l'iframe que la
+//     coquille crée. Un formulaire forgé par un tiers, lui, en est toujours
+//     une. C'est le seul signal qui ferme l'attaque classique sur les trois
+//     moteurs ;
+//  3. une navigation d'iframe qui ÉCRIT (méthode autre que GET/HEAD) doit être
+//     attribuable à nous : `Origin` ou référent same-origin. Sans cela, un
+//     attaquant qui met notre `/app/` dans SON iframe (ce que `frame-ancestors`
+//     empêche seulement de RENDRE — la requête, elle, a déjà écrit) et qui
+//     supprime son référent ne laisserait aucun signal sur Firefox.
+//
+// Ce qui n'est PAS une navigation est hors de cette règle, et c'est un théorème,
+// pas une tolérance : une sous-ressource n'est interceptée QUE si son client est
+// contrôlé, donc same-origin. Mesuré : un `fetch()` inter-origine vers `/app/*`
+// n'atteint le worker sur aucun des trois moteurs.
 //
 // Refuser jusqu'aux navigations GET inter-site est STRICTEMENT PLUS FORT que
 // `SameSite=Lax` (qui les laisserait passer avec leurs cookies) : c'est
-// pourquoi le bocal n'a pas besoin d'apparier `SameSite` — plus aucune requête
-// inter-site n'atteint le pont. Rien de légitime n'y est perdu : un lien
-// entrant vers `/app/…` tombe de toute façon sur une VM qui n'a pas booté.
+// pourquoi le bocal n'a pas besoin d'apparier `SameSite`. Rien de légitime n'y
+// est perdu : un lien entrant vers `/app/…` tombe de toute façon sur une VM qui
+// n'a pas booté.
 const ORIGINES_REFUSEES = new Set(["cross-site", "same-site"]);
+// Destinations d'une navigation. `mode === "navigate"` les couvre déjà sur les
+// trois moteurs mesurés ; l'ensemble sert de garde pour un moteur qui ne
+// renseignerait que l'un des deux.
+const DESTINATIONS_NAVIGATION = new Set(["document", "iframe", "frame"]);
+// Méthodes sans effet de bord attendu : elles restent admises sans attribution,
+// pour ne pas casser une application qui supprimerait son référent.
+const METHODES_SURES = new Set(["GET", "HEAD"]);
+
+/**
+ * Origine http(s) d'une référence, ou null si elle n'en porte pas. `referrer`
+ * vaut « » quand la politique de référent l'a supprimé et « about:client »
+ * avant résolution : ni l'un ni l'autre ne dit quoi que ce soit.
+ * @param {string | null | undefined} reference
+ * @returns {string | null}
+ */
+function httpOrigin(reference) {
+  if (typeof reference !== "string" || reference === "") return null;
+  try {
+    const url = new URL(reference);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string | null | undefined} mode
+ * @param {string | null | undefined} destination
+ * @returns {boolean}
+ */
+function isNavigation(mode, destination) {
+  return mode === "navigate" || DESTINATIONS_NAVIGATION.has(String(destination));
+}
 
 /**
  * Motif de refus d'une requête `/app/*`, ou null si elle peut être relayée.
- * @param {{ origin?: string | null, secFetchSite?: string | null }} signals
- *   en-têtes `Origin` et `Sec-Fetch-Site` de la requête (null si absents)
+ * @param {{
+ *   method?: string | null,
+ *   mode?: string | null,
+ *   destination?: string | null,
+ *   origin?: string | null,
+ *   referrer?: string | null,
+ *   secFetchSite?: string | null,
+ * }} signals forme de la requête (`Request.mode`, `.destination`, `.referrer`)
+ *   et en-têtes `Origin` / `Sec-Fetch-Site` (null quand ils sont absents)
  * @param {string} selfOrigin origine du Service Worker
  * @returns {string | null}
  */
-export function crossOriginRefusal({ origin, secFetchSite }, selfOrigin) {
+export function appRequestRefusal(
+  { method, mode, destination, origin, referrer, secFetchSite },
+  selfOrigin,
+) {
   if (typeof origin === "string" && origin !== "" && origin !== selfOrigin) {
     return `Requête d'origine ${origin} refusée : la sandbox ne relaie que sa propre origine`;
   }
   const site = typeof secFetchSite === "string" ? secFetchSite.trim().toLowerCase() : "";
   if (ORIGINES_REFUSEES.has(site)) {
     return `Requête inter-site (Sec-Fetch-Site: ${site}) refusée : la sandbox ne relaie que sa propre origine`;
+  }
+  const referrerOrigin = httpOrigin(referrer);
+  if (referrerOrigin !== null && referrerOrigin !== selfOrigin) {
+    return `Requête référencée par ${referrerOrigin} refusée : la sandbox ne relaie que sa propre origine`;
+  }
+  if (!isNavigation(mode, destination)) return null;
+  if (destination === "document") {
+    return (
+      "Navigation de premier niveau refusée : l'application ne s'ouvre que dans " +
+      "le cadre de la coquille, jamais directement"
+    );
+  }
+  const attribuee = origin === selfOrigin || referrerOrigin === selfOrigin;
+  const sure = METHODES_SURES.has(String(method ?? "GET").toUpperCase());
+  if (!sure && !attribuee) {
+    return (
+      "Écriture sans origine attribuable refusée : une navigation qui écrit doit " +
+      "venir de la coquille ou de son iframe"
+    );
   }
   return null;
 }
