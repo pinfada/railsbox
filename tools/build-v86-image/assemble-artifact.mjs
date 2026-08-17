@@ -20,11 +20,23 @@ import { mkdir, stat, truncate } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
-import { zstdDecompress } from "node:zlib";
+import { gunzip, zstdDecompress } from "node:zlib";
 
 import { DEFAULT_CHUNK_BYTES, planParts, partName, splitArtifactName } from "./artifact-parts.mjs";
 
-const decompress = promisify(zstdDecompress);
+const decompressZstd = promisify(zstdDecompress);
+const decompressGzip = promisify(gunzip);
+
+/**
+ * @param {Buffer} raw morceau tel que publié
+ * @param {"zstd"|"gzip"|null} compression
+ * @returns {Promise<Buffer>}
+ */
+function decompressPart(raw, compression) {
+  if (compression === "zstd") return decompressZstd(raw);
+  if (compression === "gzip") return decompressGzip(raw);
+  return Promise.resolve(raw);
+}
 
 /** Tentatives par morceau, et attente initiale doublée à chaque échec. */
 const RETRY_ATTEMPTS = 5;
@@ -84,18 +96,22 @@ async function readPart(location) {
  * Récupère l'inventaire écrit par split-artifact, seule source fiable de la
  * taille totale et de la taille de morceau.
  * @param {string} source URL ou chemin de l'artefact de référence
- * @returns {Promise<{totalBytes: number, chunkBytes: number}|null>}
+ * @returns {Promise<{totalBytes: number, chunkBytes: number, compression: "zstd"|"gzip"|null}|null>}
  */
 async function readManifest(source) {
   // L'inventaire est nommé d'après le fichier NON compressé.
-  const manifestPath = `${source.replace(/\.zst$/, "")}-parts.json`;
+  const manifestPath = `${source.replace(/\.(zst|gz)$/, "")}-parts.json`;
   try {
     const raw = await readPart(manifestPath);
     const manifest = JSON.parse(raw.toString("utf8"));
     if (!Number.isInteger(manifest.totalBytes) || !Number.isInteger(manifest.chunkBytes)) {
       return null;
     }
-    return { totalBytes: manifest.totalBytes, chunkBytes: manifest.chunkBytes };
+    return {
+      totalBytes: manifest.totalBytes,
+      chunkBytes: manifest.chunkBytes,
+      compression: manifest.compression ?? null,
+    };
   } catch {
     return null;
   }
@@ -119,14 +135,17 @@ async function main() {
     );
   }
 
+  // L'inventaire fait foi sur la compression ; à défaut, le suffixe de l'URL.
   const { isZstd } = splitArtifactName(options.source);
+  const compression =
+    manifest?.compression ?? (isZstd ? "zstd" : /\.gz$/.test(options.source) ? "gzip" : null);
   const parts = planParts(totalBytes, chunkBytes);
   const target = resolve(options.out);
   await mkdir(dirname(target), { recursive: true });
 
   log(
     `${parts.length} morceau(x) de ${Math.round(chunkBytes / 1048576)} Mio` +
-      `${isZstd ? ", zstd" : ""} → ${Math.round(totalBytes / 1048576)} Mo`,
+      `${compression ? `, ${compression}` : ""} → ${Math.round(totalBytes / 1048576)} Mo`,
   );
 
   const output = createWriteStream(target);
@@ -136,7 +155,7 @@ async function main() {
       const location = partName(options.source, part.start, chunkBytes);
       const raw = await readPart(location);
       downloaded += raw.length;
-      const payload = isZstd ? await decompress(raw) : raw;
+      const payload = await decompressPart(raw, compression);
       // Le dernier morceau est complété de zéros à l'écriture : on ne recopie
       // que les octets réellement utiles pour retrouver la taille exacte.
       const useful = payload.subarray(0, part.end - part.start);

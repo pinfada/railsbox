@@ -75,8 +75,10 @@ on:
         description: "Clé de déploiement en écriture sur target-repo"
         required: false
 
-# Limite de GitHub Pages : 95 Mo par fichier. Le disque applicatif et le rootfs
-# sont découpés, l'instantané est gzippé — au-delà, on refuse explicitement
+# Limite de GitHub Pages : 95 Mo par fichier. Le rootfs, le disque applicatif
+# ET l'instantané mémoire sont découpés en morceaux de CHUNK_BYTES (ADR 0003) :
+# plus aucun artefact de la VM ne peut buter sur cette limite. Ce qui la
+# dépasserait encore vient de l'application, et on le refuse explicitement
 # plutôt que de publier une démonstration qui échouerait au chargement.
 env:
   CHUNK_BYTES: 4194304
@@ -294,10 +296,18 @@ jobs:
             nom="$SB_NOM"
             node tools/build-v86-image/split-artifact.mjs \
               "public/disks/${nom}-app.ext2" --zstd --out publication/disks
-            # L'instantané est téléchargé d'un bloc par le visiteur : gzippé il
-            # pèse environ le tiers, et la coquille le décompresse au vol.
-            gzip -kf "public/disks/${nom}-split-state.bin"
-            cp "public/disks/${nom}-split-state.bin.gz" publication/disks/
+            # L'instantané est découpé LUI AUSSI depuis 2026-08-17 (ADR 0003).
+            # Gzippé d'un seul tenant il pesait le tiers du brut, ce qui suffit
+            # pour la démonstration (~76 Mo) mais pas pour une application
+            # lourde : la première application tierce réelle en produisait
+            # 118 Mo, au-delà des 95 Mo par fichier de Pages. Le plafond de
+            # l'hébergeur était devenu un plafond de mémoire utilisable. En
+            # morceaux, il n'y en a plus. La coquille les réassemble (voir
+            # public/shared/snapshot-parts.js) ; gzip et non zstd, parce que
+            # c'est NOTRE code qui décompresse, avec DecompressionStream.
+            node tools/build-v86-image/split-artifact.mjs \
+              "public/disks/${nom}-split-state.bin" --gzip \
+              --chunk-size "${CHUNK_BYTES}" --out publication/disks
             cp "public/disks/${nom}-split-config.json" publication/disks/v86-config.json
 
             # Assets fingerprintés extraits du disque applicatif et servis
@@ -335,12 +345,30 @@ jobs:
               --base-url "$SB_RACINE" \
               --site-origin "https://${proprietaire}.github.io"
             du -sh publication
-            # Garde-fou de la limite Pages : mieux vaut refuser ici que publier
-            # une démonstration qui échouerait au chargement chez le visiteur.
+            # Garde-fou POSITIF : les trois gros artefacts sont découpés, et
+            # chacun laisse son inventaire. Un inventaire manquant signale une
+            # étape sautée — défaut qui, sans cette vérification, ne se voyait
+            # qu'au chargement chez le visiteur.
+            for inventaire in "${SB_NOM}-app.ext2-parts.json" "${SB_NOM}-split-state.bin-parts.json"; do
+              if [ ! -f "publication/disks/${inventaire}" ]; then
+                echo "::error::Inventaire de morceaux absent : ${inventaire}"
+                echo "Le disque applicatif et l'instantané doivent être découpés (ADR 0003)."
+                exit 1
+              fi
+            done
+            # Garde-fou de la limite Pages. Il ne peut plus s'agir d'un artefact
+            # de la VM : disques et instantané sont découpés en morceaux de
+            # 4 Mio. Ce qui reste au-dessus de 95 Mo est un fichier de
+            # l'application elle-même (un asset précompilé, une vidéo), que rien
+            # ne sait découper — v86 ne le lit pas, le navigateur le télécharge
+            # tel quel. Le message dit donc ce qu'il y a à faire.
             trop_gros=$(find publication -type f -size +"$((MAX_FILE_BYTES / 1024))"k -printf '%f (%s octets)\n' || true)
             if [ -n "$trop_gros" ]; then
-              echo "::error::Fichiers au-delà de la limite de GitHub Pages :"
+              echo "::error::Fichiers au-delà de la limite de 95 Mo de GitHub Pages :"
               echo "$trop_gros"
+              echo "Les artefacts de la VM sont découpés en morceaux (ADR 0003) : ces"
+              echo "fichiers-là viennent de l'application. Allégez-les ou servez-les"
+              echo "depuis un hébergement tiers avant de reconstruire."
               exit 1
             fi
             find publication -type f | wc -l

@@ -69,6 +69,25 @@ test("une configuration découpée n'exige QUE ses artefacts locaux", async () =
   await portail.nettoyer();
 });
 
+test("une construction locale, en chemins absolus, ouvre aussi la suite", async () => {
+  // make-delta-snapshot écrit « /disks/x » hors mode publication, là où la CI
+  // écrit « disks/x ». N'accepter que le second faisait s'ignorer toute la
+  // suite VM chez le contributeur qui venait pourtant de tout construire.
+  const portail = await portailAvec({
+    "v86-config.json": JSON.stringify({
+      disk: "/disks/base-3.3-r2.ext2",
+      appDisk: "/disks/demo-app.ext2",
+      state: "/disks/demo-split-state.bin.gz",
+    }),
+    "base-3.3-r2.ext2": "x",
+    "demo-app.ext2": "x",
+    "demo-split-state.bin.gz": "x",
+  });
+  assert.deepEqual(portail.missing(), []);
+  assert.equal(portail.reason(), null);
+  await portail.nettoyer();
+});
+
 test("un artefact local manquant est nommé, pas deviné", async () => {
   const portail = await portailAvec({
     "v86-config.json": JSON.stringify({ disk: "disks/demo.ext2", state: "disks/demo-state.bin" }),

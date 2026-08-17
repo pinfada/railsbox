@@ -210,7 +210,10 @@ produisent du CSS ordinaire : on les exécute donc sur un étage amd64, et seul
 - la voie **base + application** (ADR 0002), celle des workflows : `base/`
   construit le rootfs mutualisé, `build-app-disk.sh` le disque applicatif de
   512 Mo à géométrie fixe, `make-delta-snapshot.mjs` capture l'état mémoire
-  après démarrage de Puma, `split-artifact.mjs` découpe en morceaux zstd ;
+  après démarrage de Puma, `split-artifact.mjs` découpe **les trois** en
+  fichiers-parties de 4 Mio — zstd pour les disques, que v86 décompresse
+  lui-même, gzip pour l'instantané, que la coquille décompresse avec
+  `DecompressionStream` (ADR 0003) ;
 - la voie **monolithique** héritée (`build.sh` + `make-snapshot.mjs`), qui
   produit une image unique. Elle n'a plus d'exclusivité fonctionnelle.
 

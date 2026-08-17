@@ -85,8 +85,18 @@ wsl -u root -e bash tools/build-v86-image/build-app-disk.sh \
   tools/demo-app/demo --name demo --base ghcr.io/pinfada/railsbox-base:3.3-r2
 
 # 3. Le delta d'instantané : restauration de la base, montage du hdb,
-#    démarrage de Puma, puis gel de la mémoire.
-node tools/build-v86-image/make-delta-snapshot.mjs --name demo --base base-3.3-r2
+#    démarrage de Puma, puis gel de la mémoire. --state-suffix .gz annonce dans
+#    la configuration l'instantané compressé que l'étape 4 produit.
+node tools/build-v86-image/make-delta-snapshot.mjs \
+  --name demo --base base-3.3-r2 --state-suffix .gz
+
+# 4. Le découpage de l'instantané, tel que la publication le fait (ADR 0003).
+#    Sans cette étape, la coquille charge l'instantané d'un seul tenant — le
+#    chemin de compatibilité, qui fonctionne aussi mais n'est pas celui que vos
+#    visiteurs emprunteront.
+node tools/build-v86-image/split-artifact.mjs \
+  public/disks/demo-split-state.bin --gzip --out public/disks
+cp public/disks/demo-split-config.json public/disks/v86-config.json
 
 npm run test:integration
 ```

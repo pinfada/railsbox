@@ -51,6 +51,10 @@ function parseArgs(argv) {
     else if (argv[i] === "--base-url") options.baseUrl = argv[++i];
     else if (argv[i] === "--base-chunk-size") options.baseChunkBytes = Number(argv[++i]);
     else if (argv[i] === "--app-chunk-size") options.appChunkBytes = Number(argv[++i]);
+    // Suffixe ajouté au nom de l'instantané DANS LA CONFIGURATION : « .gz »
+    // quand la publication le découpe en morceaux gzippés (ADR 0003), ou le
+    // sert pré-compressé. Il vaut pour les deux répartitions, sans quoi un
+    // contributeur ne pourrait pas reproduire en local ce que la CI publie.
     else if (argv[i] === "--state-suffix") options.stateSuffix = argv[++i];
     else if (argv[i] === "--database") options.database = argv[++i];
   }
@@ -188,7 +192,7 @@ async function main() {
           }),
           state: `disks/${stateName}${options.stateSuffix}`,
         }
-      : { ...configNoState, state: `/disks/${stateName}` };
+      : { ...configNoState, state: `/disks/${stateName}${options.stateSuffix}` };
     await writeFile(configPath, `${JSON.stringify(finalConfig, null, 2)}\n`);
     log(`${configName} référence désormais le delta pré-calculé`);
 

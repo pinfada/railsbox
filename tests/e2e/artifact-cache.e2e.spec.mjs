@@ -33,10 +33,16 @@ const DISK = "disks/e2e-cache.ext2.zst";
 const PART = "disks/e2e-cache-0-4194304.ext2.zst";
 // …et un leurre de forme identique, jamais déclaré : il doit rester au réseau.
 const TEMOIN = "disks/e2e-temoin-0-4194304.ext2.zst";
+// L'INSTANTANÉ est découpé lui aussi (ADR 0003). Ses morceaux doivent être
+// couverts par le même cache : sans cela, un visiteur dont le cache IndexedDB
+// a été évincé retéléchargerait le plus gros transfert de la sandbox.
+const STATE = "disks/e2e-cache-state.bin.gz";
+const STATE_PART = "disks/e2e-cache-state.bin-0-4194304.gz";
 
 const FIXTURES = [
   { path: `${DISKS_DIR}e2e-cache-0-4194304.ext2.zst`, byte: 0x42 },
   { path: `${DISKS_DIR}e2e-temoin-0-4194304.ext2.zst`, byte: 0x17 },
+  { path: `${DISKS_DIR}e2e-cache-state.bin-0-4194304.gz`, byte: 0x5a },
   { path: `${HORS_ZONE_DIR}e2e-hors-zone-0-4194304.ext2.zst`, byte: 0x99 },
 ];
 
@@ -51,6 +57,10 @@ function fixtureConfig(builtAt) {
     diskChunkSize: CHUNK_BYTES,
     kernel: "disks/e2e-base-vmlinuz",
     initrd: "disks/e2e-base-initrd",
+    // Aucun « stateChunkSize » : la configuration ne dit pas que l'instantané
+    // est découpé, et n'a pas à le dire (c'est son inventaire qui tranche,
+    // côté coquille). Le cache doit couvrir ses morceaux sur cette seule base.
+    state: STATE,
   };
 }
 
@@ -180,6 +190,35 @@ test.describe("Cache des artefacts immuables", () => {
     // pré-filtre le laisse passer, la vérification qui fait foi le refuse.
     const temoin = await readFromPage(page, TEMOIN);
     expect(temoin.status, "un artefact non déclaré ne doit jamais être mis en cache").toBe(404);
+  });
+
+  test("resert un morceau d'INSTANTANÉ disparu du serveur", async () => {
+    // Le pendant du premier test, sur l'artefact que le cache ne couvrait pas
+    // avant le découpage de l'instantané : c'est le plus gros téléchargement
+    // de la sandbox, et GitHub Pages plafonne ses réponses à max-age=600.
+    const config = fixtureConfig("2026-08-16T09:00:00Z");
+    await declareConfig(page, config);
+
+    const premiere = await readFromPage(page, STATE_PART);
+    expect(premiere.status, "le premier passage doit venir du réseau en 200").toBe(200);
+    expect(premiere.first).toBe(0x5a);
+
+    await page.waitForFunction(
+      async ({ name, url }) => {
+        const cache = await /** @type {any} */ (globalThis).caches.open(name);
+        return Boolean(await cache.match(url));
+      },
+      { name: cacheNameFor(config), url: STATE_PART },
+      { timeout: CACHE_TIMEOUT_MS },
+    );
+
+    await rm(`${DISKS_DIR}e2e-cache-state.bin-0-4194304.gz`, { force: true });
+    await page.goto(HOST_PATH); // le visiteur qui revient
+    await declareConfig(page, config);
+
+    const seconde = await readFromPage(page, STATE_PART);
+    expect(seconde.status, "le rechargement ne doit RIEN retélécharger").toBe(200);
+    expect(seconde.first, "le morceau resservi doit être identique").toBe(0x5a);
   });
 
   test("abandonne le cache précédent quand la construction change", async () => {

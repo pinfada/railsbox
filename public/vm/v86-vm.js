@@ -11,6 +11,7 @@ import {
   createResponseAssembler,
   splitHttpResponse,
 } from "../shared/serial-codec.js";
+import { loadSnapshot } from "../shared/snapshot-parts.js";
 import {
   buildDiskImages,
   isBootableConfig,
@@ -152,10 +153,16 @@ async function resolveSnapshot(snapshotKey, config, onConsole) {
     return { state: null, fromCache: false };
   }
   try {
-    onConsole(`[v86] téléchargement de l'instantané pré-calculé (${config.state})…`);
-    const response = await fetch(config.state);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const state = await readSnapshotBody(response, config.state);
+    // Deux formats coexistent, et c'est la PRÉSENCE DE L'INVENTAIRE qui
+    // tranche : un instantané découpé en publie un, une sandbox publiée avant
+    // le découpage n'en a pas. Rien à déclarer dans la configuration, donc rien
+    // à mettre à jour sur les sandboxes déjà en ligne. Tout est dans
+    // shared/snapshot-parts.js — téléchargement compris, pour que les deux
+    // chemins soient exécutés par les tests sans navigateur ni VM.
+    const state = await loadSnapshot({
+      url: new URL(config.state, document.baseURI).href,
+      onLog: onConsole,
+    });
     onConsole(`[v86] instantané téléchargé (${formatMegabytes(state)}) — mise en cache…`);
     // Mise en cache AVANT de démarrer l'émulateur : v86 peut prendre
     // possession du buffer, et un put concurrent stockerait un tampon détaché.
@@ -170,33 +177,6 @@ async function resolveSnapshot(snapshotKey, config, onConsole) {
     onConsole(`[v86] instantané pré-calculé indisponible (${error.message}) — boot à froid`);
     return { state: null, fromCache: false };
   }
-}
-
-/**
- * Lit le corps de l'instantané, en le décompressant si l'URL le désigne comme
- * gzippé.
- *
- * L'instantané est le plus gros téléchargement du visiteur : la version
- * compressée pèse environ le tiers. Le serveur de développement sert le jumeau
- * `.gz` avec un Content-Encoding, et le navigateur décompresse tout seul ; un
- * hébergement statique comme GitHub Pages, lui, livre le fichier tel quel. On
- * décompresse donc explicitement quand l'URL l'annonce.
- * @param {Response} response
- * @param {string} url
- * @returns {Promise<ArrayBuffer>}
- */
-async function readSnapshotBody(response, url) {
-  const annonceGzip = /\.gz(\?.*)?$/.test(url);
-  // Content-Encoding présent : le navigateur a déjà décompressé pour nous.
-  const dejaDecompresse = (response.headers.get("content-encoding") ?? "") !== "";
-  if (!annonceGzip || dejaDecompresse || typeof DecompressionStream === "undefined") {
-    return response.arrayBuffer();
-  }
-  // Le typage de DecompressionStream diverge selon les lib DOM ; l'assertion
-  // couvre cet écart, le contrat runtime est stable depuis longtemps.
-  const decompresseur = /** @type {any} */ (new DecompressionStream("gzip"));
-  const flux = /** @type {ReadableStream} */ (response.body).pipeThrough(decompresseur);
-  return new Response(flux).arrayBuffer();
 }
 
 async function purgeSnapshot(onConsole) {

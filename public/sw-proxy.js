@@ -59,12 +59,13 @@ const sw = /** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (
   /** @type {unknown} */ (self)
 );
 
-// Le GROS des artefacts de la VM reste laissé au navigateur : l'instantané
-// mémoire (~650 Mo) est déjà mis en cache par la page dans IndexedDB, et un
-// disque lu par requêtes Range produit des 206 que Cache Storage refuse.
-// Seuls les artefacts IMMUABLES lus d'un bloc — fichiers-parties, noyau,
-// initrd — passent par le cache ci-dessous, morceau par morceau (4 Mio) :
-// aucun flux de plusieurs centaines de Mo ne traverse le worker.
+// Un disque lu par requêtes Range produit des 206 que Cache Storage refuse, et
+// un instantané d'un seul tenant est un flux de plusieurs centaines de Mo :
+// tous deux restent laissés au navigateur. Seuls les artefacts IMMUABLES lus
+// d'un bloc — fichiers-parties de disque ET d'instantané, noyau, initrd —
+// passent par le cache ci-dessous, morceau par morceau (4 Mio). L'instantané
+// décompressé reste par ailleurs mis en cache par la page dans IndexedDB : le
+// visiteur qui revient ne relit donc même pas ces morceaux-là.
 // Racine de publication de la coquille, déduite de la portée du Service
 // Worker : « / » quand le site est servi à la racine, « /depot/ » sur un Pages
 // de projet — le cas de chaque démonstration depuis l'ADR 0004. Tout chemin

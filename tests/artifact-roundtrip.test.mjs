@@ -39,12 +39,15 @@ function syntheticDisk(size) {
 
 const sha256 = (buffer) => createHash("sha256").update(buffer).digest("hex");
 
+/** Suffixe de fichier de chaque compression, comme split-artifact.mjs. */
+const SUFFIXES = { zstd: ".zst", gzip: ".gz", null: "" };
+
 /**
  * Découpe puis réassemble, et rend les empreintes de part et d'autre.
  * @param {number} size taille de l'artefact synthétique
- * @param {boolean} zstd
+ * @param {"zstd"|"gzip"|null} compression
  */
-async function roundTrip(size, zstd) {
+async function roundTrip(size, compression) {
   const dir = await mkdtemp(join(tmpdir(), "railsbox-parts-"));
   try {
     const source = join(dir, "disque.ext2");
@@ -52,13 +55,13 @@ async function roundTrip(size, zstd) {
     await writeFile(source, original);
 
     const splitArgs = [join(TOOLS, "split-artifact.mjs"), source, "--out", join(dir, "parts")];
-    if (zstd) splitArgs.push("--zstd");
+    if (compression) splitArgs.push(`--${compression}`);
     await run(process.execPath, splitArgs);
 
     const assembled = join(dir, "reassemble.ext2");
     await run(process.execPath, [
       join(TOOLS, "assemble-artifact.mjs"),
-      join(dir, "parts", `disque.ext2${zstd ? ".zst" : ""}`),
+      join(dir, "parts", `disque.ext2${SUFFIXES[String(compression)]}`),
       "--out",
       assembled,
     ]);
@@ -73,17 +76,28 @@ async function roundTrip(size, zstd) {
 }
 
 test("aller-retour identique à l'octet près, morceaux non compressés", async () => {
-  const { original, assembled, manifest } = await roundTrip(10 * MIB, false);
+  const { original, assembled, manifest } = await roundTrip(10 * MIB, null);
   assert.equal(assembled, original);
   assert.equal(manifest.compression, null);
   assert.equal(manifest.partCount, 3);
 });
 
 test("aller-retour identique à l'octet près, morceaux zstd", async () => {
-  const { original, assembled, manifest } = await roundTrip(10 * MIB, true);
+  const { original, assembled, manifest } = await roundTrip(10 * MIB, "zstd");
   assert.equal(assembled, original);
   assert.equal(manifest.compression, "zstd");
   assert.equal(manifest.artifact, "disque.ext2.zst");
+});
+
+test("aller-retour identique à l'octet près, morceaux gzip", async () => {
+  // Le format de l'INSTANTANÉ mémoire (ADR 0003, extension de 2026-08-17) :
+  // gzip et non zstd, parce que c'est la coquille qui décompresse, avec
+  // `DecompressionStream` — présent sur les trois moteurs, à la différence du
+  // zstd. Les disques, décompressés par v86 lui-même, gardent zstd.
+  const { original, assembled, manifest } = await roundTrip(10 * MIB, "gzip");
+  assert.equal(assembled, original);
+  assert.equal(manifest.compression, "gzip");
+  assert.equal(manifest.artifact, "disque.ext2.gz");
 });
 
 test("une taille non multiple du morceau se réassemble sans les zéros de bourrage", async () => {
@@ -91,7 +105,7 @@ test("une taille non multiple du morceau se réassemble sans les zéros de bourr
   // de zéros à l'écriture. Le réassemblage doit les retirer, sinon le disque
   // grossit et v86 refuse la géométrie.
   const size = 10 * MIB;
-  const { original, assembled, manifest } = await roundTrip(size, true);
+  const { original, assembled, manifest } = await roundTrip(size, "zstd");
   assert.equal(assembled, original);
   assert.equal(manifest.totalBytes, size);
   assert.equal(manifest.chunkBytes, CHUNK);
@@ -100,6 +114,6 @@ test("une taille non multiple du morceau se réassemble sans les zéros de bourr
 test("l'inventaire publié suffit à réassembler sans connaître la taille", async () => {
   // assemble-artifact n'a reçu ni --size ni --chunk-size dans roundTrip :
   // s'il a produit le bon fichier, c'est qu'il a lu l'inventaire.
-  const { original, assembled } = await roundTrip(6 * MIB, true);
+  const { original, assembled } = await roundTrip(6 * MIB, "zstd");
   assert.equal(assembled, original);
 });
