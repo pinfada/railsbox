@@ -23,7 +23,7 @@ In your Rails repository, create `.github/workflows/sandbox.yml`:
 name: Sandbox railsbox
 on:
   push:
-    branches: [main]
+    branches: [main, master] # ← your default branch
   workflow_dispatch:
 
 jobs:
@@ -32,6 +32,14 @@ jobs:
     permissions:
       contents: write
 ```
+
+> **Check the `branches:` line.** A filter that does not name your default
+> branch never triggers anything, and **GitHub does not tell you**: no error, no
+> run, nothing in the Actions tab — the workflow simply looks absent. Both names
+> are listed above so the copy-paste works on a `main` repository and on a
+> `master` one alike; keep yours and drop the other if you prefer. When in
+> doubt, trigger a first build by hand (`workflow_dispatch`, the *Run workflow*
+> button): if that works and a `push` does nothing, the filter is the culprit.
 
 The railsbox repository is public, so any repository can reference this workflow
 directly. Pin a tag or a SHA instead of `@main` if you would rather freeze the
@@ -184,8 +192,10 @@ nothing, because there is no server behind it.
 
 **B2B SaaS founders and product builders.** A permanent product demo with zero
 infrastructure: you choose what the visitor sees (`seed`), they land already
-authenticated (`auto_login`), and the bill stays at zero on the day your link
-hits Hacker News. The non-negotiable trade-off: **nothing real may be shipped
+authenticated (`auto_login` opens a session — a token-authenticated front end
+needs [the JWT
+recipe](#recipe-auto-login-for-a-jwt-authenticated-spa-devise-jwt)), and the
+bill stays at zero on the day your link hits Hacker News. The non-negotiable trade-off: **nothing real may be shipped
 inside** — no live Stripe key, no OAuth credentials, no dump containing customer
 data. Everything that goes into a sandbox is public (see
 [`SECURITY.md`](SECURITY.md)).
@@ -248,6 +258,7 @@ nothing to protect server-side, because there is no server.
 | **PostgreSQL** | **wired up** on the split path: the server lives in the base image (from revision `3.3-r2`), the data directory on the application disk, and the cluster only starts after that disk is mounted. Requires base `3.3-r2` or newer — the build explicitly refuses an older base. See "[PostgreSQL](#postgresql)". |
 | **Tailwind, dart-sass** | **supported**: precompiled on an amd64 stage, then copied into the i386 disk (the guest never runs those binaries). Tailwind is validated **end to end** — `demo-tailwind` variant, real v86 VM boot, compiled stylesheet served by the guest — and replayed by the [`valider-variantes.yml`](.github/workflows/valider-variantes.yml) workflow. dart-sass now has its own test bench (`demo-dartsass`), stricter still: `sass-embedded` ships no i386 binary at all, where `tailwindcss-ruby` still offers a `ruby` variant. |
 | **npm toolchains** (esbuild, cssbundling) | **supported** by the same stage (`npm ci` then build scripts). A yarn/pnpm/bun lockfile is not read: it falls back to `npm install`, with a warning. |
+| **Client-side SPA** (React, Vue, Svelte) | **needs an adaptation in your code** — the one railsbox cannot make for you. The application is served under `/<repo>/app/`; Rails helpers follow that prefix, your JavaScript cannot guess it. Recommended pattern, with copy-pasteable code: "[Does your app ship a SPA?](#does-your-app-ship-a-spa-read-this-first)". |
 | **ActionCable / WebSockets** | out of scope: incompatible with a request/response bridge. Possible route: long-polling or a dedicated stream. |
 | **Outbound networking** | nonexistent. That is also a property of the demo model — see [`SECURITY.md`](SECURITY.md). |
 | **Bridge throughput** | a narrow, shared pipe; fine for Turbo/HTML. Precompiled assets do not use it: extracted from the image, they are served statically by the Service Worker. |
@@ -259,6 +270,164 @@ Everything runs client-side: the disk image and the memory snapshot are
 **downloadable by anyone**, and the visitor is root inside their VM. Never ship
 real secrets or real data. What is defended, what is not, and why:
 [`SECURITY.md`](SECURITY.md).
+
+---
+
+## Does your app ship a SPA? Read this first
+
+**This is the one adaptation railsbox cannot make for you, and it affects every
+application with a React, Vue or Svelte front end.**
+
+A sandbox is published on a **project** GitHub Pages site, so under a
+sub-path: `https://<account>.github.io/<repo>/`. The shell keeps the root and
+the application is mounted under `/<repo>/app/`, via `RAILS_RELATIVE_URL_ROOT`.
+Rails follows that prefix everywhere — `link_to`, `form_with`,
+`stylesheet_link_tag`, `url_for` — because those helpers read Rack's
+`SCRIPT_NAME`. **Nothing written in JavaScript reads it**: an
+`axios.create({ baseURL: '/api/v1' })`, a `<BrowserRouter>` with no `basename`
+and a Vite `base` frozen at build time all fall outside the served scope, and
+the Service Worker — which only proxies `/<repo>/app/` — lets the request go
+through to GitHub Pages, which answers 404.
+
+The fix is one idea: **the prefix only exists at runtime, so only Rails knows
+it — make Rails tell the page, then propagate it.**
+
+### 1. Expose the prefix from Rails
+
+In the controller that renders the SPA host page:
+
+```ruby
+# app/controllers/pages_controller.rb
+# Public mount prefix, no trailing slash — empty in the normal case,
+# "/<repo>/app" under railsbox. This is the single source of truth.
+def spa_url_root
+  Rails.application.config.relative_url_root.to_s.chomp('/')
+end
+helper_method :spa_url_root
+```
+
+Then in the view, before the bundle:
+
+```erb
+<%# app/views/pages/react_app.html.erb %>
+<script>
+  window.railsData = {
+    basePath: '<%= spa_url_root.presence || "/" %>'
+  };
+</script>
+```
+
+### 2. Read it on the JavaScript side, in exactly one place
+
+```js
+// src/lib/railsData.js
+/** Mount prefix without trailing slash, or empty string at the root. */
+export function getMountPrefix() {
+  const basePath = window.railsData?.basePath
+  if (!basePath || basePath === '/') return ''
+  return basePath.replace(/\/+$/, '')
+}
+
+/** The `basename` React Router expects: the prefix, or `/` at the root. */
+export function getRouterBasename() {
+  return getMountPrefix() || '/'
+}
+```
+
+Outside a sandbox `basePath` is `/`, `getMountPrefix()` returns `''`, and
+**everything below behaves exactly as before**. That is what makes the
+adaptation acceptable in production: it is inert when the prefix is empty.
+
+### 3. Propagate to axios and to the router
+
+```js
+// src/services/api.js
+import axios from 'axios'
+import { getMountPrefix } from '../lib/railsData'
+
+const prefix = getMountPrefix()
+const api = axios.create({
+  baseURL: prefix ? `${prefix}/api/v1` : '/api/v1',
+})
+```
+
+```jsx
+// src/main.jsx
+import { BrowserRouter } from 'react-router-dom'
+import { getRouterBasename } from './lib/railsData'
+
+<BrowserRouter basename={getRouterBasename()}>
+  <App />
+</BrowserRouter>
+```
+
+Vue Router: `createWebHistory(getRouterBasename())`. SvelteKit: `paths.base`,
+which is fixed at build time — the same problem as Vite below.
+
+### 4. The Vite case: `base` is frozen at build time
+
+`base` is resolved when `vite build` runs, long before anyone knows the prefix
+the application will be served under. A `base: '/dist/'` produces a
+`public/dist/index.html` whose `<script src>` and `<link rel=stylesheet>` point
+at `/dist/assets/…` — out of scope — and **bakes the string into the bundle**:
+Vite's preload helper literally contains `function(t){return"/dist/"+t}`, used
+for the `modulepreload` hints of lazily loaded chunks.
+
+Two complementary moves:
+
+**a. Let Rails rewrite the entry URLs.** Rails renders the host page itself, so
+it is Rails that should emit those tags, by re-reading the `index.html` Vite
+produced.
+
+```ruby
+# app/controllers/pages_controller.rb
+def react_vite_assets
+  index_html = File.read(Rails.root.join('public', 'dist', 'index.html'), mode: 'r:UTF-8')
+  root = spa_url_root # empty outside a sandbox: URLs are unchanged
+  {
+    stylesheets: index_html.scan(%r{<link[^>]+href=["'](?:/dist)?/assets/([^"']+\.css)["']})
+                           .flatten.map { |name| "#{root}/dist/assets/#{name}" },
+    scripts: index_html.scan(%r{<script[^>]+src=["'](?:/dist)?/assets/([^"']+\.js)["']})
+                       .flatten.map { |name| "#{root}/dist/assets/#{name}" },
+  }
+end
+```
+
+```erb
+<% @vite_assets.fetch(:stylesheets).each do |path| %>
+  <link rel="stylesheet" crossorigin href="<%= path %>">
+<% end %>
+<% @vite_assets.fetch(:scripts).each do |path| %>
+  <script type="module" crossorigin src="<%= path %>"></script>
+<% end %>
+```
+
+**b. `base: './'` for the rest.** Chunks already reference each other with
+relative specifiers (`import … from "./react-CRZGu1RB.js"`), so they load under
+any prefix. What stays absolute is the `modulepreload` hints for deferred
+chunks. A `base: './'` makes those URLs resolve against the importing module's
+URL — hence against the real prefix — instead of a frozen string:
+
+```js
+// vite.config.ts
+export default defineConfig({
+  base: './', // instead of '/dist/': nothing absolute left in the bundle
+})
+```
+
+If you must keep an absolute `base`, read `import.meta.env.BASE_URL` rather than
+hard-coding a path, and **always prefer a relative import** to a hand-built URL.
+
+### How to check
+
+Open the published sandbox and watch the network tab: **any request whose path
+does not start with `/<repo>/app/` is a call to fix**. It is the fastest test —
+the Service Worker sees nothing else, and a GitHub Pages 404 does not look like
+an application error.
+
+Under the hood, what `RAILS_RELATIVE_URL_ROOT` does and does not prefix — and
+why a `config.ru` shipped by the image fixes the Rails half without touching
+your code — is in "[War stories](#war-stories-the-problems-that-cost-the-most)".
 
 ---
 
@@ -291,6 +460,10 @@ anything else raises a diagnostic. `database` accepts `postgresql` or `sqlite3`.
 `env:` values are treated as **inert data**, never evaluated at build time (see
 [`SECURITY.md`](SECURITY.md)).
 
+`ruby:` selects a **series**, not a patch: the patch running in the VM is the
+base's. What that means for a strict `Gemfile` constraint: "[Pinning a Ruby
+version](#pinning-a-ruby-version-what-base-allows-and-what-it-does-not)".
+
 ### Demo data and auto-login
 
 `seed.command` runs **at build time**, before the snapshot is captured, so the
@@ -303,6 +476,76 @@ not called `User`, or the identifier is neither an email nor an id, use
 `seed.auto_login_code`: a Ruby fragment (a `|` block scalar) with `env` in
 scope. Auto-login runs **on the visitor's side**, on first load: it depends on
 their session, which no snapshot can contain.
+
+> **`auto_login` opens a Warden session — and nothing else.** It puts the user
+> into Warden and into the Rack session, which covers Devise and ordinary Rails
+> pages. It does **not** cover token authentication: a front end that reads a
+> JWT from `localStorage` (devise-jwt, Knock, a hand-rolled JWT) boots
+> **signed out**, whether or not a Rails session is open — it never looks at the
+> cookie. The "visitor arrives signed in" promise holds for sessions; for
+> tokens you must mint the token and hand it to the page. That is what the
+> recipe below does.
+
+#### Recipe: auto-login for a JWT-authenticated SPA (devise-jwt)
+
+Three pieces. **One**: the fragment mints the token and drops it in the session.
+
+```yaml
+# railsbox.yml
+seed:
+  command: "bin/rails db:seed"
+  auto_login_code: |
+    user = ::User.find_by(email: 'demo@example.com')
+    return avertir("no demo user") if user.nil?
+    # Warden session: covers Rails pages rendered from views.
+    connecter(env, user)
+    # Token: this is what the front end will read. UserEncoder#call(user, scope,
+    # aud) returns [token, payload]; `aud` stays nil because the SPA only sends
+    # the Authorization header, never an audience header.
+    token, _payload = ::Warden::JWTAuth::UserEncoder.new.call(user, :user, nil)
+    # The session is the only channel available: this fragment runs BEFORE the
+    # application, so it cannot write to the response.
+    env['rack.session'][:railsbox_jwt] = token
+```
+
+**Two**: the host page reads the session and hands the token over, once.
+
+```erb
+<%# app/views/pages/react_app.html.erb %>
+<script>
+  window.railsData = {
+    basePath: '<%= spa_url_root.presence || "/" %>',
+    jwt: <%= raw(session.delete(:railsbox_jwt).to_json) %>
+  };
+</script>
+```
+
+**Three**: the front end stores the token where it already looks for it, before
+mounting.
+
+```js
+// src/main.jsx, before createRoot(...)
+const token = window.railsData?.jwt
+if (token) localStorage.setItem('auth_token', token) // the key YOUR code reads
+```
+
+What you need to know to adapt it:
+
+- **The convention's helpers are not there.** With `auto_login_code` the
+  identifier resolver (`resoudre`) is not generated: look the user up yourself
+  in ActiveRecord. `connecter(env, user)` and `avertir(message)` do remain
+  available, and `return` is legal — the fragment is spliced into a method body.
+- **The fragment runs inside a middleware, last in the stack**, once per
+  visitor, before the application is called: `env['rack.session']` is already in
+  place, and any exception is caught and logged without breaking the page.
+- **Revocation strategies.** The token as minted is accepted as-is by
+  `Denylist` (the `jti` is in no table until it is revoked) and by `JTIMatcher`
+  (the emitted `jti` is the record's own). No extra dispatch hook is needed.
+- **`connecter` is still worth keeping** even for a pure SPA: embedded Devise
+  pages, an ActiveAdmin or a `/rails/info` keep working.
+- **A different auth gem?** The principle does not change: mint the token with
+  your gem's API, drop it in `env['rack.session']`, render it into the page,
+  store it client-side. Only the first line differs.
 
 ### Workflow inputs
 
@@ -327,6 +570,49 @@ Two guardrails refuse outright rather than publish a demo that would fail to
 load: GitHub Pages' **95 MB per-file limit**, and an application whose amd64
 stage produces **no** assets at all (an application with no CSS is a failure the
 visitor would discover when the page renders).
+
+### Pinning a Ruby version: what `base:` allows, and what it does not
+
+`base:` names a **series plus a revision** (`3.3-r2`), never a patch. The patch
+actually running inside the VM is the one compiled into the base when it was
+published (`ARG RUBY_VERSION` in `tools/build-v86-image/base/Dockerfile`): base
+`3.3-r2` ships **Ruby 3.3.12**. No input lets you ask for 3.3.10 rather than
+3.3.12.
+
+The `ruby:` key in `railsbox.yml` does not fill that gap, and it is worth
+knowing exactly what it does:
+
+| Where | Which Ruby | Set by |
+| --- | --- | --- |
+| amd64 asset precompilation stage | the exact patch requested (`FROM ruby:<x.y.z>-slim`) | `ruby:` |
+| i386 runtime, in the visitor's VM | the patch compiled into the base | `base:` |
+
+So `ruby:` mostly selects the **series**, which must match the base's. In
+practice: a `~> 3.3.10` constraint in your `Gemfile` is satisfied by the base's
+3.3.12; a strict `ruby "3.3.10"` is not, and `bundle install` will tell you so
+from inside the build. **Relax the `Gemfile` constraint rather than trying to
+pin the patch** — that is the only lever that exists today.
+
+**Why there is no per-patch base, and why that will not change.** A base is not
+a tag, it is an **immutable 1.45 GB artifact** split into 363 compressed chunks,
+plus a kernel, an initrd and a memory snapshot, hosted permanently on a GitHub
+Pages site. Publishing one base per Ruby patch would mean republishing all of
+that on every patch release — four to six a year per series, for two maintained
+series — and **keeping the old ones forever**, since an already-published
+sandbox references its artifact by name. Storage would grow without bound, the
+visitors' artifact cache would stop being shared — it is precisely the single
+shared rootfs that keeps a visitor's download at ~32 MB — and the validation
+matrix (four build paths, three browser engines) would be multiplied by the
+number of live patches.
+
+The trade-off is therefore deliberate: **one base per series and revision,
+never per patch.** A demo is not a production environment, and a patch-level
+difference within a stable series changes nothing observable there. If a
+specific patch really is essential — a security fix you want to demonstrate, a
+runtime bug — the route is not a workflow input but a **base revision**:
+`base-build.sh --ruby <x.y.z>` produces a complete base, published under a new
+revision (`3.3-r3`), which `base:` can then name. See "[Republishing the base
+image](#republishing-the-base-image)".
 
 ### PostgreSQL
 

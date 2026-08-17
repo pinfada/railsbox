@@ -24,7 +24,7 @@ Dans votre dépôt Rails, créez `.github/workflows/sandbox.yml` :
 name: Sandbox railsbox
 on:
   push:
-    branches: [main]
+    branches: [main, master] # ← votre branche par défaut
   workflow_dispatch:
 
 jobs:
@@ -33,6 +33,15 @@ jobs:
     permissions:
       contents: write
 ```
+
+> **Vérifiez la ligne `branches:`.** Un filtre qui ne nomme pas votre branche par
+> défaut ne déclenche jamais rien, et **GitHub ne le signale pas** : pas
+> d'erreur, pas d'exécution, pas de mention dans l'onglet Actions — le workflow
+> semble simplement absent. Les deux noms sont listés ci-dessus pour que le
+> copier-coller marche sur un dépôt en `main` comme sur un dépôt en `master` ;
+> gardez le vôtre et supprimez l'autre si vous préférez. Dans le doute,
+> déclenchez une première construction à la main (`workflow_dispatch`, bouton
+> *Run workflow*) : si elle passe et qu'un `push` ne fait rien, c'est le filtre.
 
 Le dépôt railsbox est public : n'importe quel dépôt peut référencer ce workflow
 directement. Épinglez un tag ou un SHA à la place de `@main` si vous préférez
@@ -191,8 +200,10 @@ Le lien ne tombe pas et ne coûte rien, parce qu'il n'y a pas de serveur derriè
 
 **Fondateurs de SaaS B2B, créateurs de produits.** Une démonstration permanente
 sans infrastructure : vous choisissez les données affichées (`seed`), le visiteur
-arrive connecté (`auto_login`), et l'addition reste à zéro même le jour où votre
-lien passe sur Hacker News. Contrepartie non négociable : **rien de réel ne doit
+arrive connecté (`auto_login` ouvre une session — une interface qui
+s'authentifie par jeton demande [la recette
+JWT](#recette--auto-connexion-dun-spa-qui-sauthentifie-par-jwt-devise-jwt)), et
+l'addition reste à zéro même le jour où votre lien passe sur Hacker News. Contrepartie non négociable : **rien de réel ne doit
 être embarqué** — ni clé Stripe live, ni identifiants OAuth, ni dump contenant
 des données clients. Tout ce qui entre dans une sandbox est public
 ([`SECURITY.md`](SECURITY.md)).
@@ -257,6 +268,7 @@ hébergeur, et des propriétés dès qu'on assume le cadrage : une sandbox n'a r
 | **PostgreSQL** | **branché** sur la voie découplée : le serveur vit dans la base (à partir de la révision `3.3-r2`), le répertoire de données sur le disque applicatif, et le cluster ne démarre qu'après le montage de celui-ci. Exige une base `3.3-r2` ou plus récente — la construction refuse explicitement une base antérieure. Voir « [PostgreSQL](#postgresql) ». |
 | **Tailwind, dart-sass** | **pris en charge** : précompilés sur un étage amd64, puis copiés dans le disque i386 (le guest n'exécute jamais ces binaires). Tailwind est validé **de bout en bout** — variante `demo-tailwind`, boot d'une VM v86 réelle, feuille compilée servie par le guest — et rejoué par le workflow [`valider-variantes.yml`](.github/workflows/valider-variantes.yml). dart-sass a désormais son propre banc d'essai (`demo-dartsass`), plus strict encore : `sass-embedded` ne publie aucun binaire i386 là où `tailwindcss-ruby` offre une variante « ruby ». |
 | **Chaînes npm** (esbuild, cssbundling) | **pris en charge** par le même étage (`npm ci` puis scripts de build). Un verrou yarn/pnpm/bun n'est pas relu : repli sur `npm install`, signalé. |
+| **SPA côté client** (React, Vue, Svelte) | **demande une adaptation de votre code** — la seule que railsbox ne puisse pas faire à votre place. L'application est servie sous `/<depot>/app/` ; les helpers Rails suivent ce préfixe, votre JavaScript ne le devine pas. Patron recommandé, avec code copiable : « [Votre application embarque un SPA ?](#votre-application-embarque-un-spa--lisez-ceci-dabord) ». |
 | **ActionCable / WebSockets** | hors périmètre : incompatibles avec un pont requête/réponse. Piste : long-polling ou flux dédié. |
 | **Réseau sortant** | inexistant. C'est aussi une propriété du modèle de démonstration — voir [`SECURITY.md`](SECURITY.md). |
 | **Débit du pont** | tuyau étroit et partagé, suffisant pour du Turbo/HTML. Les assets précompilés ne l'empruntent pas : extraits de l'image, ils sont servis statiquement par le Service Worker. |
@@ -268,6 +280,166 @@ Tout s'exécute côté client : l'image disque et l'instantané mémoire sont
 **téléchargeables par n'importe qui**, et le visiteur est root dans sa VM.
 N'embarquez jamais de vrais secrets ni de vraies données. Ce qui est défendu,
 ce qui ne l'est pas, et pourquoi : [`SECURITY.md`](SECURITY.md).
+
+---
+
+## Votre application embarque un SPA ? Lisez ceci d'abord
+
+**C'est le seul point d'adaptation que railsbox ne peut pas régler pour vous, et
+il touche toutes les applications à interface React, Vue ou Svelte.**
+
+Une sandbox est publiée sur un GitHub Pages **de projet**, donc sous un
+sous-chemin : `https://<compte>.github.io/<depot>/`. La coquille garde la racine
+et l'application est montée sous `/<depot>/app/`, via `RAILS_RELATIVE_URL_ROOT`.
+Rails suit ce préfixe partout — `link_to`, `form_with`, `stylesheet_link_tag`,
+`url_for` — parce que ces helpers lisent le `SCRIPT_NAME` de Rack. **Rien de ce
+qui est écrit en JavaScript ne le lit** : un `axios.create({ baseURL: '/api/v1'
+})`, un `<BrowserRouter>` sans `basename` et un `base:` figé par Vite au build
+sortent tous du périmètre servi, et le Service Worker — qui ne proxifie que
+`/<depot>/app/` — laisse partir la requête vers GitHub Pages, qui répond 404.
+
+Le remède tient en une idée : **le préfixe n'existe qu'à l'exécution, donc seul
+Rails le connaît — il faut le lui faire dire à la page, puis le propager.**
+
+### 1. Exposer le préfixe depuis Rails
+
+Dans le contrôleur qui rend la page hôte du SPA :
+
+```ruby
+# app/controllers/pages_controller.rb
+# Préfixe public de montage, sans barre finale — chaîne vide dans le cas normal,
+# « /<depot>/app » sous railsbox. C'est la seule source de vérité.
+def spa_url_root
+  Rails.application.config.relative_url_root.to_s.chomp('/')
+end
+helper_method :spa_url_root
+```
+
+Puis dans la vue, avant le bundle :
+
+```erb
+<%# app/views/pages/react_app.html.erb %>
+<script>
+  window.railsData = {
+    basePath: '<%= spa_url_root.presence || "/" %>'
+  };
+</script>
+```
+
+### 2. Le lire côté JavaScript, à un seul endroit
+
+```js
+// src/lib/railsData.js
+/** Préfixe de montage sans barre finale, ou chaîne vide à la racine. */
+export function getMountPrefix() {
+  const basePath = window.railsData?.basePath
+  if (!basePath || basePath === '/') return ''
+  return basePath.replace(/\/+$/, '')
+}
+
+/** `basename` attendu par React Router : le préfixe, ou `/` à la racine. */
+export function getRouterBasename() {
+  return getMountPrefix() || '/'
+}
+```
+
+Hors sandbox, `basePath` vaut `/`, `getMountPrefix()` rend `''` et **tout le
+code ci-dessous se comporte exactement comme avant**. C'est ce qui rend
+l'adaptation acceptable en production : elle est inerte quand le préfixe est
+vide.
+
+### 3. Propager à axios et au routeur
+
+```js
+// src/services/api.js
+import axios from 'axios'
+import { getMountPrefix } from '../lib/railsData'
+
+const prefixe = getMountPrefix()
+const api = axios.create({
+  baseURL: prefixe ? `${prefixe}/api/v1` : '/api/v1',
+})
+```
+
+```jsx
+// src/main.jsx
+import { BrowserRouter } from 'react-router-dom'
+import { getRouterBasename } from './lib/railsData'
+
+<BrowserRouter basename={getRouterBasename()}>
+  <App />
+</BrowserRouter>
+```
+
+Vue Router : `createWebHistory(getRouterBasename())`. SvelteKit : `paths.base`,
+qui se fixe au build — même problème que Vite ci-dessous.
+
+### 4. Le cas Vite : `base` est figé au build
+
+`base` est résolu au moment du `vite build`, avant que quiconque sache sous quel
+préfixe l'application sera servie. Un `base: '/dist/'` produit un
+`public/dist/index.html` dont le `<script src>` et le `<link rel=stylesheet>`
+pointent sur `/dist/assets/…` — hors périmètre — et **grave la chaîne dans le
+bundle** : le module d'aide de Vite y contient littéralement
+`function(t){return"/dist/"+t}`, utilisé pour les `modulepreload` des morceaux
+chargés à la demande.
+
+Deux gestes, complémentaires :
+
+**a. Rails réécrit les URL d'entrée.** Rails rend lui-même la page hôte : c'est
+donc à lui d'émettre les balises, en relisant l'`index.html` produit par Vite.
+
+```ruby
+# app/controllers/pages_controller.rb
+def react_vite_assets
+  index_html = File.read(Rails.root.join('public', 'dist', 'index.html'), mode: 'r:UTF-8')
+  racine = spa_url_root # vide hors sandbox : les URL sont inchangées
+  {
+    stylesheets: index_html.scan(%r{<link[^>]+href=["'](?:/dist)?/assets/([^"']+\.css)["']})
+                           .flatten.map { |nom| "#{racine}/dist/assets/#{nom}" },
+    scripts: index_html.scan(%r{<script[^>]+src=["'](?:/dist)?/assets/([^"']+\.js)["']})
+                       .flatten.map { |nom| "#{racine}/dist/assets/#{nom}" },
+  }
+end
+```
+
+```erb
+<% @vite_assets.fetch(:stylesheets).each do |chemin| %>
+  <link rel="stylesheet" crossorigin href="<%= chemin %>">
+<% end %>
+<% @vite_assets.fetch(:scripts).each do |chemin| %>
+  <script type="module" crossorigin src="<%= chemin %>"></script>
+<% end %>
+```
+
+**b. `base: './'` pour le reste.** Les morceaux se référencent déjà entre eux par
+spécificateur relatif (`import … from "./react-CRZGu1RB.js"`), donc ils se
+chargent quel que soit le préfixe. Ce qui reste absolu, ce sont les
+`modulepreload` des morceaux différés. Un `base: './'` fait résoudre ces URL
+contre celle du module importateur — donc contre le préfixe réel — au lieu d'une
+chaîne figée :
+
+```js
+// vite.config.ts
+export default defineConfig({
+  base: './', // au lieu de '/dist/' : plus rien d'absolu dans le bundle
+})
+```
+
+Si vous devez garder un `base` absolu, lisez `import.meta.env.BASE_URL` plutôt
+que de réécrire un chemin en dur, et **préférez toujours un import relatif** à
+une URL construite à la main.
+
+### Comment vérifier
+
+Ouvrez la sandbox publiée, onglet réseau : **toute requête dont le chemin ne
+commence pas par `/<depot>/app/` est un appel à corriger**. C'est le test le
+plus rapide — le Service Worker ne voit rien d'autre, et un 404 de GitHub Pages
+ne ressemble pas à une erreur d'application.
+
+Sous le capot, le détail de ce que `RAILS_RELATIVE_URL_ROOT` préfixe et ne
+préfixe pas : « [`RAILS_RELATIVE_URL_ROOT` ne préfixe que les
+assets](#rails_relative_url_root-ne-préfixe-que-les-assets) ».
 
 ---
 
@@ -299,6 +471,11 @@ toute autre déclenche un diagnostic. Dans le bloc `assets:`, seule la clé
 `sqlite3`. Les valeurs `env:` sont traitées comme des **données inertes**,
 jamais évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
 
+`ruby:` choisit une **série**, pas un patch : le patch exécuté dans la VM est
+celui de la base. Ce que cela implique pour une contrainte stricte de
+`Gemfile` : « [Épingler une version de
+Ruby](#épingler-une-version-de-ruby--ce-que-base-permet-et-ce-quil-ne-permet-pas) ».
+
 ### Données de démonstration et auto-connexion
 
 `seed.command` tourne **à la construction**, avant la capture de l'instantané :
@@ -312,6 +489,78 @@ un id, passez par `seed.auto_login_code` : un fragment Ruby (scalaire en bloc
 `|`) avec `env` dans sa portée. L'auto-connexion s'exécute **chez le visiteur**,
 au premier chargement : elle dépend de sa session, qu'aucun instantané ne peut
 contenir.
+
+> **`auto_login` ouvre une session Warden — et rien d'autre.** Il pose
+> l'utilisateur dans Warden et dans la session Rack, ce qui couvre Devise et les
+> pages Rails classiques. Il **ne couvre pas l'authentification par jeton** :
+> une interface qui lit un JWT dans `localStorage` (devise-jwt, Knock, JWT
+> maison) démarre **déconnectée**, session Rails ouverte ou non — elle ne
+> regarde pas le cookie. La promesse « le visiteur arrive connecté » vaut pour
+> les sessions ; pour les jetons, il faut émettre le jeton et le donner à la
+> page. C'est ce que fait la recette ci-dessous.
+
+#### Recette : auto-connexion d'un SPA qui s'authentifie par JWT (devise-jwt)
+
+Trois pièces. **Une** : le fragment émet le jeton et le dépose dans la session.
+
+```yaml
+# railsbox.yml
+seed:
+  command: "bin/rails db:seed"
+  auto_login_code: |
+    utilisateur = ::User.find_by(email: 'demo@example.com')
+    return avertir("aucun utilisateur de démonstration") if utilisateur.nil?
+    # Session Warden : couvre les pages Rails servies par des vues.
+    connecter(env, utilisateur)
+    # Jeton : c'est LUI que l'interface lira. UserEncoder#call(user, scope, aud)
+    # renvoie [jeton, charge_utile] ; `aud` reste nil parce que le SPA n'envoie
+    # que l'en-tête Authorization, jamais d'en-tête d'audience.
+    jeton, _charge = ::Warden::JWTAuth::UserEncoder.new.call(utilisateur, :user, nil)
+    # La session est le seul canal disponible : ce fragment s'exécute AVANT
+    # l'application, il ne peut pas écrire dans la réponse.
+    env['rack.session'][:railsbox_jwt] = jeton
+```
+
+**Deux** : la page hôte lit la session et transmet le jeton, une seule fois.
+
+```erb
+<%# app/views/pages/react_app.html.erb %>
+<script>
+  window.railsData = {
+    basePath: '<%= spa_url_root.presence || "/" %>',
+    jwt: <%= raw(session.delete(:railsbox_jwt).to_json) %>
+  };
+</script>
+```
+
+**Trois** : l'interface range le jeton là où elle le cherche déjà, avant de
+monter.
+
+```js
+// src/main.jsx, avant createRoot(...)
+const jeton = window.railsData?.jwt
+if (jeton) localStorage.setItem('auth_token', jeton) // la clé que VOTRE code lit
+```
+
+Ce qu'il faut savoir pour l'adapter :
+
+- **Les aides de la convention ne sont pas là.** Avec `auto_login_code`, le
+  résolveur d'identifiant (`resoudre`) n'est pas généré : cherchez l'utilisateur
+  vous-même en ActiveRecord. En revanche `connecter(env, utilisateur)` et
+  `avertir(message)` restent disponibles, et `return` est légal — le fragment est
+  recopié dans le corps d'une méthode.
+- **Le fragment tourne dans un middleware, en fin de pile**, une seule fois par
+  visiteur, avant l'appel à l'application : `env['rack.session']` est déjà en
+  place, et toute exception est rattrapée et journalisée sans casser la page.
+- **Stratégies de révocation.** Le jeton produit est accepté tel quel par
+  `Denylist` (le `jti` n'est dans aucune table tant qu'il n'est pas révoqué) et
+  par `JTIMatcher` (le `jti` émis est celui de l'enregistrement). Aucun crochet
+  de dispatch supplémentaire n'est nécessaire.
+- **`connecter` reste utile** même pour un SPA pur : les pages Devise, un
+  ActiveAdmin ou un `/rails/info` embarqués continuent de fonctionner.
+- **Autre brique d'authentification ?** Le principe ne change pas : émettez le
+  jeton avec l'API de votre gem, déposez-le dans `env['rack.session']`, rendez-le
+  dans la page, rangez-le côté client. Seule la première ligne change.
 
 ### Entrées du workflow
 
@@ -336,6 +585,51 @@ Deux garde-fous refusent explicitement plutôt que de publier une démonstration
 qui échouerait au chargement : la limite de **95 Mo par fichier** de GitHub
 Pages, et une application dont l'étage amd64 ne produit **aucun** asset (une
 application sans CSS est une panne que le visiteur découvrirait à l'affichage).
+
+### Épingler une version de Ruby : ce que `base:` permet, et ce qu'il ne permet pas
+
+`base:` désigne une **série plus une révision** (`3.3-r2`), jamais un patch.
+Le patch réellement exécuté dans la VM est celui compilé dans la base au moment
+où elle a été publiée (`ARG RUBY_VERSION` dans
+`tools/build-v86-image/base/Dockerfile`) : la base `3.3-r2` embarque **Ruby
+3.3.12**. Aucune entrée ne permet de demander 3.3.10 plutôt que 3.3.12.
+
+La clé `ruby:` de `railsbox.yml` ne comble pas ce manque, et il vaut mieux
+savoir précisément ce qu'elle fait :
+
+| Où | Quel Ruby | Réglé par |
+| --- | --- | --- |
+| Étage amd64 de précompilation des assets | le patch exact demandé (`FROM ruby:<x.y.z>-slim`) | `ruby:` |
+| Runtime i386, dans la VM du visiteur | le patch compilé dans la base | `base:` |
+
+`ruby:` sert donc surtout à choisir la **série**, qui doit correspondre à celle
+de la base. Concrètement : une contrainte `~> 3.3.10` dans votre `Gemfile` est
+satisfaite par le 3.3.12 de la base ; un `ruby "3.3.10"` strict ne l'est pas, et
+c'est `bundle install` qui vous le dira, à l'intérieur de la construction.
+**Assouplissez la contrainte du `Gemfile` plutôt que de chercher à figer le
+patch** — c'est le seul levier qui existe aujourd'hui.
+
+**Pourquoi il n'y a pas de base par patch, et pourquoi ça ne changera pas.** Une
+base n'est pas une étiquette, c'est un **artefact immuable de 1,45 Go**, découpé
+en 363 morceaux compressés, plus un noyau, un initrd et un instantané mémoire,
+hébergés en permanence sur un GitHub Pages. Publier une base par patch de Ruby
+signifierait republier tout cela à chaque sortie de patch — quatre à six par an
+et par série, pour deux séries maintenues — et **garder les anciennes pour
+toujours**, puisqu'une sandbox déjà publiée pointe sur son artefact par nom.
+Le stockage croîtrait sans borne, le cache d'artefacts des visiteurs cesserait
+d'être mutualisé — c'est justement le partage d'un rootfs unique qui fait qu'un
+visiteur ne télécharge que ~32 Mo — et la matrice de validation (quatre chemins
+de construction, trois moteurs de navigateur) serait multipliée par le nombre de
+patchs vivants.
+
+Le compromis retenu est donc assumé : **une base par série et par révision,
+jamais par patch.** Une démonstration n'est pas un environnement de production,
+et un écart de patch dans une série stable n'y change rien d'observable. Si un
+patch précis vous est indispensable — un correctif de sécurité que vous voulez
+montrer, un bogue du runtime — la voie n'est pas une entrée de workflow, c'est
+une **révision de base** : `base-build.sh --ruby <x.y.z>` produit une base
+complète, publiée sous une nouvelle révision (`3.3-r3`), que `base:` sait
+ensuite désigner. Voir « [Republier la base](#republier-la-base) ».
 
 ### PostgreSQL
 
