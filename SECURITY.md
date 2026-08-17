@@ -57,7 +57,7 @@ dans sa propre VM. En conséquence :
 | Requêtes iframe → VM | validation stricte (`request-codec.js`) : méthodes en liste blanche, chemins filtrés, en-têtes hop-by-hop retirés, aucune interpolation shell |
 | Application ↔ page hôte | iframe `sandbox` (pas de navigation du parent, pas de popups) |
 | XSS dans l'application → exfiltration réseau | CSP **toujours** ajoutée aux documents `/app` proxifiés (`connect-src 'self'`, `form-action 'self'`) — fetch/XHR/beacon et formulaires vers des tiers sont bloqués. Une politique posée par l'application n'y substitue pas la nôtre : les deux s'appliquent conjointement. **Canal résiduel assumé** : `img-src` reste large (fonds de carte) — un pixel-beacon image reste possible depuis une app compromise ; l'iframe étant same-origin, une telle app peut aussi lire le `localStorage` de la page et l'IndexedDB de l'origine (d'où l'option « session seulement » de l'inspecteur) |
-| Requêtes inter-origine → VM | refusées en **403** par le Service Worker (`crossOriginRefusal`) : un `Origin` étranger, ou un `Sec-Fetch-Site` `cross-site`/`same-site`, n'atteint jamais le pont |
+| Requêtes forgées par un tiers → VM | refusées en **403** par le Service Worker (`appRequestRefusal`) : navigation de premier niveau, signal d'origine étranger (`Origin`, référent, `Sec-Fetch-Site`) ou écriture non attribuable n'atteignent jamais le pont — voir la règle exacte ci-dessous |
 | Commandes du proxy (pont VM, identité des artefacts) | acceptées du **seul document coquille** (`isShellClient`) : un client servi sous `/app/` — la surface d'un XSS applicatif — ne peut ni détourner le pont ni empoisonner le cache |
 | Deux onglets sur la même sandbox | un verrou exclusif Web Locks (`shared/election-onglet.js`) élit l'onglet actif : un seul boote une VM, le second l'annonce au visiteur et propose de reprendre la main. L'isolation entre sandboxes est celle des **visiteurs**, pas des onglets — le Service Worker ne retient qu'un pont, si bien que deux VM concurrentes faisaient partir les écritures d'un onglet dans la VM de l'autre |
 | Page hôte | Content-Security-Policy (`index.html`), `X-Content-Type-Options: nosniff` |
@@ -104,14 +104,75 @@ figuré ici et qui étaient fausses.
   cookie de session du bocal — lequel n'applique pas `SameSite`. Le seul jeton
   d'authenticité ne suffisait pas : il ne couvre pas les routes en
   `skip_forgery_protection` ou `null_session`, fréquentes sur les contrôleurs
-  API des applications visées. Le proxy **refuse désormais en 403** toute
-  requête `/app/*` dont l'`Origin` est présent et étranger, ou dont le
-  `Sec-Fetch-Site` vaut `cross-site` ou `same-site` (`crossOriginRefusal`).
-  Ce refus est strictement plus fort que `SameSite=Lax` — qui laisserait encore
-  passer une navigation GET inter-site avec ses cookies — et c'est pourquoi le
-  bocal n'a pas besoin d'apparier `SameSite`. Restent légitimes, et préservées :
-  les requêtes de la coquille et de l'iframe (`Sec-Fetch-Site: same-origin`),
-  et l'ouverture directe par le visiteur (`none`).
+  API des applications visées. Le proxy **refuse en 403** ; la règle exacte est
+  détaillée ci-dessous.
+
+### La règle de refus, et pourquoi elle ne repose pas sur les en-têtes
+
+Le premier correctif ne lisait que les en-têtes `Origin` et `Sec-Fetch-Site`.
+**Il ne fonctionnait que sur Chromium.** Un relevé complet de la `Request`
+d'une navigation interceptée, moteur par moteur, le montre :
+
+| Signal | Chromium | Firefox | WebKit |
+|---|---|---|---|
+| en-tête `Origin` | navigations non-GET seulement | **jamais** | **jamais** |
+| en-tête `Sec-Fetch-Site` / `Sec-Fetch-Dest` | **jamais** | **jamais** | **jamais** |
+| `Request.mode` (`navigate`) | oui | oui | oui |
+| `Request.destination` (`document` / `iframe`) | oui | oui | oui |
+| `Request.referrer` | oui | oui | oui |
+| `FetchEvent.clientId` sur une navigation | vide | vide | vide |
+
+`Sec-Fetch-*` est ajouté **après** l'interception, à l'étage réseau : aucun
+Service Worker ne le voit, sur aucun moteur. Une défense qui n'a que ces deux
+en-têtes est donc aveugle sur deux moteurs sur trois — un POST forgé y
+atteignait réellement la VM, ce qu'une épreuve de bout en bout mesure
+désormais sur les trois (`tests/e2e/cookies-proxy.e2e.spec.mjs`).
+
+La règle appliquée à toute requête `/app/*` (`appRequestRefusal`,
+`shared/proxy-logic.js`) est donc bâtie sur la **forme** de la requête :
+
+1. **Signal d'origine contradictoire → 403.** `Origin` présent et différent du
+   nôtre (y compris l'origine opaque `null`), `Sec-Fetch-Site`
+   `cross-site`/`same-site`, ou référent d'une autre origine.
+2. **Navigation de premier niveau (`destination: "document"`) → 403.**
+   L'application n'est jamais une navigation de premier niveau : la coquille ne
+   l'ouvre que dans son iframe. Un formulaire forgé par un tiers, lui, en est
+   toujours une. C'est le seul signal qui ferme l'attaque classique sur les
+   trois moteurs. Rien de légitime n'y est perdu : un lien entrant vers
+   `/app/…` tombe de toute façon sur une VM qui n'a pas booté.
+3. **Navigation qui écrit sans origine attribuable → 403.** Une navigation
+   d'iframe de méthode autre que `GET`/`HEAD` doit porter un `Origin` ou un
+   référent *de notre origine*. Sans cela, un attaquant qui met notre `/app/`
+   dans **son** iframe et supprime son référent ne laisserait, sur Firefox,
+   aucun signal — et `frame-ancestors 'self'` ne l'empêche que de **rendre** la
+   réponse, la requête ayant déjà écrit dans la VM.
+4. **Le reste n'est pas contrôlé, et c'est un théorème.** Une sous-ressource
+   (`fetch`, XHR, image…) n'est interceptée que si son client est **contrôlé**
+   par le worker, donc same-origin par construction : mesuré, un `fetch()`
+   inter-origine vers `/app/*` n'atteint le worker sur aucun des trois moteurs.
+   Les `fetch()` de la coquille et de l'application passent donc sans condition.
+
+Ce refus est strictement plus fort que `SameSite=Lax` — qui laisserait encore
+passer une navigation GET inter-site avec ses cookies — et c'est pourquoi le
+bocal n'a pas besoin d'apparier `SameSite`.
+
+**Ce qui reste hors de portée de cette règle :**
+
+- Une **lecture** (`GET`/`HEAD`) déclenchée depuis l'iframe d'un attaquant qui
+  supprime son référent : elle ne laisse aucun signal sur Firefox, et n'est
+  refusée que si elle porte un référent ou un `Origin` étranger. L'attaquant ne
+  peut pas lire la réponse (`Cross-Origin-Resource-Policy: same-origin`,
+  `frame-ancestors 'self'`), mais une application qui écrit sur un `GET` reste
+  exposée à une écriture aveugle. WebKit, qui partitionne les Service Workers
+  par site de premier niveau, ne route même pas cette requête jusqu'à nous.
+- Une application qui **supprime son propre référent** (`Referrer-Policy:
+  no-referrer`, `<meta name="referrer">`) perd, sur Firefox et WebKit, le seul
+  signal qui atteste ses écritures : ses soumissions de formulaire tombent
+  alors en 403 (message explicite dans la page d'erreur du proxy). Rails pose
+  par défaut `strict-origin-when-cross-origin`, qui conserve le référent
+  complet en same-origin.
+- Un **XSS dans l'application** reste, lui, un client same-origin : cette règle
+  ne le concerne pas (voir les deux points précédents de cette section).
 
 ## Hors périmètre (assumé)
 

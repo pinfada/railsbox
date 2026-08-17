@@ -12,7 +12,12 @@
 //  4. un `Max-Age=0` (déconnexion) efface bien le cookie ;
 //  5. le bocal survit à la MORT du Service Worker (persistance IndexedDB) —
 //     le navigateur tue le worker dès qu'il est inactif, et sans cela le
-//     visiteur perdrait sa session en plein parcours.
+//     visiteur perdrait sa session en plein parcours ;
+//  6. aucune requête forgée par un tiers n'atteint la VM — ni le POST de
+//     formulaire de premier niveau, ni la variante embarquée dans l'iframe de
+//     l'attaquant. Ces deux-là ne se prouvent que dans un vrai navigateur, et
+//     seulement sur les trois moteurs : la première défense ne tenait que sur
+//     Chromium, faute d'en-têtes ailleurs (voir shared/proxy-logic.js).
 //
 // La VM est remplacée par un pont factice tenu par la page : il applique le
 // VRAI buildRequestFrames (donc la vraie frontière de sanitisation) pour voir
@@ -269,7 +274,6 @@ test.describe("Bocal à cookies du proxy", () => {
       return {
         jetonTrouve: jeton !== null,
         statut: creation.status,
-        redirige: creation.redirected,
         urlFinale: creation.url,
         corps: await creation.text(),
       };
@@ -279,7 +283,11 @@ test.describe("Bocal à cookies du proxy", () => {
     expect(resultat.corps, "aucun refus CSRF ne doit apparaître").not.toContain(
       "InvalidAuthenticityToken",
     );
-    expect(resultat.redirige, "la création doit répondre par une redirection").toBe(true);
+    // La redirection se prouve par son RÉSULTAT (l'URL finale et le corps du
+    // billet), pas par le drapeau `redirected` : mesuré, WebKit ne le pose pas
+    // sur une réponse rendue par un Service Worker, alors qu'il suit bel et
+    // bien la 302 — vérifier le drapeau faisait échouer ce test sur WebKit
+    // pour une différence de rapport, sans rien dire de la fonctionnalité.
     expect(resultat.urlFinale, "la redirection doit mener au billet créé").toMatch(
       /\/app\/posts\/\d+$/,
     );
@@ -291,6 +299,50 @@ test.describe("Bocal à cookies du proxy", () => {
     expect(post.cookie, "le POST doit porter la session, sinon 422").toContain(
       `${SESSION}=graine-csrf`,
     );
+  });
+
+  test("laisse l'iframe naviguer et soumettre le formulaire du scaffold", async () => {
+    // Le pendant indispensable des refus qui suivent : la sandbox ne vit QUE
+    // par ces navigations-là. La coquille pose l'iframe (navigation GET,
+    // `destination: "iframe"`), le visiteur clique « Create Post » (navigation
+    // POST depuis un document applicatif) — et sur Firefox comme sur WebKit,
+    // aucune de ces deux requêtes ne porte le moindre en-tête d'origine. Une
+    // règle un cran trop stricte casserait ici, sur les trois moteurs.
+    const avant = (await requetesGuest(page)).length;
+    const corpsCadre = await page.evaluate(async () => {
+      const fenetre = /** @type {any} */ (globalThis);
+      const cadre = fenetre.document.createElement("iframe");
+      cadre.setAttribute(
+        "sandbox",
+        "allow-scripts allow-same-origin allow-forms allow-modals allow-downloads",
+      );
+      cadre.src = "/app/posts/new";
+      fenetre.document.body.append(cadre);
+      await new Promise((resoudre) => cadre.addEventListener("load", resoudre, { once: true }));
+
+      const attendu = new Promise((resoudre) =>
+        cadre.addEventListener("load", resoudre, { once: true }),
+      );
+      cadre.contentDocument.querySelector('input[name="post[title]"]').value = "Depuis l'iframe";
+      cadre.contentDocument.querySelector("form").submit();
+      await attendu;
+      const texte = cadre.contentDocument.body.textContent;
+      cadre.remove();
+      return texte;
+    });
+
+    expect(corpsCadre, "la soumission du formulaire doit aboutir au billet créé").toContain(
+      "Billet créé",
+    );
+    const vues = (await requetesGuest(page)).slice(avant);
+    expect(
+      vues.map((entree) => `${entree.method} ${entree.path}`),
+      "les trois requêtes de l'iframe doivent avoir atteint la VM",
+    ).toEqual(["GET /app/posts/new", "POST /app/posts", "GET /app/posts/1"]);
+    expect(
+      vues[1].cookie,
+      "le POST de l'iframe doit porter la session, comme celui de la coquille",
+    ).toContain(`${SESSION}=graine-csrf`);
   });
 
   test("ne transmet ni Cookie ni Origin du navigateur au guest", async () => {
@@ -329,6 +381,15 @@ test.describe("Bocal à cookies du proxy", () => {
     // la session du bocal (qui n'applique pas SameSite), et le jeton
     // d'authenticité ne couvre pas les routes en skip_forgery_protection.
     //
+    // Le PREMIER correctif ne tenait que sur Chromium : il ne lisait que les
+    // en-têtes `Origin` et `Sec-Fetch-Site`, et cette épreuve a mesuré que la
+    // navigation forgée n'en porte AUCUN sur Firefox et WebKit — où elle
+    // atteignait donc la VM (422 de la fausse application, preuve que
+    // l'écriture était bien parvenue au pont). La règle repose depuis sur la
+    // forme de la requête, renseignée sur les trois moteurs : une navigation
+    // de premier niveau n'est jamais l'application, qui ne vit que dans
+    // l'iframe de la coquille (shared/proxy-logic.js).
+    //
     // Reproduction FIDÈLE, pas simulée : 127.0.0.1 et localhost sont deux
     // origines distinctes servies par le même serveur de test. La page tierce
     // poste un vrai formulaire vers l'origine de la sandbox ; c'est bien une
@@ -358,6 +419,75 @@ test.describe("Bocal à cookies du proxy", () => {
       expect(await requetesGuest(page), "et RIEN ne doit atteindre la VM").toHaveLength(avant);
     } finally {
       await tiers.close();
+    }
+  });
+
+  test("refuse notre /app/ embarqué dans l'iframe d'un tiers (HIGH-1 bis)", async () => {
+    // La variante que `frame-ancestors 'self'` ne couvre PAS : la CSP empêche
+    // l'attaquant de RENDRE la réponse, mais la requête, elle, a déjà traversé
+    // le pont et écrit dans la VM. On durcit ici le pire cas — l'attaquant
+    // supprime son référent (meta name=referrer), ce qui ne laisse, sur
+    // Firefox, aucun en-tête ni aucun signal d'origine : seule la règle
+    // « une écriture doit être attribuable » l'arrête.
+    const avant = (await requetesGuest(page)).length;
+    const port = new URL(page.url()).port;
+    const tiers = await contexte.newPage();
+    try {
+      // Page attaquante servie SANS COEP : l'isolation que le serveur de test
+      // pose sur tout bloquerait l'iframe inter-origine avant la requête, ce
+      // qui ferait passer l'épreuve pour de mauvaises raisons.
+      await tiers.route("**/piege-iframe", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body:
+            "<!doctype html><meta charset=utf-8>" +
+            "<meta name=referrer content=no-referrer><title>piège</title><body></body>",
+        }),
+      );
+      await tiers.goto(`http://127.0.0.1:${port}/piege-iframe`);
+      await tiers.evaluate(async (cible) => {
+        const document = /** @type {any} */ (globalThis).document;
+        const cadre = document.createElement("iframe");
+        cadre.name = "victime";
+        document.body.append(cadre);
+        const formulaire = document.createElement("form");
+        formulaire.method = "POST";
+        formulaire.action = cible;
+        formulaire.target = "victime";
+        const champ = document.createElement("input");
+        champ.name = "post[title]";
+        champ.value = "forge-iframe";
+        formulaire.append(champ);
+        document.body.append(formulaire);
+        formulaire.submit();
+        await new Promise((resoudre) => /** @type {any} */ (globalThis).setTimeout(resoudre, 1500));
+      }, `http://localhost:${port}/app/posts`);
+
+      expect(
+        await requetesGuest(page),
+        "aucune écriture forgée ne doit atteindre la VM",
+      ).toHaveLength(avant);
+    } finally {
+      await tiers.close();
+    }
+  });
+
+  test("refuse une navigation de premier niveau vers /app/, même la nôtre", async () => {
+    // L'application n'est JAMAIS une navigation de premier niveau : la
+    // coquille ne l'ouvre que dans son iframe. Refuser `destination:
+    // "document"` est le seul signal disponible sur les trois moteurs — et
+    // rien de légitime n'y est perdu, un lien entrant vers /app/… tombant de
+    // toute façon sur une VM qui n'a pas booté.
+    const avant = (await requetesGuest(page)).length;
+    const directe = await contexte.newPage();
+    try {
+      await directe.goto(`http://localhost:${new URL(page.url()).port}/app/posts`);
+      const corps = (await directe.textContent("body")) ?? "";
+      expect(corps, "la navigation directe doit être refusée en 403").toContain("403");
+      expect(await requetesGuest(page), "et RIEN ne doit atteindre la VM").toHaveLength(avant);
+    } finally {
+      await directe.close();
     }
   });
 
@@ -426,10 +556,15 @@ test.describe("Bocal à cookies du proxy", () => {
     );
   });
 
-  test("survit à la mort du Service Worker (persistance IndexedDB)", async () => {
+  test("survit à la mort du Service Worker (persistance IndexedDB)", async ({ browserName }) => {
     // Le navigateur tue le worker dès qu'il est inactif ; le bocal en mémoire
     // disparaît avec lui. Sans persistance, le visiteur perdrait sa session au
     // milieu de son parcours — le défaut reviendrait par la fenêtre.
+    //
+    // Tuer un worker à la demande passe par le protocole DevTools, que seul
+    // Chromium expose : ailleurs, la propriété reste vérifiée par le code
+    // (restauration IndexedDB testée unitairement), pas par cette épreuve.
+    test.skip(browserName !== "chromium", "arrêt d'un worker : protocole DevTools (Chromium seul)");
     await requete(page, "/app/posts/new"); // repose une session fraîche
 
     const client = await page.context().newCDPSession(page);

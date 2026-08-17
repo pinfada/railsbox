@@ -755,9 +755,17 @@ session à **toute** requête que le Service Worker relaie — or un SW prend en
 charge les **navigations** vers sa portée quelle qu'en soit l'origine
 initiatrice, pas seulement les sous-ressources de ses clients. Un formulaire
 hébergé ailleurs pouvait donc écrire dans la VM du visiteur. Le proxy refuse
-désormais en 403 toute requête dont l'`Origin` ou le `Sec-Fetch-Site` trahit
-une provenance inter-origine — plus strict que le `SameSite=Lax` qu'un
-navigateur aurait appliqué de lui-même.
+désormais en 403 — plus strict que le `SameSite=Lax` qu'un navigateur aurait
+appliqué de lui-même.
+
+Deuxième leçon, mesurée après coup : ce refus ne tenait d'abord que sur
+**Chromium**, parce qu'il ne lisait que des en-têtes. Une navigation
+interceptée par un Service Worker n'en porte AUCUN qui parle d'origine sur
+Firefox et WebKit (`Sec-Fetch-*` est ajouté après l'interception, sur les trois
+moteurs). La règle repose donc sur la **forme** de la requête — `destination`,
+`referrer`, `mode` —, renseignée partout : une navigation de premier niveau
+n'est jamais l'application, qui ne vit que dans l'iframe de la coquille. Le
+relevé complet et la règle exacte sont dans [`SECURITY.md`](SECURITY.md).
 
 **La leçon, elle, dépasse le cookie** : la recette en ligne était verte à 8/8
 sur une démonstration incapable d'écrire, parce qu'elle ne faisait que des GET

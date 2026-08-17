@@ -143,6 +143,15 @@ RAILSBOX_MOTEURS=tous            npm run test:live
 RAILSBOX_MOTEURS=firefox,webkit  npm run test:e2e
 ```
 
+Sur un autre port que 8091 — **indispensable si deux copies du dépôt (arbres de
+travail git) testent en même temps** : `reuseExistingServer` brancherait sinon
+la seconde suite sur le serveur de la première, qui lui servirait *son*
+`sw-proxy.js`, en silence.
+
+```bash
+RAILSBOX_PORT=8097 npm run test:e2e
+```
+
 ## Où vivent les décisions
 
 Les choix d'architecture et leurs **mesures** vivent dans

@@ -41,7 +41,7 @@ const HOST_PATTERN = /^[a-zA-Z0-9.\-:[\]]+$/;
 //    donc bel et bien le worker. La vérification manquante a été portée là où
 //    l'origine publique est connue — le Service Worker lui-même, qui REFUSE
 //    en 403 toute requête `/app/*` dont l'initiateur n'est pas notre origine
-//    (`crossOriginRefusal`, shared/proxy-logic.js). Retirer l'en-tête reste
+//    (`appRequestRefusal`, shared/proxy-logic.js). Retirer l'en-tête reste
 //    correct côté guest ; contrôler, c'est le rôle du worker.
 const STRIPPED_REQUEST_HEADERS = new Set([
   "host",

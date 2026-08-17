@@ -101,10 +101,15 @@ dans cet ordre :
 
 `proxyToVm` (dans `sw-proxy.js`) :
 
-1. `crossOriginRefusal` **avant tout le reste** : une navigation initiée par un
+1. `appRequestRefusal` **avant tout le reste** : une navigation initiée par un
    site tiers arrive bel et bien ici — un Service Worker n'intercepte pas que
-   ses propres clients — et le bocal y attacherait la session. Un `Origin`
-   étranger, ou un `Sec-Fetch-Site` `cross-site`/`same-site`, part en 403.
+   ses propres clients — et le bocal y attacherait la session. Partent en 403 :
+   tout signal d'origine étranger (`Origin`, `Sec-Fetch-Site` inter-site,
+   référent), **toute navigation de premier niveau** (`destination:
+   "document"` : l'application ne vit que dans l'iframe de la coquille) et
+   toute navigation qui écrit sans origine attribuable. La forme de la requête
+   est décisive parce que les en-têtes, eux, sont absents sur Firefox et
+   WebKit — mesuré, voir `SECURITY.md`.
 2. `ensureBridgePort()` : le navigateur tue les workers dès qu'ils sont
    inactifs. Quand le port manque, le worker le **redemande** à la page plutôt
    que d'échouer en 503.
@@ -216,7 +221,9 @@ est un choix, pas un oubli :
 - **Le guest ne connaît pas l'origine publique.** Il ne peut donc rien vérifier
   d'inter-origine ; le contrôle appartient au worker, qui la connaît. C'est
   pourquoi `request-codec.js` **retire** `Origin` et `proxy-logic.js`
-  **contrôle** `Sec-Fetch-Site`.
+  **contrôle** la provenance — non pas sur des en-têtes, absents des
+  navigations sur Firefox et WebKit, mais sur la forme de la requête
+  (`destination`, `referrer`). Voir `SECURITY.md`.
 - **La coquille ne charge aucune URL fournie par l'utilisateur.** Le chemin de
   configuration est fixe et same-origin ; il n'y a donc ni allowlist, ni
   registre, ni validation d'URL à écrire (ADR 0004).

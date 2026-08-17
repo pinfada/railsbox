@@ -722,9 +722,17 @@ A security corollary, found in review: that jar attaches the session cookie to
 **every** request the Service Worker relays — and a SW handles *navigations*
 into its scope whatever their initiator, not just its own clients'
 subresources. A form hosted elsewhere could therefore write into the visitor's
-VM. The proxy now refuses with 403 any request whose `Origin` or
-`Sec-Fetch-Site` betrays a cross-origin initiator — stricter than the
+VM. The proxy now refuses such requests with 403 — stricter than the
 `SameSite=Lax` a browser would have applied on its own.
+
+A second lesson, measured afterwards: that refusal only held on **Chromium**,
+because it read headers only. A navigation intercepted by a Service Worker
+carries no origin-bearing header at all on Firefox and WebKit (`Sec-Fetch-*` is
+added after interception, on all three engines). The rule therefore rests on the
+**shape** of the request — `destination`, `referrer`, `mode` — which every
+engine populates: a top-level navigation is never the application, which only
+ever lives inside the shell's iframe. The full measurement table and the exact
+rule are in [`SECURITY.md`](SECURITY.md).
 
 **The lesson outlives the cookie**: the live recipe was 8/8 green against a
 demo that could not write, because it only issued GETs — and Rails needs no
