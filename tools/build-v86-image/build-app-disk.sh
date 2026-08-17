@@ -61,6 +61,43 @@ command -v node >/dev/null || { echo "node introuvable" >&2; exit 1; }
   exit 1
 }
 
+########################################################################
+# Fonctions de diagnostic de volumétrie
+########################################################################
+# Nomme les plus gros répertoires d'un arbre. Sans cela, un refus de volumétrie
+# annonce « 589 Mo » et laisse le mainteneur sans la moindre piste : c'est le
+# diagnostic qui manquait le plus.
+#
+# Un répertoire qui ne fait que porter un enfant presque aussi lourd n'apprend
+# rien de plus (« vendor », puis « vendor/bundle » à 1 Mo près) : on ne garde
+# que le plus PROFOND de la chaîne, le seul chemin réellement parlant.
+plus_gros_repertoires() {
+  local racine="$1"
+  du -m -d 3 "$racine" 2>/dev/null | sort -rn | awk -F'\t' -v racine="$racine" '
+    BEGIN { n = 0; gardes = 0 }
+    {
+      chemin = $2
+      if (chemin == racine) next
+      if (index(chemin, racine "/") != 1) next
+      if ($1 + 0 < 1) next
+      poids[n] = $1 + 0
+      chemins[n] = substr(chemin, length(racine) + 2)
+      n++
+    }
+    END {
+      # Un parent dont un enfant pèse au moins 90 % de lui sert de simple relais.
+      for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+          if (index(chemins[j], chemins[i] "/") == 1 && poids[j] * 10 >= poids[i] * 9) relais[i] = 1
+      # Entrée déjà triée par taille décroissante (sort -rn).
+      for (i = 0; i < n && gardes < 12; i++) {
+        if (relais[i]) continue
+        printf "    %6d Mo  %s\n", poids[i], chemins[i]
+        gardes++
+      }
+    }'
+}
+
 APP_DIR="$(cd "$APP_DIR" && pwd)"
 [ -n "$NAME" ] || NAME="$(basename "$APP_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
 
@@ -182,6 +219,71 @@ else
 fi
 
 ########################################################################
+# Contexte de construction FILTRÉ
+########################################################################
+# Le disque applicatif a une géométrie FIXE de 512 Mo (ADR 0002), et
+# `COPY . .` y déversait l'arbre du dépôt TEL QUEL : historique git, bundle
+# vendorisé d'un autre Ruby, assets précompilés que la construction réémet.
+# Sur la première application tierce réelle, cela faisait 261 Mo avant même le
+# `bundle install`, et le refus tombait à 589 Mo sans dire d'où ils venaient.
+#
+# Le filtrage a lieu ICI, en fabriquant un contexte de construction à part,
+# plutôt que par un `COPY --exclude=` du Dockerfile ou par un `.dockerignore`
+# écrit dans le dépôt analysé. Trois raisons, mesurées :
+#   · `COPY --exclude=` exige la syntaxe expérimentale `1.7-labs` et n'expanse
+#     PAS les variables : `--exclude=${VAR}` est accepté sans broncher et
+#     n'exclut rien. Une liste d'exclusions qui dépend de l'application ne peut
+#     donc pas s'écrire ainsi — et l'échec serait silencieux ;
+#   · un `.dockerignore` déposé dans le dépôt du mainteneur le modifierait ;
+#   · le contexte filtré ne franchit pas non plus la frontière du démon Docker,
+#     ce qu'aucune des deux autres options n'évite.
+#
+# Le `.dockerignore` que l'application fournirait, lui, est CONSERVÉ : il est
+# copié avec le reste, et BuildKit l'applique par-dessus ce filtrage.
+BUILD_CONTEXT="$WORK_DIR/contexte"
+mkdir -p "$BUILD_CONTEXT"
+echo "→ Filtrage du contenu applicatif…"
+AVANT_MB="$(du -sm "$APP_DIR" | cut -f1)"
+
+# Mesuré AVANT la copie, sur l'arbre d'origine : un mainteneur qui lit
+# « vendor/bundle 143 Mo écarté » comprend immédiatement, là où « 589 Mo »
+# ne lui laisse aucune prise.
+EXCLUS_ABSENTS=""
+TAR_EXCLUDES=()
+for chemin in ${APP_EXCLUDES:-}; do
+  TAR_EXCLUDES+=("--exclude=./$chemin")
+  if [ -e "$APP_DIR/$chemin" ]; then
+    printf '    %-30s %5s Mo écartés\n' "$chemin" "$(du -sm "$APP_DIR/$chemin" | cut -f1)"
+  else
+    EXCLUS_ABSENTS="${EXCLUS_ABSENTS:+$EXCLUS_ABSENTS, }$chemin"
+  fi
+done
+[ -z "$EXCLUS_ABSENTS" ] || echo "    (absents du dépôt : $EXCLUS_ABSENTS)"
+if [ -f "$APP_DIR/.dockerignore" ]; then
+  echo "    .dockerignore fourni par l'application : conservé, BuildKit l'applique en plus."
+fi
+
+# GNU tar sort en 1 pour de simples avertissements (fichier modifié pendant la
+# lecture, socket ignorée) et en 2 pour une erreur véritable : tout arrêter au
+# premier avertissement rendrait la construction capricieuse sans rien protéger.
+set +e
+if [ ${#TAR_EXCLUDES[@]} -gt 0 ]; then
+  tar -c -C "$APP_DIR" "${TAR_EXCLUDES[@]}" . | tar -x -C "$BUILD_CONTEXT"
+else
+  tar -c -C "$APP_DIR" . | tar -x -C "$BUILD_CONTEXT"
+fi
+TAR_STATUS=$?
+set -e
+[ "$TAR_STATUS" -le 1 ] || {
+  echo "✗ Copie filtrée du contexte impossible (tar : $TAR_STATUS)." >&2
+  exit 1
+}
+
+APRES_MB="$(du -sm "$BUILD_CONTEXT" | cut -f1)"
+echo "  Arbre du dépôt ${AVANT_MB} Mo → contexte livré au build ${APRES_MB} Mo" \
+  "($((AVANT_MB - APRES_MB)) Mo écartés)"
+
+########################################################################
 # Étage amd64 de précompilation des assets (critère C8)
 ########################################################################
 # tailwindcss-ruby, dartsass-ruby et les chaînes npm ne publient aucun binaire
@@ -207,7 +309,7 @@ if [ "${ASSETS_STAGE:-aucun}" = "amd64" ]; then
     --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
     --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
     --output "type=local,dest=$ASSETS_CONTEXT" \
-    "$APP_DIR"
+    "$BUILD_CONTEXT"
 
   # Avertissement remonté de l'étage : des répertoires ont été écrits par les
   # scripts de build sans faire partie de l'export. C'est la panne SILENCIEUSE
@@ -264,7 +366,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "SYSTEM_PACKAGES=${SYSTEM_PACKAGES:-}" \
   --build-arg "APP_DISK_MB=$APP_DISK_MB" \
   --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
-  "$APP_DIR"
+  "$BUILD_CONTEXT"
 
 echo "→ Export de l'arbre /app…"
 CONTAINER_ID="$(docker create --platform linux/386 "$IMAGE_TAG")"
@@ -276,6 +378,17 @@ echo "  Contenu /app : ${USED_MB} Mo (cible ${APP_DISK_MB} Mo)"
 if [ "$USED_MB" -gt "$APP_DISK_MB" ]; then
   echo "✗ Le contenu applicatif (${USED_MB} Mo) dépasse la géométrie fixe (${APP_DISK_MB} Mo)." >&2
   echo "  La géométrie ne peut pas changer (contrainte de restauration d'instantané, ADR 0002)." >&2
+  echo >&2
+  # Le chiffre seul ne se traite pas : c'est le NOM des répertoires coupables
+  # qui dit au mainteneur ce qu'il peut alléger.
+  echo "  Les plus gros répertoires du contenu livré :" >&2
+  plus_gros_repertoires "$WORK_DIR/app" >&2
+  echo >&2
+  echo "  Déjà écarté du contexte : ${APP_EXCLUDES:-aucun}" >&2
+  echo "  Pour en écarter davantage, ajoutez ces chemins à railsbox.yml :" >&2
+  echo "    exclude: [doc, db/fixtures]" >&2
+  echo "  Les gems (vendor/bundle) et la surcouche système (opt/systeme), elles, ne" >&2
+  echo "  s'allègent qu'en retirant des dépendances du Gemfile ou de system_packages:." >&2
   exit 1
 fi
 

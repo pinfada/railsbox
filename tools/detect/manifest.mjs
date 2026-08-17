@@ -3,6 +3,7 @@
 // main — le projet s'interdit toute dépendance runtime, et le schéma est assez
 // petit pour que l'analyseur reste plus court qu'une bibliothèque.
 import { sanitizeOutputDirs } from "./asset-output.mjs";
+import { sanitizeExcludePaths } from "./exclusions.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { sqliteDriverFindings } from "./sqlite.mjs";
 import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "./ssl.mjs";
@@ -33,6 +34,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {{command?: string, autoLogin?: string, autoLoginCode?: string}} [seed] amorçage des données
  * @property {Record<string, string>} [env] variables d'environnement déclarées
  * @property {readonly string[]} [systemPackages] paquets Debian de la surcouche applicative
+ * @property {readonly string[]} [excludePaths] chemins écartés du contexte de construction
  */
 
 /**
@@ -65,10 +67,36 @@ const SCALAR_KEYS = Object.freeze(["ruby", "database"]);
  * (ADR 0006) : ceux que l'application veut sans que la base mutualisée ait à
  * les porter pour tout le monde.
  */
-const LIST_KEYS = Object.freeze(["system_packages"]);
+const LIST_KEYS = Object.freeze(["system_packages", "exclude"]);
 
 /** Correspondance clé YAML → clé du manifeste, pour les listes. */
-const LIST_TARGETS = Object.freeze({ system_packages: "systemPackages" });
+const LIST_TARGETS = Object.freeze({
+  system_packages: "systemPackages",
+  exclude: "excludePaths",
+});
+
+/**
+ * Validation propre à chaque clé de liste. La validation a lieu ICI, au plus
+ * près de la lecture du fichier tiers : ces valeurs finissent en arguments de
+ * commandes exécutées sur le runner de CI du mainteneur — `apt-get install`
+ * pour `system_packages`, `tar --exclude=` pour `exclude`.
+ */
+const LIST_VALIDATORS = Object.freeze({
+  system_packages: (liste, source) => {
+    const { packages, findings } = validateSystemPackages(liste, source);
+    return { values: packages, findings };
+  },
+  exclude: (liste, source) => {
+    const { paths, findings } = sanitizeExcludePaths(liste, source);
+    return { values: paths, findings };
+  },
+});
+
+/** Exemple de valeur attendue, cité quand une clé de liste est mal formée. */
+const LIST_EXAMPLES = Object.freeze({
+  system_packages: "[libmagic-dev, libsodium-dev]",
+  exclude: "[doc, db/fixtures]",
+});
 
 /** Nom de variable d'environnement conforme à POSIX, longueur bornée. */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -218,22 +246,12 @@ function applyTopLevel(state, key, value, lineNumber) {
   if (LIST_KEYS.includes(key)) {
     const liste = normalizeScripts(value);
     if (liste === null) {
-      pushInvalidValue(
-        state,
-        key,
-        lineNumber,
-        "liste attendue (ex. [libmagic-dev, libsodium-dev])",
-      );
+      pushInvalidValue(state, key, lineNumber, `liste attendue (ex. ${LIST_EXAMPLES[key]})`);
       return;
     }
-    // Validation ICI, au plus près de la lecture du fichier tiers : ces noms
-    // finiront en arguments d'apt-get sur un runner de CI (ADR 0006).
-    const { packages, findings } = validateSystemPackages(
-      liste,
-      `railsbox.yml ligne ${lineNumber}`,
-    );
+    const { values, findings } = LIST_VALIDATORS[key](liste, `railsbox.yml ligne ${lineNumber}`);
     state.findings.push(...findings);
-    state.manifest[LIST_TARGETS[key]] = packages;
+    state.manifest[LIST_TARGETS[key]] = values;
     return;
   }
   if (!SCALAR_KEYS.includes(key)) {
@@ -447,6 +465,15 @@ export function mergeManifest(detected, declared) {
   if (Array.isArray(declared.systemPackages)) {
     const base = Array.isArray(detected.systemPackages) ? detected.systemPackages : [];
     merged.systemPackages = [...new Set([...base, ...declared.systemPackages])].sort();
+  }
+  // Les exclusions du contexte de construction s'AJOUTENT elles aussi : la clé
+  // `exclude:` complète la liste par défaut (.git, vendor/bundle, node_modules…)
+  // avec ce que railsbox ne peut pas deviner — un dossier de médias de
+  // démonstration, un jeu de fixtures lourd. Elle ne la remplace pas : laisser
+  // un dépôt réintroduire son .git dans un disque de 512 Mo n'aiderait personne.
+  if (Array.isArray(declared.excludePaths)) {
+    const base = Array.isArray(detected.excludePaths) ? detected.excludePaths : [];
+    merged.excludePaths = [...new Set([...base, ...declared.excludePaths])];
   }
   if (isObject(declared.assets)) {
     const base = isObject(detected.assets) ? detected.assets : {};

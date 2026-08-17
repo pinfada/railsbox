@@ -11,6 +11,11 @@
 # L'étage final est un `scratch` qui ne contient QUE les répertoires produits :
 # il est destiné à `--output type=local`, pas à être exécuté.
 #
+# Contexte attendu : le même arbre FILTRÉ que app.Dockerfile (voir
+# build-app-disk.sh). `public/assets` en est absent dès que cet étage le
+# régénère — sans quoi les empreintes périmées du dépôt redescendraient dans le
+# disque applicatif par l'export.
+#
 #   docker build --platform linux/amd64 -f assets-amd64.Dockerfile \
 #     --build-arg RUBY_VERSION=3.3.12 --build-arg MOUNT_PREFIX=/depot \
 #     --output type=local,dest=<dossier> <app>

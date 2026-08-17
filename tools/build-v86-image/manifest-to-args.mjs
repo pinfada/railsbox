@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ASSET_STAGE, binaryAssetGems, planAssets } from "../detect/assets.mjs";
 import { detectApp, readOptionalFile } from "../detect/detect.mjs";
+import { planExclusions } from "../detect/exclusions.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
 import { parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
@@ -302,6 +303,14 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
   const postgres = postgresSettings(appName);
   const keepForceSsl = manifest.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE;
   const paquets = splitPackages(manifest, baseRevision);
+  // Ce qui n'entrera PAS dans le contexte de construction. Calculé ici parce
+  // que la décision dépend du plan d'assets : un répertoire de sortie n'est
+  // écarté que si la construction le régénère (voir detect/exclusions.mjs).
+  const exclusions = planExclusions({
+    declared: manifest.excludePaths ?? [],
+    assetStage: assets.stage,
+    assetOutputDirs: assets.output,
+  });
   return {
     APP_NAME: appName,
     RUBY_VERSION: ruby.version,
@@ -343,6 +352,12 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
     // Outils d'assets à binaire précompilé : aucun n'existe pour i386, ils
     // tournent donc sur l'étage amd64. Conservé pour le journal de build.
     BINARY_ASSET_GEMS: assets.binaryGems.join(" "),
+    // Chemins écartés du contexte de construction. Le disque applicatif a une
+    // géométrie FIXE de 512 Mo (ADR 0002) : l'historique git, un bundle
+    // vendorisé et les assets que la construction réémet n'y ont aucune place.
+    // Consommé par build-app-disk.sh, qui fabrique un contexte filtré plutôt
+    // que d'écrire un .dockerignore dans le dépôt du mainteneur.
+    APP_EXCLUDES: exclusions.paths.join(" "),
     EXTRA_PACKAGES: paquets.all.join(" "),
     // Surcouche système (ADR 0006) : ce que la base épinglée ne fournit PAS.
     // Installé au build du disque applicatif, relocalisé sur celui-ci, et
