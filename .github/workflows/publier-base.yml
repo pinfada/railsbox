@@ -22,7 +22,7 @@ on:
           (paquet ajouté, script d'init modifié) : les artefacts sont immuables
           et les sandboxes déjà publiées continuent d'épingler l'ancienne.
         required: true
-        default: "3.3-r2"
+        default: "3.3-r3"
       ruby:
         description: "Version exacte de Ruby compilée dans la base"
         required: true
@@ -112,6 +112,55 @@ jobs:
             python3 --version
             redis-server --version | head -1
             /usr/lib/postgresql/15/bin/postgres --version
+          '
+
+      # Traitement d'images (révision 3.3-r3). libvips est le processeur de
+      # variantes par défaut de Rails 7+ : une base qui l'annonce sans le
+      # fournir refuserait silencieusement toute application qui redimensionne
+      # une image — et l'échec n'apparaîtrait qu'au premier appel, dans le
+      # navigateur du visiteur. On l'éprouve donc ici, à deux niveaux : les
+      # exécutables et le SONAME résolvable par l'éditeur de liens dynamique,
+      # puis (étape suivante) un vrai chargement Ruby.
+      #
+      # Pas de `pkg-config --modversion vips` ici : le fichier vips.pc vit dans
+      # libvips-dev, que la base n'embarque PAS — 170 Mo d'en-têtes pour une
+      # gem qui ne compile rien. C'est le SONAME que ruby-vips cherche.
+      - name: Vérification du traitement d'images
+        run: |
+          docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" sh -c '
+            set -eu
+            vips --version
+            ldconfig -p | grep -q "libvips\.so\.42" || {
+              echo "libvips.so.42 introuvable pour l éditeur de liens dynamique"; exit 1;
+            }
+            convert --version | head -1
+            pdftoppm -v 2>&1 | head -1
+          '
+
+      # La preuve qui compte : ruby-vips est une liaison FFI, elle ne compile
+      # rien et dlopen libvips.so.42 au premier appel. Seul un chargement réel
+      # dit si la bibliothèque est trouvable depuis Ruby, en i386 — un
+      # `pkg-config` satisfait ne le garantit pas.
+      #
+      # L'aller-retour qui suit (image noire → vignette 16 px → PNG sur disque)
+      # est le geste exact d'ActiveStorage::Variant. Il éprouve libvips ET son
+      # greffon PNG, que rien d'autre ne toucherait.
+      - name: Chargement réel de ruby-vips depuis Ruby
+        run: |
+          docker run --rm --platform linux/386 "$IMAGE:${{ inputs.tag }}" sh -c '
+            set -eu
+            gem install --no-document ffi ruby-vips
+            ruby -e "
+              require \"vips\"
+              puts \"libvips #{Vips.version_string} vu depuis Ruby #{RUBY_VERSION} (#{RUBY_PLATFORM})\"
+              image = Vips::Image.black(64, 64)
+              vignette = image.thumbnail_image(16)
+              abort \"redimensionnement incorrect\" unless vignette.width == 16
+              vignette.write_to_file(\"/tmp/vignette.png\")
+              taille = File.size(\"/tmp/vignette.png\")
+              abort \"vignette vide\" unless taille > 0
+              puts \"aller-retour PNG : #{taille} octets\"
+            "
           '
 
       # PostgreSQL doit être présent EN BINAIRES et ABSENT EN CLUSTER. Un

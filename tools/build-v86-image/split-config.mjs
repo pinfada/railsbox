@@ -12,37 +12,166 @@ import { fileURLToPath } from "node:url";
 export const APP_DISK_BYTES = 512 * 1024 * 1024;
 
 /**
- * Bibliothèques système présentes dans l'image de BASE (voir base/Dockerfile).
- *
- * Contrairement à la voie monolithique — qui installe `EXTRA_PACKAGES` au build
- * de l'application — la base découplée est mutualisée : son jeu de paquets est
- * figé à sa construction et le disque applicatif ne peut rien y ajouter. Une
- * gem native réclamant autre chose échouerait à la compilation, très loin de la
- * cause. On compare donc en amont, pour refuser avec un message utile.
+ * Révisions de base publiées, de la plus ancienne à la plus récente. Sert à
+ * choisir LA révision à conseiller quand plusieurs paquets manquent : c'est la
+ * plus récente des révisions qui les introduisent.
  */
-export const BASE_SYSTEM_PACKAGES = Object.freeze([
-  "libpq-dev",
-  "libsqlite3-dev",
-  "libxml2-dev",
-  "libxslt1-dev",
-  // PostgreSQL est présent depuis la base 3.3-r2 : serveur et client, mais
-  // AUCUN cluster (celui de la sandbox vit sur le disque applicatif).
-  "postgresql",
-  "postgresql-client",
-  "redis-server",
-]);
+export const BASE_REVISIONS = Object.freeze(["3.3", "3.3-r2", "3.3-r3"]);
+
+/** Révision de base servie par défaut aux workflows (entrée « base: »). */
+export const DEFAULT_BASE_REVISION = "3.3-r2";
+
+/** Gabarit d'issue à ouvrir quand aucune base ne fournit un paquet. */
+export const UNSUPPORTED_ISSUE_URL =
+  "https://github.com/pinfada/railsbox/issues/new?template=application-non-prise-en-charge.yml";
+
+/**
+ * Bibliothèques système présentes dans l'image de BASE (voir base/Dockerfile),
+ * et révision qui a INTRODUIT chacune.
+ *
+ * La base découplée est mutualisée : son jeu de paquets est figé à sa
+ * construction, et chaque paquet ajouté pèse sur toutes les sandboxes. Cette
+ * table dit ce qu'elle porte, révision par révision. Ce qui n'y figure pas
+ * n'est plus un refus depuis l'ADR 0006 : c'est une SURCOUCHE, installée au
+ * build du disque applicatif et relocalisée sur celui-ci.
+ *
+ * La révision n'est pas décorative : elle décide de la frontière. Un paquet
+ * absent de la base ÉPINGLÉE mais présent dans une plus récente peut être
+ * obtenu des deux façons — et l'épingle coûte moins cher, puisque le rootfs
+ * mutualisé n'est lu que par morceaux. C'est ce que la construction conseille.
+ */
+export const PACKAGE_BASE_REVISIONS = Object.freeze({
+  // 3.3 — toolchain de compilation des gems natives et premiers besoins.
+  "build-essential": "3.3",
+  "libffi-dev": "3.3",
+  "libgmp-dev": "3.3",
+  "libreadline-dev": "3.3",
+  "libsqlite3-dev": "3.3",
+  "libssl-dev": "3.3",
+  "libxml2-dev": "3.3",
+  "libxslt1-dev": "3.3",
+  "libyaml-dev": "3.3",
+  "pkg-config": "3.3",
+  "redis-server": "3.3",
+  "zlib1g-dev": "3.3",
+  // 3.3-r2 — PostgreSQL : serveur et client, mais AUCUN cluster (celui de la
+  // sandbox vit sur le disque applicatif).
+  "libpq-dev": "3.3-r2",
+  postgresql: "3.3-r2",
+  "postgresql-client": "3.3-r2",
+  // 3.3-r3 — traitement d'images. libvips est le processeur de variantes par
+  // défaut de Rails 7+ ; imagemagick et poppler-utils ne coûtent presque rien
+  // de plus, leurs dépendances venant déjà avec libvips. Les coûts mesurés et
+  // les candidats écartés (ffmpeg, libvips-dev, rmagick) sont documentés dans
+  // base/Dockerfile.
+  imagemagick: "3.3-r3",
+  "libcurl4-openssl-dev": "3.3-r3",
+  "libicu-dev": "3.3-r3",
+  "libsodium-dev": "3.3-r3",
+  "libvips-tools": "3.3-r3",
+  libvips42: "3.3-r3",
+  "poppler-utils": "3.3-r3",
+});
+
+/** Paquets fournis par la base la plus récente. Dérivé : une seule source. */
+export const BASE_SYSTEM_PACKAGES = Object.freeze(Object.keys(PACKAGE_BASE_REVISIONS).sort());
+
+/**
+ * Paquets fournis par une révision de base donnée.
+ * @param {string} [revision] révision à interroger (défaut : la plus récente)
+ * @returns {string[]} paquets présents dans cette révision, triés
+ */
+export function packagesForRevision(revision) {
+  const rank = BASE_REVISIONS.indexOf(revision ?? "");
+  if (rank === -1) return [...BASE_SYSTEM_PACKAGES];
+  return BASE_SYSTEM_PACKAGES.filter(
+    (name) => BASE_REVISIONS.indexOf(PACKAGE_BASE_REVISIONS[name]) <= rank,
+  );
+}
 
 /**
  * Liste les paquets réclamés par une application que la base ne fournit pas.
+ *
+ * `revision` permet de comparer à la base RÉELLEMENT épinglée plutôt qu'à la
+ * plus récente que connaît le dépôt : c'est ce qui distingue « ce paquet existe,
+ * changez d'épingle » de « personne ne le fournit ». Une valeur inconnue (image
+ * locale, tag hors convention) retombe sur la base la plus récente.
  * @param {string|readonly string[]} required paquets réclamés (liste ou chaîne séparée par des espaces)
+ * @param {string} [revision] révision de base utilisée (défaut : la plus récente)
  * @returns {string[]} paquets manquants, triés et sans doublon
  */
-export function unsupportedPackages(required) {
+export function unsupportedPackages(required, revision) {
   const names = (typeof required === "string" ? required.split(/\s+/) : [...required]).filter(
     Boolean,
   );
-  const missing = names.filter((name) => !BASE_SYSTEM_PACKAGES.includes(name));
+  const fournis = packagesForRevision(revision);
+  const missing = names.filter((name) => !fournis.includes(name));
   return [...new Set(missing)].sort();
+}
+
+/**
+ * Révision de base la plus récente parmi celles qui introduisent ces paquets.
+ * @param {readonly string[]} names paquets connus de {@link PACKAGE_BASE_REVISIONS}
+ * @returns {string|null} révision à épingler, ou `null` si aucun paquet n'est connu
+ */
+export function requiredBaseRevision(names) {
+  let rank = -1;
+  for (const name of names) {
+    const index = BASE_REVISIONS.indexOf(PACKAGE_BASE_REVISIONS[name]);
+    if (index > rank) rank = index;
+  }
+  return rank === -1 ? null : BASE_REVISIONS[rank];
+}
+
+/**
+ * Rédige le constat adressé au mainteneur, et la sortie qui va avec.
+ *
+ * Depuis l'ADR 0006, ce texte n'est plus produit par la construction — la
+ * surcouche applicative absorbe ce que la base ne fournit pas. Il reste le
+ * message de la commande de DIAGNOSTIC `--check-packages`, celle que le gabarit
+ * d'issue demande d'exécuter : elle répond « quelle base couvre cette
+ * application, et que reste-t-il à traiter autrement ».
+ *
+ * Deux situations, deux issues. Un paquet que RAILSBOX CONNAÎT mais que la base
+ * épinglée n'a pas se règle en changeant l'entrée « base: » : le message nomme
+ * la révision, et c'est l'option la moins chère. Un paquet qu'aucune base ne
+ * fournit passe par la surcouche ; s'il n'existe pas non plus en i386, ou si sa
+ * surcouche ne tient pas dans les 512 Mo du disque applicatif, l'arbitrage
+ * appartient à railsbox — d'où le renvoi au gabarit d'issue.
+ * @param {readonly string[]} missing paquets manquants, issus de {@link unsupportedPackages}
+ * @returns {string[]} lignes du message, la première portant le motif que reconnaît le classifieur
+ */
+export function refusalLines(missing) {
+  const known = missing.filter((name) => name in PACKAGE_BASE_REVISIONS);
+  const unknown = missing.filter((name) => !(name in PACKAGE_BASE_REVISIONS));
+  // Première ligne figée : le classifieur d'échecs la reconnaît dans le journal
+  // de construction (règle « base-paquet-manquant »).
+  const lines = [`✗ La base ne fournit pas les bibliothèques système : ${missing.join(" ")}`];
+  if (known.length > 0) {
+    const revision = requiredBaseRevision(known);
+    const present = known.length > 1 ? "présents" : "présent";
+    lines.push(
+      "",
+      `  ${known.join(", ")} : ${present} dans la base ${revision}. Épinglez-la —`,
+      `    · workflow construire-sandbox : entrée « base: ${revision} »`,
+      `    · en local : --base ghcr.io/pinfada/railsbox-base:${revision}`,
+    );
+  }
+  if (unknown.length > 0) {
+    lines.push(
+      "",
+      `  ${unknown.join(", ")} : aucune base publiée ne ${unknown.length > 1 ? "les" : "le"} fournit.`,
+      "  Ils passeront par la SURCOUCHE applicative (ADR 0006) : installés au build",
+      "  du disque applicatif, relocalisés sous /app/opt/systeme, activés au",
+      "  démarrage. Rien à faire — sauf si l'un d'eux n'existe pas en i386, ou si",
+      "  l'ensemble déborde des 512 Mo du disque applicatif. Dans ce cas seulement,",
+      "  ouvrez une issue « Ma stack n'est pas prise en charge » : l'arbitrage entre",
+      "  fréquence d'usage et mégaoctets imposés à toutes les sandboxes appartient à",
+      "  railsbox.",
+      `    ${UNSUPPORTED_ISSUE_URL}`,
+    );
+  }
+  return lines;
 }
 
 /**
@@ -133,18 +262,26 @@ export function buildSplitConfig({
 }
 
 // Interface en ligne de commande minimale, appelée par build-app-disk.sh :
-//   node split-config.mjs --check-packages "libvips-dev libxml2-dev"
-// Écrit les paquets manquants sur la sortie standard et sort en 1 s'il y en a.
-// Le shell n'a ainsi pas à dupliquer la liste des paquets de la base.
+//   node split-config.mjs --check-packages "libmagickwand-dev libxml2-dev" \
+//                         [--base-revision 3.3-r2]
+// Écrit les paquets manquants sur la sortie standard (pour un script qui
+// voudrait les relire) et le REFUS COMPLET sur la sortie d'erreur, puis sort en
+// 1. Le shell n'a ainsi ni la liste des paquets de la base ni le texte du refus
+// à dupliquer : les deux vivent ici, avec la table qui les justifie.
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const flag = process.argv.indexOf("--check-packages");
+  const flagRevision = process.argv.indexOf("--base-revision");
   if (flag === -1) {
-    process.stderr.write('Usage : node split-config.mjs --check-packages "<paquets>"\n');
+    process.stderr.write(
+      'Usage : node split-config.mjs --check-packages "<paquets>" [--base-revision <rév>]\n',
+    );
     process.exitCode = 2;
   } else {
-    const missing = unsupportedPackages(process.argv[flag + 1] ?? "");
+    const revision = flagRevision === -1 ? undefined : process.argv[flagRevision + 1];
+    const missing = unsupportedPackages(process.argv[flag + 1] ?? "", revision);
     if (missing.length > 0) {
       process.stdout.write(`${missing.join(" ")}\n`);
+      process.stderr.write(`${refusalLines(missing).join("\n")}\n`);
       process.exitCode = 1;
     }
   }

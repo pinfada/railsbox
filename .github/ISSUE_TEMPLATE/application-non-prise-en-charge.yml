@@ -24,6 +24,25 @@ body:
         doit être précompilé sur l'étage amd64 du runner
         (`tools/detect/assets.mjs`).
 
+
+        **Avant d'ouvrir un ticket pour une bibliothèque système manquante :**
+        depuis l'[ADR 0006](https://github.com/pinfada/railsbox/blob/main/docs/decisions/0006-bibliotheques-systeme.md),
+        un paquet absent de la base n'est plus un refus — il est installé en
+        **surcouche** sur le disque applicatif. Déclarez-le dans
+        `system_packages:` de votre `railsbox.yml` et relancez. Ce ticket ne
+        reste utile que dans trois cas : le paquet n'existe pas en i386, sa
+        surcouche déborde des 512 Mo du disque applicatif, ou vous pensez qu'il
+        relève du dénominateur commun de Rails et doit entrer dans la base.
+        Cette commande dit lequel :
+
+
+        ```
+
+        node tools/build-v86-image/split-config.mjs --check-packages "<paquets>" \
+          --base-revision 3.3-r2
+
+        ```
+
   - type: textarea
     id: rapport-detection
     attributes:

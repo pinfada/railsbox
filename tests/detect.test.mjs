@@ -403,6 +403,43 @@ test("les gems natives connues portent leurs bibliothèques système", () => {
   assert.deepEqual([...byName.get("bcrypt")], []);
 });
 
+test("la pile de traitement d'images d'image_processing est reconnue", async () => {
+  // Arrange : ce que résout `gem "image_processing"` — la gem elle-même est en
+  // Ruby pur, mais elle tire les DEUX processeurs de variantes de Rails. C'est
+  // exactement le lock de pinfada/tchopmygrinds, premier intégrateur tiers.
+  const dir = await createApp({
+    "Gemfile.lock": lockWith(["image_processing", "mini_magick", "ruby-vips", "ffi"]),
+  });
+
+  // Act
+  const { manifest, findings } = await detectApp(dir);
+  const byName = new Map(manifest.nativeGems.map((gem) => [gem.name, gem.systemLibs]));
+
+  // Assert : ruby-vips ne compile rien (liaison FFI) et mini_magick appelle un
+  // exécutable — les deux dépendances système sont pourtant réelles, et doivent
+  // être vues AVANT la construction, pas au premier redimensionnement.
+  assert.deepEqual([...byName.get("ruby-vips")], ["libvips"]);
+  assert.deepEqual([...byName.get("mini_magick")], ["imagemagick"]);
+  assert.deepEqual([...byName.get("ffi")], ["libffi"]);
+  // Rien de bloquant : la base 3.3-r3 fournit libvips et ImageMagick.
+  assert.equal(hasBlocking(findings), false);
+});
+
+test("les gems à bibliothèque écartée de la base sont tout de même nommées", () => {
+  // rmagick et ruby-filemagic n'ont pas leur place dans la base (80 Mo et 8 Mo
+  // pour des gems marginales). Les taire produirait un échec de compilation
+  // sans cause lisible ; les nommer produit un refus qui dit quoi faire.
+  const specs = parseLockSpecs(lockWith(["rmagick", "ruby-filemagic", "rbnacl", "curb"]));
+
+  const { nativeGems } = collectNativeGems(specs);
+  const byName = new Map(nativeGems.map((gem) => [gem.name, gem.systemLibs]));
+
+  assert.deepEqual([...byName.get("rmagick")], ["libmagickwand"]);
+  assert.deepEqual([...byName.get("ruby-filemagic")], ["libmagic"]);
+  assert.deepEqual([...byName.get("rbnacl")], ["libsodium"]);
+  assert.deepEqual([...byName.get("curb")], ["libcurl"]);
+});
+
 test("grpc déclenche l'avertissement de compilation très longue", async () => {
   const dir = await createApp({ "Gemfile.lock": lockWith(["grpc"]) });
 

@@ -15,8 +15,10 @@ import { detectApp, readOptionalFile } from "../detect/detect.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
 import { parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
+import { validateSystemPackages } from "../detect/paquets-systeme.mjs";
 import { buildAutoLoginInitializer } from "./auto-login.mjs";
 import { formatReport, hasBlocking } from "../detect/report.mjs";
+import { requiredBaseRevision, unsupportedPackages } from "./split-config.mjs";
 
 /** @typedef {import("../detect/manifest.mjs").Manifest} Manifest */
 
@@ -105,9 +107,25 @@ export function postgresSettings(appName) {
 
 /** Paquets Debian fournissant chaque bibliothèque système réclamée par une gem. */
 const SYSTEM_LIB_PACKAGES = Object.freeze({
+  imagemagick: Object.freeze(["imagemagick"]),
+  libcurl: Object.freeze(["libcurl4-openssl-dev"]),
+  libffi: Object.freeze(["libffi-dev"]),
+  libicu: Object.freeze(["libicu-dev"]),
+  // libmagic-dev : 8 Mo pour ruby-filemagic, que Marcel (Ruby pur) a remplacée
+  // dans Rails. Volontairement ABSENT de la base — la nommer ici fait produire
+  // un refus explicite plutôt qu'un échec de compilation.
+  libmagic: Object.freeze(["libmagic-dev"]),
+  // libmagickwand-dev : 80 Mo pour rmagick, marginale face à mini_magick.
+  // Écartée de la base pour la même raison, et nommée pour la même raison.
+  libmagickwand: Object.freeze(["libmagickwand-dev"]),
   libpq: Object.freeze(["libpq-dev"]),
+  libsodium: Object.freeze(["libsodium-dev"]),
   libsqlite3: Object.freeze(["libsqlite3-dev"]),
-  libvips: Object.freeze(["libvips42", "libvips-dev"]),
+  // libvips-dev n'a rien à faire ici : ruby-vips est une liaison FFI, elle
+  // dlopen libvips.so.42 et ne compile aucun en-tête. Les 170 Mo d'en-têtes de
+  // toute la pile GLib/GTK n'achèteraient rien. libvips-tools apporte `vips`,
+  // qui rend la présence vérifiable — et ne coûte rien de plus.
+  libvips: Object.freeze(["libvips42", "libvips-tools"]),
   libxml2: Object.freeze(["libxml2-dev"]),
   libxslt: Object.freeze(["libxslt1-dev"]),
   // libsass : sassc compile sa copie embarquée, aucun paquet système utile.
@@ -168,8 +186,39 @@ export function extraPackages(manifest) {
       for (const name of SYSTEM_LIB_PACKAGES[lib] ?? []) packages.add(name);
     }
   }
+  // Paquets déclarés dans railsbox.yml : ce que la table gem → bibliothèques ne
+  // peut pas deviner (un exécutable appelé en `system()`, un greffon chargé au
+  // vol). Revalidés ICI même s'ils l'ont déjà été à la lecture du manifeste :
+  // extraPackages est appelable avec un manifeste de provenance quelconque, et
+  // sa sortie part dans un apt-get (ADR 0006).
+  for (const name of validateSystemPackages(manifest.systemPackages ?? []).packages) {
+    packages.add(name);
+  }
   if (manifest.services?.redis) packages.add("redis-server");
   return [...packages].sort();
+}
+
+/**
+ * Répartit les paquets réclamés entre la base mutualisée et la surcouche
+ * applicative (ADR 0006).
+ *
+ * C'est la règle qui met fin à l'accumulation : un paquet absent de la base
+ * n'est plus un refus, c'est une surcouche installée sur le disque applicatif
+ * de CETTE application. La base ne grossit que pour le dénominateur commun.
+ * @param {Manifest} manifest manifeste fusionné
+ * @param {string} [baseRevision] révision de base épinglée (défaut : la plus récente)
+ * @returns {{all: string[], base: string[], overlay: string[], hint: string|null}} répartition et conseil d'épingle
+ */
+export function splitPackages(manifest, baseRevision) {
+  const all = extraPackages(manifest);
+  const overlay = unsupportedPackages(all, baseRevision);
+  const base = all.filter((name) => !overlay.includes(name));
+  // Une surcouche coûte au disque applicatif de CETTE sandbox ; le même paquet
+  // dans une base plus récente ne coûte que les morceaux réellement lus d'un
+  // rootfs mutualisé. Quand les deux sont possibles, l'épingle est meilleure —
+  // on le dit plutôt que de laisser le mainteneur payer sans le savoir.
+  const hint = requiredBaseRevision(overlay);
+  return { all, base, overlay, hint };
 }
 
 /**
@@ -216,16 +265,17 @@ export function formatEnvFragment(env) {
 
 /**
  * Construit la table des arguments de construction Docker.
- * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, appName: string}} input contexte d'analyse
+ * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, appName: string, baseRevision?: string}} input contexte d'analyse
  * @returns {Record<string, string>} arguments prêts à passer en `--build-arg`
  * @throws {Error} si la version de Ruby ne peut pas être résolue
  */
-export function buildArgs({ manifest, specs, hasSeeds, appName }) {
+export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) {
   const ruby = resolveRubyVersion(manifest.ruby);
   const assets = assetsPlan(manifest, specs);
   const seedCommand = manifest.seed?.command ?? (hasSeeds ? DEFAULT_SEED : "");
   const withPostgres = manifest.database === "postgresql";
   const postgres = postgresSettings(appName);
+  const paquets = splitPackages(manifest, baseRevision);
   return {
     APP_NAME: appName,
     RUBY_VERSION: ruby.version,
@@ -254,7 +304,17 @@ export function buildArgs({ manifest, specs, hasSeeds, appName }) {
     // Outils d'assets à binaire précompilé : aucun n'existe pour i386, ils
     // tournent donc sur l'étage amd64. Conservé pour le journal de build.
     BINARY_ASSET_GEMS: assets.binaryGems.join(" "),
-    EXTRA_PACKAGES: extraPackages(manifest).join(" "),
+    EXTRA_PACKAGES: paquets.all.join(" "),
+    // Surcouche système (ADR 0006) : ce que la base épinglée ne fournit PAS.
+    // Installé au build du disque applicatif, relocalisé sur celui-ci, et
+    // activé dans le guest — la base mutualisée n'a pas à grossir pour une
+    // application. Vide dans le cas courant, où la base suffit.
+    SYSTEM_PACKAGES: paquets.overlay.join(" "),
+    // Révision de base qui absorberait tout ou partie de la surcouche. Le
+    // rootfs mutualisé est téléchargé par morceaux, à la demande ; la surcouche,
+    // elle, occupe le disque applicatif de cette sandbox et le sien seulement.
+    // Quand l'épingle suffit, elle est préférable — d'où ce conseil.
+    SYSTEM_PACKAGES_HINT: paquets.hint ?? "",
     DB_PREPARE_COMMAND: DEFAULT_DB_PREPARE,
     SEED_COMMAND: seedCommand,
     // Non fiable (railsbox.yml tiers) : ajouté verbatim, jamais évalué.
@@ -293,9 +353,10 @@ function shellQuote(value) {
  * Analyse une application et en déduit manifeste, diagnostics et arguments.
  * @param {string} appDir racine de l'application Rails
  * @param {string} [appName] nom court de l'image (défaut : nom du dossier)
+ * @param {string} [baseRevision] révision de base épinglée, qui décide de la surcouche (ADR 0006)
  * @returns {Promise<{manifest: Manifest, findings: readonly any[], args: Record<string, string>, report: string}>} analyse complète
  */
-export async function analyzeApp(appDir, appName) {
+export async function analyzeApp(appDir, appName, baseRevision) {
   const detected = await detectApp(appDir);
   const findings = [...detected.findings];
   let manifest = detected.manifest;
@@ -341,6 +402,7 @@ export async function analyzeApp(appDir, appName) {
     specs,
     hasSeeds: seeds !== null && seeds.trim() !== "",
     appName: appName ?? defaultAppName(appDir),
+    baseRevision,
   });
   return { manifest, findings, args, report };
 }
@@ -361,16 +423,26 @@ export function defaultAppName(appDir) {
 async function main() {
   const args = process.argv.slice(2);
   const wantsJson = args.includes("--json");
-  const positional = args.filter((value) => !value.startsWith("--"));
+  // Révision de la base épinglée : elle décide de la frontière entre ce que la
+  // base fournit déjà et ce que la surcouche doit installer (ADR 0006).
+  const drapeauRevision = args.indexOf("--base-revision");
+  const baseRevision = drapeauRevision === -1 ? undefined : args[drapeauRevision + 1];
+  // La VALEUR d'une option ne commence pas par « -- » : sans l'exclure ici,
+  // elle serait prise pour le nom de l'application.
+  const positional = args.filter(
+    (value, index) =>
+      !value.startsWith("--") && !(drapeauRevision !== -1 && index === drapeauRevision + 1),
+  );
   const appDir = positional[0];
   const appName = positional[1];
   if (!appDir) {
     process.stderr.write(
-      "Usage : node tools/build-v86-image/manifest-to-args.mjs <dossier-application> [nom] [--json]\n",
+      "Usage : node tools/build-v86-image/manifest-to-args.mjs <dossier-application> [nom] " +
+        "[--json] [--base-revision <rév>]\n",
     );
     return EXIT_USAGE;
   }
-  const analysis = await analyzeApp(appDir, appName);
+  const analysis = await analyzeApp(appDir, appName, baseRevision);
   process.stderr.write(`${analysis.report}\n`);
   if (hasBlocking(analysis.findings)) return EXIT_BLOCKING;
   process.stdout.write(

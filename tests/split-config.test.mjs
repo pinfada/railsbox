@@ -2,9 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   APP_DISK_BYTES,
+  BASE_REVISIONS,
   BASE_SYSTEM_PACKAGES,
+  PACKAGE_BASE_REVISIONS,
+  UNSUPPORTED_ISSUE_URL,
   buildSplitConfig,
   checkAppDiskFit,
+  packagesForRevision,
+  refusalLines,
+  requiredBaseRevision,
   unsupportedPackages,
 } from "../tools/build-v86-image/split-config.mjs";
 import { isBootableConfig, isSplitConfig } from "../public/shared/v86-config.js";
@@ -99,14 +105,95 @@ test("unsupportedPackages accepte ce que la base fournit déjà", () => {
   assert.deepEqual(unsupportedPackages("libsqlite3-dev libxml2-dev libxslt1-dev"), []);
   // PostgreSQL fait partie de la base depuis la révision 3.3-r2.
   assert.deepEqual(unsupportedPackages("libpq-dev postgresql postgresql-client"), []);
+  // Le traitement d'images depuis la révision 3.3-r3 : libvips est le
+  // processeur de variantes par défaut de Rails 7+, refuser une application qui
+  // redimensionne une image reviendrait à refuser Rails moderne.
+  assert.deepEqual(unsupportedPackages("libvips42 libvips-tools imagemagick"), []);
   assert.deepEqual(unsupportedPackages(BASE_SYSTEM_PACKAGES), []);
 });
 
 test("unsupportedPackages signale les bibliothèques absentes de la base", () => {
-  assert.deepEqual(unsupportedPackages("libsqlite3-dev libvips-dev libvips42"), [
+  // libvips-dev est ABSENT à dessein : ruby-vips est une liaison FFI, les
+  // en-têtes coûteraient 170 Mo et n'achèteraient rien.
+  assert.deepEqual(unsupportedPackages("libsqlite3-dev libvips-dev ffmpeg"), [
+    "ffmpeg",
     "libvips-dev",
-    "libvips42",
   ]);
+});
+
+test("unsupportedPackages compare à la révision de base réellement épinglée", () => {
+  // Arrange / Act : la même application, jugée sur deux révisions.
+  const surR2 = unsupportedPackages("libvips42 imagemagick libpq-dev", "3.3-r2");
+  const surR3 = unsupportedPackages("libvips42 imagemagick libpq-dev", "3.3-r3");
+
+  // Assert
+  assert.deepEqual(surR2, ["imagemagick", "libvips42"]);
+  assert.deepEqual(surR3, []);
+  // PostgreSQL n'existe pas dans la toute première base.
+  assert.deepEqual(unsupportedPackages("postgresql", "3.3"), ["postgresql"]);
+});
+
+test("une révision inconnue retombe sur la base la plus récente", () => {
+  // Image locale sans tag, ou empreinte sha256 : on ne peut rien en déduire.
+  assert.deepEqual(packagesForRevision("sha256:abcdef"), [...BASE_SYSTEM_PACKAGES]);
+  assert.deepEqual(unsupportedPackages("libvips42", "latest"), []);
+});
+
+test("chaque paquet de la base est rattaché à une révision publiée", () => {
+  for (const [paquet, revision] of Object.entries(PACKAGE_BASE_REVISIONS)) {
+    assert.ok(
+      BASE_REVISIONS.includes(revision),
+      `${paquet} annonce la révision inconnue « ${revision} »`,
+    );
+  }
+  assert.deepEqual(BASE_SYSTEM_PACKAGES, [...BASE_SYSTEM_PACKAGES].sort());
+});
+
+test("requiredBaseRevision retient la plus récente des révisions nécessaires", () => {
+  assert.equal(requiredBaseRevision(["libsqlite3-dev", "postgresql"]), "3.3-r2");
+  assert.equal(requiredBaseRevision(["libsqlite3-dev", "libvips42"]), "3.3-r3");
+  assert.equal(requiredBaseRevision(["ffmpeg"]), null);
+  assert.equal(requiredBaseRevision([]), null);
+});
+
+test("le refus nomme la révision à épingler quand elle existe", () => {
+  // Arrange / Act
+  const lignes = refusalLines(["imagemagick", "libvips42"]);
+  const texte = lignes.join("\n");
+
+  // Assert : la première ligne est celle que reconnaît le classifieur d'échecs.
+  assert.equal(
+    lignes[0],
+    "✗ La base ne fournit pas les bibliothèques système : imagemagick libvips42",
+  );
+  assert.match(texte, /présents dans la base 3\.3-r3/);
+  assert.match(texte, /base: 3\.3-r3/);
+  assert.match(texte, /--base ghcr\.io\/pinfada\/railsbox-base:3\.3-r3/);
+  // Aucune issue à ouvrir : le mainteneur a une sortie immédiate.
+  assert.doesNotMatch(texte, /issues\/new/);
+});
+
+test("le refus renvoie au gabarit d'issue quand aucune base ne fournit le paquet", () => {
+  // Arrange / Act
+  const texte = refusalLines(["ffmpeg"]).join("\n");
+
+  // Assert
+  assert.match(texte, /aucune base publiée ne le fournit/);
+  // La sortie normale est la surcouche, et le message le dit AVANT de parler
+  // d'issue : ouvrir un ticket pour ffmpeg n'est utile que s'il déborde.
+  assert.match(texte, /SURCOUCHE applicative/);
+  assert.ok(texte.includes(UNSUPPORTED_ISSUE_URL));
+  assert.match(texte, /Ma stack n'est pas prise en charge/);
+  assert.doesNotMatch(texte, /Épinglez-la/);
+});
+
+test("le refus traite les deux cas à la fois sans les confondre", () => {
+  // Arrange / Act : libvips existe ailleurs, ffmpeg nulle part.
+  const texte = refusalLines(["ffmpeg", "libvips42"]).join("\n");
+
+  // Assert
+  assert.match(texte, /libvips42 : présent dans la base 3\.3-r3/);
+  assert.match(texte, /ffmpeg : aucune base publiée ne le fournit/);
 });
 
 test("unsupportedPackages tolère une liste vide ou mal espacée", () => {

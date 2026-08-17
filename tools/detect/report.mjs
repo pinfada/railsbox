@@ -43,13 +43,21 @@ export const REMEDIES = Object.freeze({
     "Versionnez un package-lock.json (`npm install` puis commit) : l'étage amd64 installe " +
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",
   "unknown-manifest-key":
-    "Retirez la clé de railsbox.yml : seules ruby, database, seed, env et assets sont reconnues.",
+    "Retirez la clé de railsbox.yml : seules ruby, database, seed, env, assets et " +
+    "system_packages sont reconnues.",
   "malformed-manifest-line":
     "Respectez le format « clé: valeur » avec une indentation de 2 espaces pour les blocs.",
   "invalid-manifest-value": "Corrigez la valeur dans railsbox.yml en suivant le schéma documenté.",
   "invalid-env-name":
     "Un nom de variable commence par une lettre ou _ et ne contient que lettres, chiffres et _ " +
     "(64 caractères maximum).",
+  "invalid-system-package":
+    "Un nom de paquet Debian s'écrit en minuscules, chiffres et « + - . », et commence par un " +
+    "caractère alphanumérique : ni option (-o, --force-yes), ni chemin, ni épingle de version. " +
+    "Ces noms partent dans un apt-get, la grammaire n'est pas négociable.",
+  "too-many-system-packages":
+    "Réduisez system_packages: à ce que l'application utilise réellement — la surcouche est " +
+    "copiée sur le disque applicatif, dont la géométrie de 512 Mo est figée (ADR 0002).",
 });
 
 /**
@@ -105,6 +113,10 @@ function summaryLines(manifest) {
     field("Assets", describeAssets(manifest.assets)),
     field("Gems natives", describeNativeGems(manifest.nativeGems)),
     field("Services", describeServices(manifest.services)),
+    field(
+      "Paquets déclarés",
+      manifest.systemPackages?.length ? manifest.systemPackages.join(", ") : null,
+    ),
     field("Bundler", manifest.bundler),
   ];
   if (manifest.seed) {

@@ -3,6 +3,7 @@
 // main — le projet s'interdit toute dépendance runtime, et le schéma est assez
 // petit pour que l'analyseur reste plus court qu'une bibliothèque.
 import { SEVERITY, createFinding } from "./findings.mjs";
+import { validateSystemPackages } from "./paquets-systeme.mjs";
 import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./yaml-subset.mjs";
 
 /** @typedef {import("./findings.mjs").Finding} Finding */
@@ -22,6 +23,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {{redis?: boolean, sidekiq?: boolean}} [services] services d'arrière-plan
  * @property {{command?: string, autoLogin?: string, autoLoginCode?: string}} [seed] amorçage des données
  * @property {Record<string, string>} [env] variables d'environnement déclarées
+ * @property {readonly string[]} [systemPackages] paquets Debian de la surcouche applicative
  */
 
 /**
@@ -47,6 +49,17 @@ const DATABASE_VALUES = Object.freeze(["postgresql", "sqlite3"]);
 
 /** Clés scalaires de premier niveau. */
 const SCALAR_KEYS = Object.freeze(["ruby", "database"]);
+
+/**
+ * Clés de premier niveau portant une LISTE (`clé: [a, b]` ou `clé: a`).
+ * `system_packages` déclare les paquets Debian de la surcouche applicative
+ * (ADR 0006) : ceux que l'application veut sans que la base mutualisée ait à
+ * les porter pour tout le monde.
+ */
+const LIST_KEYS = Object.freeze(["system_packages"]);
+
+/** Correspondance clé YAML → clé du manifeste, pour les listes. */
+const LIST_TARGETS = Object.freeze({ system_packages: "systemPackages" });
 
 /** Nom de variable d'environnement conforme à POSIX, longueur bornée. */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -193,6 +206,27 @@ function applyTopLevel(state, key, value, lineNumber) {
     state.block = key;
     return;
   }
+  if (LIST_KEYS.includes(key)) {
+    const liste = normalizeScripts(value);
+    if (liste === null) {
+      pushInvalidValue(
+        state,
+        key,
+        lineNumber,
+        "liste attendue (ex. [libmagic-dev, libsodium-dev])",
+      );
+      return;
+    }
+    // Validation ICI, au plus près de la lecture du fichier tiers : ces noms
+    // finiront en arguments d'apt-get sur un runner de CI (ADR 0006).
+    const { packages, findings } = validateSystemPackages(
+      liste,
+      `railsbox.yml ligne ${lineNumber}`,
+    );
+    state.findings.push(...findings);
+    state.manifest[LIST_TARGETS[key]] = packages;
+    return;
+  }
   if (!SCALAR_KEYS.includes(key)) {
     state.block = UNKNOWN_BLOCK;
     state.findings.push(
@@ -323,6 +357,14 @@ export function mergeManifest(detected, declared) {
       recordOverride(findings, `${block}.${key}`, base[key], value);
     }
     merged[block] = { ...base, ...declared[block] };
+  }
+  // Les paquets système s'AJOUTENT au lieu de remplacer : la détection les
+  // déduit des gems natives, la déclaration couvre ce qu'aucune gem ne trahit
+  // (un exécutable appelé en `system()`, par exemple). Écraser l'un par l'autre
+  // ferait perdre la moitié de l'information.
+  if (Array.isArray(declared.systemPackages)) {
+    const base = Array.isArray(detected.systemPackages) ? detected.systemPackages : [];
+    merged.systemPackages = [...new Set([...base, ...declared.systemPackages])].sort();
   }
   if (isObject(declared.assets) && Array.isArray(declared.assets.scripts)) {
     const base = isObject(detected.assets) ? detected.assets : {};

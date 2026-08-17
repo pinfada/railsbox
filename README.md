@@ -249,6 +249,8 @@ hébergeur, et des propriétés dès qu'on assume le cadrage : une sandbox n'a r
 | **Tailwind, dart-sass** | précompilés sur un étage amd64, copiés dans le disque i386 |
 | **Chaînes npm** (esbuild, cssbundling, jsbundling) | même étage amd64 : `npm ci` puis vos scripts de build |
 | **Redis, Sidekiq** | détectés depuis le `Gemfile.lock`, présents dans la base |
+| **Active Storage, traitement d'images** | `libvips` (défaut de Rails 7+), ImageMagick et les aperçus PDF sont dans la base à partir de `3.3-r3` |
+| **Autres bibliothèques système** | installées en surcouche sur le disque applicatif — voir « [Bibliothèques système](#bibliothèques-système) » et [l'ADR 0006](docs/decisions/0006-bibliotheques-systeme.md) |
 
 ### Limites connues
 
@@ -291,13 +293,36 @@ env:
   APP_HOST: "http://localhost:8080" # variables exigées par vos initializers
 assets:
   scripts: ["build", "build:css"] # scripts npm de build à déclencher
+system_packages: [libmagickwand-dev] # paquets Debian que vos gems exigent
 ```
 
-Cinq clés sont reconnues — `ruby`, `database`, `seed`, `env`, `assets` — et
-toute autre déclenche un diagnostic. Dans le bloc `assets:`, seule la clé
-`scripts` est lue : toute autre y est ignorée avec un avertissement. `database` accepte `postgresql` ou
-`sqlite3`. Les valeurs `env:` sont traitées comme des **données inertes**,
-jamais évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
+Six clés sont reconnues — `ruby`, `database`, `seed`, `env`, `assets`,
+`system_packages` — et toute autre déclenche un diagnostic. Dans le bloc
+`assets:`, seule la clé `scripts` est lue : toute autre y est ignorée avec un
+avertissement. `database` accepte `postgresql` ou `sqlite3`. Les valeurs `env:`
+sont traitées comme des **données inertes**, jamais évaluées au build (voir
+[`SECURITY.md`](SECURITY.md)).
+
+### Bibliothèques système
+
+La base est mutualisée : son jeu de paquets est figé à sa construction, et
+chaque paquet ajouté pèse sur **toutes** les sandboxes. Elle ne porte donc que
+le dénominateur commun de Rails — dont `libvips`, processeur de variantes par
+défaut de Rails 7+, et ImageMagick, depuis la révision `3.3-r3`.
+
+Tout le reste passe par une **surcouche applicative** : les paquets sont
+installés à la construction du disque applicatif (sur le runner, qui a le
+réseau), relocalisés sous `/app/opt/systeme`, et remis dans le chemin de
+recherche du guest au démarrage. Ils ne coûtent qu'à l'application qui les
+demande, et n'exigent aucune nouvelle révision de la base.
+
+La liste se remplit toute seule à partir des gems natives détectées ;
+`system_packages:` sert à ce qu'aucune gem ne trahit — un exécutable appelé en
+`system()`, un greffon chargé au vol. Ces noms partent dans un `apt-get` : ils
+sont validés en liste blanche stricte (grammaire Debian), et une option, un
+chemin ou une injection sont refusés avec un diagnostic. La politique complète,
+les coûts mesurés et ce qui reste refusé sont dans
+[l'ADR 0006](docs/decisions/0006-bibliotheques-systeme.md).
 
 ### Données de démonstration et auto-connexion
 
