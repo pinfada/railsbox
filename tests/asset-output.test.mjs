@@ -75,6 +75,40 @@ test("normalizeOutputDir refuse tout ce qu'un shell pourrait interpréter", () =
   }
 });
 
+test("normalizeOutputDir refuse un segment qui commence par un tiret", () => {
+  // Arrange : « -rf », « -name »… seraient lus comme des OPTIONS par `test` et
+  // `find` dans la boucle de récolte de l'étage amd64. Le comportement ne
+  // dépendrait alors plus de nous mais de l'implémentation du shell.
+  for (const hostile of ["-rf", "-name", "public/-delete", "-", "--"]) {
+    // Act / Assert
+    assert.equal(normalizeOutputDir(hostile), null, hostile);
+  }
+  // Un tiret ailleurs qu'en tête reste légitime.
+  assert.equal(normalizeOutputDir("public/packs-prod"), "public/packs-prod");
+});
+
+test("normalizeOutputDir refuse les répertoires structurels d'une application Rails", () => {
+  // Arrange : `output: ["app"]` dupliquerait tout l'arbre applicatif dans
+  // l'export — que `COPY . .` a déjà copié — jusqu'à faire déborder la
+  // géométrie fixe de 512 Mo, très loin de la déclaration fautive.
+  for (const structurel of ["app", "config", "lib", "vendor", "db", "tmp", "log", "storage"]) {
+    // Act / Assert
+    assert.equal(normalizeOutputDir(structurel), null, structurel);
+  }
+  // Un SOUS-chemin, lui, est parfaitement légitime.
+  assert.equal(normalizeOutputDir("app/assets/builds"), "app/assets/builds");
+  assert.equal(normalizeOutputDir("app/javascript/build"), "app/javascript/build");
+});
+
+test("normalizeOutputDir refuse les arbres qu'on n'exporte jamais", () => {
+  // Arrange / Act / Assert
+  assert.equal(normalizeOutputDir(".git"), null);
+  assert.equal(normalizeOutputDir(".git/objects"), null);
+  assert.equal(normalizeOutputDir("node_modules"), null);
+  assert.equal(normalizeOutputDir("node_modules/.vite"), null);
+  assert.equal(normalizeOutputDir("vendor/bundle"), null);
+});
+
 test("normalizeOutputDir refuse le vide, le non-texte et les chemins démesurés", () => {
   // Arrange / Act / Assert
   assert.equal(normalizeOutputDir(""), null);
@@ -112,6 +146,17 @@ test("mergeOutputDirs écarte les doublons et les chemins déjà couverts", () =
 
   // Assert
   assert.deepEqual(merged, ["public/assets", "app/assets/builds", "public/vite", "public/dist"]);
+});
+
+test("mergeOutputDirs absorbe un descendant même listé AVANT son ancêtre", () => {
+  // Arrange : l'ordre n'est pas garanti — la configuration est lue avant les
+  // défauts de la gem. Un doublon ne casserait rien à la copie, mais il
+  // brouille le journal de build et le rapport d'analyse.
+  // Act
+  const merged = mergeOutputDirs(["public/vite/assets"], ["public/vite"]);
+
+  // Assert
+  assert.deepEqual(merged, ["public/vite"]);
 });
 
 // --- Auto-détection ----------------------------------------------------------

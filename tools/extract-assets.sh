@@ -70,8 +70,14 @@ mkdir -p "$APPSTATIC"
 # Les noms que LA COQUILLE sert à sa propre racine sont écartés : le Service
 # Worker les refuse déjà (SHELL_OWNED_FILES dans public/shared/proxy-logic.js),
 # les extraire ne ferait qu'alourdir la publication d'un fichier mort.
+#
+# `railsbox-index.json` porte NOTRE inventaire : un fichier de l'application
+# qui s'appellerait ainsi l'écraserait. Le nom est choisi improbable, et écarté
+# de l'extraction par prudence — l'application, elle, garde le droit d'avoir
+# son propre `public/index.json`, servi par la VM comme avant.
+INVENTAIRE=railsbox-index.json
 MAX_ROOT_FILES=200
-COQUILLE='^(index\.html|main\.js|sw-proxy\.js|badge\.svg|env-drawer\.(js|css)|types\.d\.ts)$'
+COQUILLE="^(index\.html|main\.js|sw-proxy\.js|badge\.svg|env-drawer\.(js|css)|types\.d\.ts|${INVENTAIRE})\$"
 LISTE="$(debugfs -R "ls -p ${RACINE}/public" "$IMAGE" 2>/dev/null \
   | awk -F/ '$3 ~ /^100/ { print $6 }' \
   | grep -E '^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+$' \
@@ -93,17 +99,17 @@ done
   for chemin in "$APPSTATIC"/*; do
     [ -f "$chemin" ] || continue
     file="${chemin##*/}"
-    [ "$file" != index.json ] || continue
+    [ "$file" != "$INVENTAIRE" ] || continue
     [ "$premier" -eq 1 ] || printf ',\n'
     premier=0
     printf '    "%s"' "$file"
   done
   [ "$premier" -eq 1 ] || printf '\n'
   printf '  ]\n}\n'
-} > "$APPSTATIC/index.json"
+} > "$APPSTATIC/$INVENTAIRE"
 
 COUNT=$(find "$DEST" -type f | wc -l)
 SIZE=$(du -sh "$DEST" | cut -f1)
-ROOTCOUNT=$(find "$APPSTATIC" -type f ! -name index.json | wc -l)
+ROOTCOUNT=$(find "$APPSTATIC" -type f ! -name "$INVENTAIRE" | wc -l)
 echo "extrait : $COUNT fichiers, $SIZE → $DEST ; $ROOTCOUNT fichiers racine → $APPSTATIC"
 echo "le Service Worker les servira sous /app/assets/* sans passer par la VM"

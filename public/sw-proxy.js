@@ -32,6 +32,7 @@ import {
   responseBodyFor,
   rootStaticCandidate,
   ROOT_STATIC_ROOT,
+  ROOT_STATIC_INDEX,
   DEFAULT_ROOT_STATIC_FILES,
   staticAssetPath,
 } from "./shared/proxy-logic.js";
@@ -490,7 +491,7 @@ sw.addEventListener("fetch", (event) => {
  */
 function rootStaticIndex() {
   if (state.rootStatic === null) {
-    const url = `${BASE_PATH.replace(/\/+$/, "")}${ROOT_STATIC_ROOT}index.json`;
+    const url = `${BASE_PATH.replace(/\/+$/, "")}${ROOT_STATIC_ROOT}${ROOT_STATIC_INDEX}`;
     state.rootStatic = fetch(url)
       .then((response) => (response.ok ? response.json() : null))
       .then(

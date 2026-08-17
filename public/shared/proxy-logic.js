@@ -60,12 +60,16 @@ export function staticAssetPath(pathname, basePath = "/") {
 // demandés nus ou préfixés /app.
 //
 // Cette liste n'est PLUS la vérité, seulement le repli. La vérité est
-// `/disks/appstatic/index.json`, écrit à l'extraction avec ce que l'image
-// contenait RÉELLEMENT à la racine de son `public/` : une allowlist en dur ne
-// pouvait pas connaître les chemins racine d'une application tierce, et tout
-// ce qui n'y figurait pas faisait 404 en silence. La liste ci-dessous sert
-// encore aux sandboxes construites avant l'index.
+// l'inventaire écrit à l'extraction avec ce que l'image contenait RÉELLEMENT à
+// la racine de son `public/` : une allowlist en dur ne pouvait pas connaître
+// les chemins racine d'une application tierce, et tout ce qui n'y figurait pas
+// faisait 404 en silence. La liste ci-dessous sert encore aux sandboxes
+// construites avant l'inventaire.
 export const ROOT_STATIC_ROOT = "/disks/appstatic/";
+// Nom volontairement improbable : l'application garde le droit d'avoir son
+// propre `public/index.json`, qui ne doit pas entrer en collision avec le
+// nôtre (tools/extract-assets.sh écarte ce nom de l'extraction).
+export const ROOT_STATIC_INDEX = "railsbox-index.json";
 export const DEFAULT_ROOT_STATIC_FILES = Object.freeze([
   "favicon.ico",
   "favicon-16x16.png",

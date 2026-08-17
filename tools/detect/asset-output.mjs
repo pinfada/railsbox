@@ -36,8 +36,39 @@ const MAX_PATH_LENGTH = 128;
 /** Nombre maximal de segments d'un chemin déclaré. */
 const MAX_SEGMENTS = 6;
 
-/** Un segment de chemin acceptable : ni `.` ni `..`, aucun métacaractère shell. */
-const SEGMENT = /^[A-Za-z0-9._-]+$/;
+/**
+ * Un segment de chemin acceptable : ni `.` ni `..`, aucun métacaractère shell,
+ * et JAMAIS un tiret en tête — `-rf` ou `-name` serait pris pour une option
+ * par `test` ou `find` du côté de l'étage amd64, avec un comportement qui ne
+ * dépend plus de nous mais de l'implémentation du shell.
+ */
+const SEGMENT = /^[A-Za-z0-9_.][A-Za-z0-9._-]*$/;
+
+/**
+ * Répertoires de premier niveau qu'une application Rails possède déjà, et
+ * qu'exporter tels quels n'aurait aucun sens : leur contenu est de toute façon
+ * copié dans le disque par `COPY . .`. Les rendre exportables laisserait un
+ * `output: ["app"]` dupliquer tout l'arbre applicatif et faire déborder la
+ * géométrie fixe de 512 Mo — panne lointaine pour une déclaration absurde.
+ * Un sous-chemin reste permis : `app/assets/builds` est légitime.
+ */
+const STRUCTURAL_ROOTS = Object.freeze([
+  "app",
+  "bin",
+  "config",
+  "db",
+  "lib",
+  "log",
+  "script",
+  "spec",
+  "storage",
+  "test",
+  "tmp",
+  "vendor",
+]);
+
+/** Arbres qu'on n'exporte jamais, où qu'ils se trouvent dans le chemin. */
+const NEVER_EXPORTED = Object.freeze([".git", "node_modules", "vendor/bundle"]);
 
 /** Sortie par défaut de vite_ruby, relative au répertoire public. */
 const VITE_DEFAULT_OUTPUT = "vite";
@@ -86,6 +117,9 @@ export function normalizeOutputDir(value) {
     if (segment === "." || segment === "..") return null;
     if (!SEGMENT.test(segment)) return null;
   }
+  if (segments.length === 1 && STRUCTURAL_ROOTS.includes(segments[0])) return null;
+  if (NEVER_EXPORTED.some((tree) => trimmed === tree || trimmed.startsWith(`${tree}/`)))
+    return null;
   return trimmed;
 }
 
@@ -124,7 +158,12 @@ export function mergeOutputDirs(...lists) {
       merged.push(dir);
     }
   }
-  return merged;
+  // Seconde passe : un ancêtre arrivé APRÈS son descendant ne l'avait pas
+  // absorbé. Inoffensif à la copie, mais c'est un doublon dans le journal et
+  // dans le rapport d'analyse — deux endroits où l'on demande de la lisibilité.
+  return merged.filter(
+    (dir) => !merged.some((autre) => autre !== dir && dir.startsWith(`${autre}/`)),
+  );
 }
 
 /**

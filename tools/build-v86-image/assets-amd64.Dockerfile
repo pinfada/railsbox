@@ -115,13 +115,18 @@ cd /app
 set -f
 mkdir -p /rib-export
 for dir in ${ASSET_OUTPUT_DIRS}; do
-  [ -d "$dir" ] || { echo "[assets] $dir : rien à exporter (répertoire absent)"; continue; }
+  # « ./ » en tête partout où le chemin est un ARGUMENT DE TÊTE : sans lui, un
+  # répertoire nommé « -name » ou « -rf » serait lu comme une option par `test`
+  # et par `find`, et le comportement ne dépendrait plus de nous mais de
+  # l'implémentation du shell. La validation le refuse déjà (asset-output.mjs
+  # interdit le tiret en tête de segment) ; ceci est la seconde barrière.
+  [ -d "./$dir" ] || { echo "[assets] $dir : rien à exporter (répertoire absent)"; continue; }
   # `cp -a src/. dest/` FUSIONNE le contenu au lieu d'imbriquer : sans cela un
   # export qui demanderait à la fois `public` et `public/assets` produirait un
   # `public/public`, selon l'ordre de la liste.
   mkdir -p "/rib-export/$dir"
-  cp -a "$dir/." "/rib-export/$dir/"
-  echo "[assets] exporté : $dir ($(find "$dir" -type f | wc -l) fichiers)"
+  cp -a "./$dir/." "/rib-export/$dir/"
+  echo "[assets] exporté : $dir ($(find "./$dir" -type f | wc -l) fichiers)"
 done
 # Les deux répertoires structurels existent toujours dans le contexte, même
 # vides : app.Dockerfile compte dessus pour son garde-fou.
