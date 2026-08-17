@@ -39,8 +39,17 @@ version.
 
 ### 2. Enable GitHub Pages on the `gh-pages` branch
 
+Push to `main` first: the first build is what **creates** the `gh-pages`
+branch — before that, GitHub will not offer it in the menu.
+
 *Settings → Pages → Source: Deploy from a branch → `gh-pages` / `(root)`.*
 Every build republishes your demo at `https://<account>.github.io/<repo>/`.
+
+> **`gh-pages` is fully replaced on every build** (force-push, history reset:
+> the sandbox is regenerated from scratch, so keeping history would only pile
+> up dead binaries). If you already publish something else there — YARD docs, a
+> project site — **publish the sandbox elsewhere** using the `target-repo`
+> input (see "Workflow inputs").
 
 ### 3. Paste the badge
 
@@ -57,12 +66,20 @@ going down too.
 > READMEs whatever syntax you use — verified against its rendering API. No badge
 > in the ecosystem escapes this. Your readers still have middle-click.
 
+> **Public repo, or a separate showcase repo.** On a public repository
+> everything is free: Actions and Pages both are. On a **private** repository,
+> GitHub Pages requires a paid plan and Actions minutes are billed. That case is
+> covered: keep the code private and publish the sandbox to a dedicated public
+> repository with `target-repo` + the `publish-key` secret (see "Workflow
+> inputs").
+
 ### What the workflow does, in ~9 minutes
 
 It reassembles the shared rootfs from the railsbox artifact repository, builds
 your application disk from the base image, runs your seeds, captures a
 post-boot memory snapshot, splits everything into compressed chunks and
-publishes the shell alongside it. **Your repository hosts about 130 MB**; the
+publishes the shell alongside it. **Your repository hosts about 130 MB** for the demo application — expect
+~150–350 MB for yours; the
 1.45 GB rootfs stays on the railsbox side.
 
 Tailwind, dart-sass and npm toolchains need no declaration: detection spots them
@@ -73,7 +90,7 @@ summary reports the stage it picked, the Ruby version and the detected database.
 
 | What the visitor does | Measured |
 | --- | --- |
-| Application on screen | **25 s** (snapshot restored) |
+| Application on screen | **~20–25 s** (snapshot restored) |
 | Downloaded to get there | ~32 MB from the artifact repository + the gzipped snapshot |
 | Navigation, forms, POSTs | normal, served by the VM |
 
@@ -92,7 +109,11 @@ demo and a faithful local replica of the publication:
 | WebKit 26.5 | ok | ok | ok | 20 s | ok | ok |
 
 Only measured difference: the first request through the serial bridge costs
-about 6 s on Firefox versus 1 s elsewhere. Recipes run Chromium by default;
+about 6 s on Firefox versus 1 s elsewhere.
+
+**Mobile**: not validated. x86 emulation on a phone CPU is markedly slower, and
+mobile tabs get memory-reclaimed far sooner. A badge clicked from a phone may
+work — treat it as a bonus, not as the nominal path. Recipes run Chromium by default;
 `RAILSBOX_MOTEURS=tous` (or a list: `firefox,webkit`) widens `npm run test:live`
 and `npm run test:e2e` to all three. Webviews that block Service Workers cannot
 work, by construction — the shell now tells the visitor so instead of failing
@@ -131,7 +152,8 @@ sleeps, no invoice arriving because the link worked too well.
 **Instructors, bootcamps, tutorial authors.** Thirty tabs means thirty isolated
 environments: every learner is root in *their own* copy, nobody's mistakes leak
 into anybody else's, and there is nothing to install before starting. A refresh
-resets everything.
+resets everything, and `?fresh=1` at the end of the URL ignores the snapshot
+and starts from a cold boot.
 
 Two more uses fall out of the same properties: **disposable pull request
 previews** (one sandbox per branch, published then forgotten) and **bug
@@ -215,6 +237,8 @@ assets:
 ```
 
 Five keys are recognised — `ruby`, `database`, `seed`, `env`, `assets` — and
+inside the `assets:` block only the `scripts` key is read (anything else there
+is ignored with a warning), and
 anything else raises a diagnostic. `database` accepts `postgresql` or `sqlite3`.
 `env:` values are treated as **inert data**, never evaluated at build time (see
 [`SECURITY.md`](SECURITY.md)).
@@ -224,9 +248,11 @@ anything else raises a diagnostic. `database` accepts `postgresql` or `sqlite3`.
 `seed.command` runs **at build time**, before the snapshot is captured, so the
 visitor finds the database already populated with no wait.
 
-`seed.auto_login` accepts an identifier — resolved strictly, with no silent
-fallback — or `true` for the first user. For exotic authentication,
-`seed.auto_login_code` takes a Ruby fragment (a `|` block scalar) with `env` in
+`seed.auto_login` accepts an identifier — an **email address** or a **numeric
+id**, looked up on the **`User`** model, resolved strictly with no silent
+fallback — or `true` for the first user (`User.first`). If your user model is
+not called `User`, or the identifier is neither an email nor an id, use
+`seed.auto_login_code`: a Ruby fragment (a `|` block scalar) with `env` in
 scope. Auto-login runs **on the visitor's side**, on first load: it depends on
 their session, which no snapshot can contain.
 
@@ -280,7 +306,8 @@ second application but a four-file overlay:
 
 ```bash
 APP="$(bash tools/demo-app/preparer-demo-pg.sh)"
-wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP" --name demo-pg
+wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP"   --name demo-pg --base ghcr.io/pinfada/railsbox-base:3.3-r2
+node tools/build-v86-image/make-delta-snapshot.mjs --name demo-pg --base base-3.3-r2
 ```
 
 ### Repairing an incomplete configuration
@@ -486,6 +513,22 @@ application disk, so URLs baked into CSS carry the **full public prefix**
 (`/repo/app/assets/…`), under the site and not at the domain root — otherwise the
 Service Worker could not even catch them.
 
+A Tailwind variant of the demo application serves as the test bench — a
+seven-file overlay on `demo/`, like `demo-pg`:
+
+```bash
+APP="$(bash tools/demo-app/preparer-demo-tailwind.sh)"
+wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP"     --name demo-tailwind --base ghcr.io/pinfada/railsbox-base:3.3-r2
+node tools/build-v86-image/make-delta-snapshot.mjs --name demo-tailwind --base base-3.3-r2
+node --test tests/integration/vm-tailwind.it.mjs
+```
+
+The integration test does not settle for checking that a stylesheet exists: it
+looks inside the CSS **served by the VM** for an arbitrary-value utility
+(`tracking-[0.35em]`) that no pre-built stylesheet could contain. Its presence
+proves the `tailwindcss` binary scanned the views during this very build — on
+the amd64 host, never in the guest.
+
 Two warnings rather than a refusal: without a `package-lock.json` (or with a
 yarn/pnpm/bun lockfile, which railsbox does not read), installation falls back to
 `npm install` and the build is no longer reproducible — the analysis report says
@@ -499,8 +542,8 @@ base is never rewritten
 ([ADR 0004](docs/decisions/0004-topologie-de-distribution.md)), and a part-file is
 a frozen slice of a frozen disk
 ([ADR 0003](docs/decisions/0003-artefacts-en-fichiers-parties.md)). Left alone, a
-visitor returning the next day would re-download the ~48 MB they had already
-read.
+visitor returning the next day would re-download the ~32 MB of the first load
+— and up to ~48 MB after browsing around — that they had already read.
 
 Since the Service Worker already intercepts everything, it keeps an **application
 cache in Cache Storage**, cache-first:
@@ -515,10 +558,6 @@ cache in Cache Storage**, cache-first:
 
 The decision logic (which URLs, which cache name, which invalidation) is isolated
 in `public/shared/artifact-cache.js` and tested without a browser. The fact that
-│   ├── cookie-jar.js              the proxy's cookie jar (a SW cannot set
-│   │                              cookies: without it, no Rails session)
-│   ├── prerequis-demarrage.js     browser capabilities, reload recovery
-│   ├── veille.js                  VM suspension when the tab is hidden
 a reload asks the network for nothing is verified in a real Chromium
 (`tests/e2e/artifact-cache.e2e.spec.mjs`): the file is deleted from the server
 between the two reads, and the second one still succeeds.
@@ -669,7 +708,8 @@ canonical mode truncates at 4,096 characters.
 serve.mjs                          dev server: COOP/COEP, Range, gzip, caching
 public/
 ├── index.html · main.js           host page: orchestration, badges, CSP, sandbox
-├── sw-proxy.js                    the single SW: /app/* proxy, static assets, COI,
+├── sw-proxy.js                    the single SW: /app/* proxy, cookie jar,
+│                                  static assets, COI,
 │                                  immutable artifact cache
 ├── env-drawer.js · .css           environment inspector (session-only secrets)
 ├── shared/
@@ -677,11 +717,15 @@ public/
 │   ├── serial-codec.js            @RIB1 frames, upstream flow control
 │   ├── proxy-logic.js             pure SW logic (rewriting, CSP, assets)
 │   ├── artifact-cache.js          pure cache logic (cacheable URLs, name, purge)
+│   ├── cookie-jar.js              the proxy's cookie jar (a SW cannot set
+│   │                              cookies: without it, no Rails session)
+│   ├── prerequis-demarrage.js     browser capabilities, reload recovery
+│   ├── veille.js                  VM suspension when the tab is hidden
 │   ├── env-detector.js            missing-variable detection
 │   └── v86-config.js              v86 config: single disk, or base + application
 └── vm/
     └── v86-vm.js                  v86 boot, snapshot, clock, serial bridge
-tests/                             ~250 unit tests + integration (real VM) + E2E
+tests/                             ~380 unit tests + integration (real VM) + E2E
 ├── integration/                   serial protocol against a real v86 VM (Node)
 ├── e2e/                           full browser boot (Playwright)
 └── live/                          suite for the PUBLISHED sandbox (network, out of CI)
@@ -690,8 +734,8 @@ tools/
 │                                  (incl. assets.mjs: precompilation stage)
 ├── build-v86-image/               parameterised Dockerfile, build.sh, make-snapshot,
 │                                  manifest-to-args, validate-boot, env/,
-│                                  assets-amd64.Dockerfile,
-│                                  classifier-echec.mjs (failure diagnosis) (asset stage),
+│                                  assets-amd64.Dockerfile (asset stage),
+│                                  classifier-echec.mjs (failure diagnosis),
 │                                  base/ (shared rootfs + application disk)
 ├── vm-harness.mjs                 boots a v86 VM under Node (config-driven)
 ├── extract-assets.sh              extracts assets from the image (debugfs)

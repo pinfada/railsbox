@@ -40,9 +40,18 @@ figer la version.
 
 ### 2. Activez GitHub Pages sur la branche `gh-pages`
 
+Poussez d'abord sur `main` : c'est la première construction qui **crée** la
+branche `gh-pages` — avant elle, GitHub ne vous la proposera pas.
+
 *Settings → Pages → Source : Deploy from a branch → `gh-pages` / `(root)`.*
 Chaque construction republie votre démonstration sur
 `https://<compte>.github.io/<depot>/`.
+
+> **`gh-pages` est entièrement remplacée à chaque construction** (force-push,
+> historique remis à plat : la sandbox est régénérée, conserver l'historique
+> n'empilerait que des binaires morts). Si vous y publiez déjà autre chose —
+> doc YARD, site du projet — **publiez la sandbox ailleurs** avec l'entrée
+> `target-repo` (voir « Entrées du workflow »).
 
 ### 3. Collez le badge
 
@@ -59,13 +68,20 @@ tombe aussi.
 > README, quelle que soit la syntaxe employée — vérifié sur son API de rendu.
 > Aucun badge de l'écosystème n'y échappe. Vos lecteurs gardent le clic-milieu.
 
+> **Dépôt public, ou dépôt vitrine séparé.** Sur un dépôt public, tout est
+> gratuit : Actions et Pages le sont. Sur un **dépôt privé**, GitHub Pages exige
+> un plan payant et les minutes Actions sont facturées. Le cas est prévu :
+> gardez le code en privé et publiez la sandbox dans un dépôt public dédié avec
+> `target-repo` + le secret `publish-key` (voir « Entrées du workflow »).
+
 ### Ce que fait le workflow, en ~9 minutes
 
 Il réassemble le rootfs mutualisé depuis le dépôt d'artefacts railsbox,
 construit le disque de votre application depuis l'image de base, exécute vos
 seeds, capture un instantané mémoire post-démarrage, découpe le tout en
 morceaux compressés et publie la coquille avec. **Votre dépôt héberge environ
-130 Mo** ; le rootfs de 1,45 Go reste chez railsbox.
+130 Mo** pour l'application de démonstration — comptez ~150–350 Mo selon la
+vôtre ; le rootfs de 1,45 Go reste chez railsbox.
 
 Tailwind, dart-sass et les chaînes npm n'ont rien à déclarer : la détection les
 repère et bascule seule la précompilation sur un étage amd64. Le résumé de la
@@ -75,7 +91,7 @@ construction affiche l'étage retenu, la version de Ruby et la base détectée.
 
 | Ce que fait le visiteur | Mesuré |
 | --- | --- |
-| Application affichée | **25 s** (instantané restauré) |
+| Application affichée | **~20–25 s** (instantané restauré) |
 | Téléchargé pour cela | ~32 Mo depuis le dépôt d'artefacts + l'instantané gzippé |
 | Navigation, formulaires, POST | normaux, servis par la VM |
 
@@ -95,7 +111,12 @@ démonstration publiée et sur une réplique locale de la publication :
 | WebKit 26.5 | ok | ok | ok | 20 s | ok | ok |
 
 Seule différence mesurée : la première requête traversant le pont série coûte
-environ 6 s sous Firefox, contre 1 s ailleurs. Les recettes jouent Chromium par
+environ 6 s sous Firefox, contre 1 s ailleurs.
+
+**Mobile** : non validé. L'émulation x86 sur un processeur de téléphone est
+nettement plus lente, et la mémoire d'un onglet mobile est bien plus vite
+arbitrée par le système. Un badge cliqué depuis un téléphone peut aboutir —
+comptez-y comme un bonus, pas comme le chemin nominal. Les recettes jouent Chromium par
 défaut ; `RAILSBOX_MOTEURS=tous` (ou une liste : `firefox,webkit`) élargit
 `npm run test:live` et `npm run test:e2e` aux trois moteurs. Les webviews qui
 bloquent les Service Workers ne peuvent pas fonctionner, par construction — la
@@ -135,7 +156,8 @@ a bien marché.
 **Formateurs, bootcamps, auteurs de tutoriels.** Trente onglets, c'est trente
 environnements isolés : chaque apprenant est root dans SA copie, ses erreurs ne
 polluent celles de personne, et il n'y a rien à installer avant de commencer.
-Un `F5` remet tout à zéro.
+Un `F5` remet tout à zéro. Ajoutez `?fresh=1` à la fin de
+l'URL pour ignorer l'instantané et repartir d'un boot à froid.
 
 Deux usages dérivent des mêmes propriétés : l'**aperçu de pull request jetable**
 (une sandbox par branche, publiée puis oubliée) et la **reproduction de bug dans
@@ -220,7 +242,8 @@ assets:
 ```
 
 Cinq clés sont reconnues — `ruby`, `database`, `seed`, `env`, `assets` — et
-toute autre déclenche un diagnostic. `database` accepte `postgresql` ou
+toute autre déclenche un diagnostic. Dans le bloc `assets:`, seule la clé
+`scripts` est lue : toute autre y est ignorée avec un avertissement. `database` accepte `postgresql` ou
 `sqlite3`. Les valeurs `env:` sont traitées comme des **données inertes**,
 jamais évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
 
@@ -229,9 +252,11 @@ jamais évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
 `seed.command` tourne **à la construction**, avant la capture de l'instantané :
 le visiteur trouve donc la base déjà peuplée, sans attendre.
 
-`seed.auto_login` accepte un identifiant — résolu strictement, sans repli
-silencieux — ou `true` pour le premier utilisateur. Pour une authentification
-exotique, `seed.auto_login_code` reçoit un fragment Ruby (scalaire en bloc
+`seed.auto_login` accepte un identifiant — une **adresse e-mail** ou un **id
+numérique**, cherché dans le modèle **`User`**, résolu strictement et sans
+repli silencieux — ou `true` pour le premier utilisateur (`User.first`). Si
+votre modèle ne s'appelle pas `User`, ou si l'identifiant n'est ni un e-mail ni
+un id, passez par `seed.auto_login_code` : un fragment Ruby (scalaire en bloc
 `|`) avec `env` dans sa portée. L'auto-connexion s'exécute **chez le visiteur**,
 au premier chargement : elle dépend de sa session, qu'aucun instantané ne peut
 contenir.
@@ -287,7 +312,8 @@ Elle n'est pas une seconde application mais une surcouche de quatre fichiers :
 
 ```bash
 APP="$(bash tools/demo-app/preparer-demo-pg.sh)"
-wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP" --name demo-pg
+wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP"   --name demo-pg --base ghcr.io/pinfada/railsbox-base:3.3-r2
+node tools/build-v86-image/make-delta-snapshot.mjs --name demo-pg --base base-3.3-r2
 ```
 
 ### Réparer une configuration incomplète
@@ -533,7 +559,8 @@ publiée n'est jamais réécrite
 ([ADR 0004](docs/decisions/0004-topologie-de-distribution.md)), et un
 fichier-partie est une tranche figée d'un disque figé
 ([ADR 0003](docs/decisions/0003-artefacts-en-fichiers-parties.md)). Sans rien
-faire, un visiteur qui revient le lendemain retélécharge donc les ~48 Mo qu'il
+faire, un visiteur qui revient le lendemain retélécharge donc les ~32 Mo du
+premier chargement — et jusqu'à ~48 Mo après avoir navigué — qu'il
 avait déjà lus.
 
 Le Service Worker interceptant déjà tout, il tient un **cache applicatif en Cache
@@ -733,7 +760,7 @@ public/
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
     └── v86-vm.js                  boot v86, instantané, horloge, pont série
-tests/                             ~350 tests unitaires + intégration (VM réelle) + E2E
+tests/                             ~380 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
 ├── e2e/                           boot navigateur complet (Playwright)
 └── live/                          recette de la sandbox PUBLIÉE (réseau, hors CI)
