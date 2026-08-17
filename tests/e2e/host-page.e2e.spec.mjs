@@ -136,3 +136,26 @@ test.describe("Page hôte", () => {
     ).not.toContain("allow-top-navigation");
   });
 });
+
+// Le Service Worker doit être enregistré avec updateViaCache: "none".
+//
+// Le défaut de la spécification (« imports ») contourne le cache HTTP pour le
+// script du worker mais PAS pour ses imports — et toute la logique du proxy
+// vit dans shared/*.js. Sur un hébergeur qui plafonne à max-age=600, un worker
+// fraîchement installé tournait donc avec une copie périmée de sa propre
+// logique. Constaté en production : le correctif publié, le worker à jour, et
+// l'application toujours cassée jusqu'à une désinstallation manuelle.
+test("le Service Worker est enregistré sans cache pour ses imports", async ({ page }) => {
+  await blockExternalTraffic(page);
+  await page.goto("/");
+  const registration = await page.evaluate(async () => {
+    const vue = /** @type {any} */ (globalThis);
+    const reg = await vue.navigator.serviceWorker.getRegistration();
+    return reg ? { updateViaCache: reg.updateViaCache } : null;
+  });
+  expect(registration, "aucun Service Worker enregistré").not.toBeNull();
+  expect(
+    registration?.updateViaCache,
+    "les imports du worker doivent contourner le cache HTTP",
+  ).toBe("none");
+});

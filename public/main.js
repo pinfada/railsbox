@@ -112,8 +112,16 @@ async function start() {
 
   indicateur.etape("serviceWorker");
   logLine("Enregistrement du Service Worker proxy…");
+  // updateViaCache: "none" — le défaut (« imports ») contourne le cache HTTP
+  // pour le script du worker MAIS PAS pour ses imports. Or toute la logique du
+  // proxy vit dans shared/*.js, et GitHub Pages plafonne à max-age=600 : un
+  // worker fraîchement installé pouvait donc tourner avec une copie périmée de
+  // sa propre logique. Constaté en production sur une sandbox tierce — le
+  // correctif était publié, le worker à jour, et l'application restait cassée
+  // jusqu'à une désinstallation manuelle du worker.
   await navigator.serviceWorker.register(new URL("sw-proxy.js", document.baseURI), {
     type: "module",
+    updateViaCache: "none",
   });
   await navigator.serviceWorker.ready;
   await ensureControlled();
