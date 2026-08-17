@@ -425,6 +425,13 @@ safelisté ni ne déclenche de préflight OPTIONS (point de vigilance de
 l'[ADR 0001](docs/decisions/0001-distribution-artefacts.md) : GitHub Pages répond
 405 aux préflights).
 
+Elle **écrit** aussi : un billet est créé par le formulaire du scaffold, jeton
+CSRF compris. Ce scénario-là a été ajouté après coup, et il n'est pas
+décoratif — la recette a été verte à huit vérifications sur huit pendant que la
+démonstration était incapable d'enregistrer quoi que ce soit (voir « Un Service
+Worker ne peut pas poser de cookie »). Une suite qui ne fait que lire valide une
+sandbox à moitié morte.
+
 Elle dépend du réseau et d'un déploiement : elle est donc **hors de `npm test` et
 de la CI**. Le workflow
 [`verifier-sandbox.yml`](.github/workflows/verifier-sandbox.yml) la joue à la
@@ -716,6 +723,38 @@ d'accueil s'afficher.
 | Boot à froid de 13 min chez l'utilisateur | instantané généré en CI, livré en gzip, téléchargé si le cache local est vide |
 | v86 émet **un événement JS par octet** (369 282 pour le CSS) | assembleur `Uint8Array` pré-alloué : **24 ns/octet**, 8,9 ms pour 270 Ko |
 
+### Un Service Worker ne peut pas poser de cookie
+
+`Set-Cookie` est un en-tête **interdit** sur une `Response` construite : l'API
+Fetch le filtre en silence. Le proxy relayait donc les réponses de Rails sans
+que le navigateur n'enregistre jamais le cookie de session — celui qui porte la
+graine du jeton CSRF. Conséquence : chaque requête ouvrait une session vierge,
+et **tout POST répondait 422 `InvalidAuthenticityToken`**. La démonstration
+promettait « créez, modifiez, supprimez un billet » et ne savait qu'afficher.
+
+Le proxy tient donc lui-même le magasin (`shared/cookie-jar.js`) : il moissonne
+les `Set-Cookie` des réponses de la VM, les range, et repose l'en-tête `Cookie`
+sur chaque requête relayée. Le bocal est persisté en IndexedDB — un Service
+Worker est tué dès qu'il est inactif, et perdre le bocal en cours de parcours
+reviendrait à déconnecter le visiteur. `document.cookie` reste vide côté page,
+ce qui n'est PAS une mise hors de portée du script : voir
+[`SECURITY.md`](SECURITY.md).
+
+Corollaire de sécurité, découvert en revue : ce magasin attache le cookie de
+session à **toute** requête que le Service Worker relaie — or un SW prend en
+charge les **navigations** vers sa portée quelle qu'en soit l'origine
+initiatrice, pas seulement les sous-ressources de ses clients. Un formulaire
+hébergé ailleurs pouvait donc écrire dans la VM du visiteur. Le proxy refuse
+désormais en 403 toute requête dont l'`Origin` ou le `Sec-Fetch-Site` trahit
+une provenance inter-origine — plus strict que le `SameSite=Lax` qu'un
+navigateur aurait appliqué de lui-même.
+
+**La leçon, elle, dépasse le cookie** : la recette en ligne était verte à 8/8
+sur une démonstration incapable d'écrire, parce qu'elle ne faisait que des GET
+— et Rails n'a besoin d'aucune session pour servir un GET. Un scénario POST
+complet y a été ajouté, et le défaut a été trouvé en cliquant réellement dans
+la page publiée, pas en lisant un rapport de tests.
+
 ### Détecter une variable manquante sans se tromper de mot
 
 Une expression du type `(VARIABLE).{0,40}(mot-clé)` capture le **premier** jeton
@@ -763,7 +802,7 @@ public/
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
     └── v86-vm.js                  boot v86, instantané, horloge, pont série
-tests/                             ~380 tests unitaires + intégration (VM réelle) + E2E
+tests/                             370 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
 ├── e2e/                           boot navigateur complet (Playwright)
 └── live/                          recette de la sandbox PUBLIÉE (réseau, hors CI)

@@ -414,6 +414,12 @@ carries a non-safelisted header or triggers an OPTIONS preflight (the concern
 raised in [ADR 0001](docs/decisions/0001-distribution-artefacts.md): GitHub Pages
 answers 405 to preflights).
 
+It also **writes**: a post is created through the scaffold form, CSRF token
+included. That scenario was added after the fact, and it is not decorative —
+the recipe was eight-for-eight green while the demo could not save anything at
+all (see "A Service Worker cannot set a cookie"). A read-only suite validates a
+half-dead sandbox.
+
 It depends on the network and on a deployment, so it lives **outside `npm test`
 and CI**. The [`verifier-sandbox.yml`](.github/workflows/verifier-sandbox.yml)
 workflow runs it on demand — useful right after publishing — and every Monday,
@@ -687,6 +693,35 @@ code**. Found by clicking a link — not by watching the home page render.
 | 13-minute cold boot for the user | snapshot generated in CI, shipped gzipped, downloaded when the local cache is empty |
 | v86 emits **one JS event per byte** (369,282 for the stylesheet) | pre-allocated `Uint8Array` assembler: **24 ns/byte**, 8.9 ms for 270 KB |
 
+**A Service Worker cannot set a cookie.** `Set-Cookie` is a *forbidden*
+response header on a constructed `Response`: the Fetch API drops it silently.
+The proxy was relaying Rails' responses without the browser ever storing the
+session cookie — the one carrying the CSRF token seed. Every request therefore
+opened a fresh session, and **every POST answered 422
+`InvalidAuthenticityToken`**. The demo promised "create, edit, delete a post"
+and could only display.
+
+So the proxy keeps the jar itself (`shared/cookie-jar.js`): it harvests
+`Set-Cookie` from the VM's responses, stores them, and puts the `Cookie` header
+back on every relayed request. The jar is persisted in IndexedDB — a Service
+Worker is killed as soon as it goes idle, and losing the jar mid-visit would
+sign the visitor out. `document.cookie` stays empty on the page, which is *not*
+the same as putting cookies out of a script's reach: see
+[`SECURITY.md`](SECURITY.md).
+
+A security corollary, found in review: that jar attaches the session cookie to
+**every** request the Service Worker relays — and a SW handles *navigations*
+into its scope whatever their initiator, not just its own clients'
+subresources. A form hosted elsewhere could therefore write into the visitor's
+VM. The proxy now refuses with 403 any request whose `Origin` or
+`Sec-Fetch-Site` betrays a cross-origin initiator — stricter than the
+`SameSite=Lax` a browser would have applied on its own.
+
+**The lesson outlives the cookie**: the live recipe was 8/8 green against a
+demo that could not write, because it only issued GETs — and Rails needs no
+session to serve a GET. A full POST scenario was added, and the defect was
+found by actually clicking in the published page, not by reading a test report.
+
 **Detecting a missing variable without picking the wrong word.** A pattern like
 `(VARIABLE).{0,40}(keyword)` captures the **first** uppercase token on the line —
 on `{"severity":"FATAL","message":"GOOGLE_CLIENT_ID is missing"}` it seriously
@@ -729,7 +764,7 @@ public/
 │   └── v86-config.js              v86 config: single disk, or base + application
 └── vm/
     └── v86-vm.js                  v86 boot, snapshot, clock, serial bridge
-tests/                             ~380 unit tests + integration (real VM) + E2E
+tests/                             370 unit tests + integration (real VM) + E2E
 ├── integration/                   serial protocol against a real v86 VM (Node)
 ├── e2e/                           full browser boot (Playwright)
 └── live/                          suite for the PUBLISHED sandbox (network, out of CI)
