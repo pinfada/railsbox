@@ -128,7 +128,11 @@ figuré ici et qui étaient fausses.
   dans l'autre sens — la demande est vide, la réponse ne peut porter que ce que
   le navigateur expose déjà à la page. L'implémentation précédente s'appuyait
   sur le **Cookie Store API**, absent de WebKit et tardif dans Firefox : la
-  fusion n'avait pas lieu sur deux moteurs sur trois. Limite subsistante,
+  fusion n'avait pas lieu sur deux moteurs sur trois. Quand la coquille tarde à
+  répondre, le proxy repart sur son **dernier rapport connu** plutôt que sur
+  rien : un cookie que l'application vient d'effacer peut donc l'accompagner
+  une requête de plus — sans effet sur ce que le bocal, lui, tient. Limite
+  subsistante,
   mesurée et assumée : un cookie posé **sans `Path` explicite** depuis une page
   `/app/…` prend `<base>/app` pour chemin, reste invisible du document coquille
   et n'est donc pas récupéré — c'était déjà la portée exacte du Cookie Store

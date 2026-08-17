@@ -79,16 +79,24 @@ const QUOTA_HEADROOM = 0.9;
 const STORAGE_ESTIMATE_TTL_MS = 5_000;
 // Intervalle minimal entre deux demandes de configuration à la page hôte.
 const CONFIG_REQUEST_INTERVAL_MS = 2_000;
-// Délai au bout duquel on renonce à la réponse du document coquille sur les
-// cookies qu'il voit : la requête part alors avec le seul bocal — dégradation,
-// jamais échec. Large, parce qu'un onglet qui émule un i386 n'est pas toujours
-// prompt ; sans conséquence sur la latence, puisque la coquille répond dans la
-// même tâche que celle où elle relaie déjà la requête vers la VM.
-const DOCUMENT_COOKIE_TIMEOUT_MS = 1_000;
-// Après un silence, on cesse de demander pendant ce temps : une coquille muette
-// (page figée, version antérieure de main.js encore en cache) ne doit pas
-// coûter le délai ci-dessus à CHAQUE requête relayée.
-const DOCUMENT_COOKIE_SILENCE_MS = 5_000;
+// Délai au-delà duquel on cesse d'ATTENDRE la réponse de la coquille sur les
+// cookies qu'elle voit : la requête part alors avec le dernier rapport connu.
+// Généreux à dessein — le tout premier aller-retour a été mesuré à 1,3 s sur
+// Firefox, le temps que le worker démarre. La demande, elle, n'est jamais
+// annulée : une réponse tardive rafraîchit l'instantané, dont la requête
+// suivante profite. C'est ce qui rend l'à-coup indolore au lieu de le
+// propager.
+const DOCUMENT_COOKIE_TIMEOUT_MS = 2_000;
+// Au-delà de ce nombre d'attentes déçues d'affilée, on demande SANS attendre :
+// une coquille durablement muette (page figée, main.js d'une version
+// antérieure encore en cache) ne doit pas taxer chaque requête du délai
+// ci-dessus. La première réponse qui arrive remet le compteur à zéro.
+const DOCUMENT_COOKIE_MAX_ATTENTES = 3;
+// Une demande restée sans réponse est oubliée au bout de ce délai : sans quoi
+// une coquille muette ferait enfler la table des demandes en vol.
+const DOCUMENT_COOKIE_ABANDON_MS = 30_000;
+// Marqueur d'attente déçue, distinct de toute valeur de `document.cookie`.
+const RETARD = Symbol("retard");
 // Magasin de cookies du visiteur (voir shared/cookie-jar.js) : le navigateur
 // ne peut pas le tenir pour nous, un Service Worker ne pouvant pas faire poser
 // de cookie. Persisté en IndexedDB sous une clé dérivée de la portée — le SW
@@ -119,10 +127,14 @@ const state = {
   // Service Worker, avant la première requête relayée.
   cookiesRestored: null,
   cookieDb: null, // connexion IndexedDB du bocal, ouverte à la demande
-  // Demandes de cookies du document en vol : identifiant -> résolution.
+  // Dernier `document.cookie` rapporté par la coquille, et demandes en vol
+  // (identifiant -> résolution). L'instantané est ce qui sert quand la réponse
+  // tarde : sans lui, un seul à-coup de la page privait de leurs cookies
+  // TOUTES les requêtes qui suivaient.
+  documentCookie: "",
   cookieAsks: new Map(),
   nextCookieAsk: 1,
-  cookiesSilentUntil: 0,
+  cookieAskFailures: 0,
 };
 
 const cookieJar = createCookieJar();
@@ -620,45 +632,64 @@ async function cookieHeaderFor(requestPath) {
  * @returns {Promise<Array<{ name: string, value: string, path: string }>>}
  */
 async function documentCookies() {
-  if (Date.now() < state.cookiesSilentUntil) return [];
+  await refreshDocumentCookies();
+  return parseDocumentCookie(state.documentCookie);
+}
+
+/**
+ * Rafraîchit l'instantané des cookies du document. Attend la réponse, mais
+ * jamais au-delà du délai : passé celui-ci, la requête part avec le dernier
+ * rapport connu plutôt que sans rien. La demande reste en vol, et la réponse
+ * qui finit par arriver sert la requête suivante.
+ * @returns {Promise<void>}
+ */
+async function refreshDocumentCookies() {
   const clientList = await sw.clients.matchAll({ type: "window" });
   const coquilles = clientList.filter((client) =>
     isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH }),
   );
-  if (coquilles.length === 0) return [];
+  if (coquilles.length === 0) return;
   const id = state.nextCookieAsk++;
   const reponse = new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      state.cookieAsks.delete(id);
-      state.cookiesSilentUntil = Date.now() + DOCUMENT_COOKIE_SILENCE_MS;
-      warnOnce(
-        "cookies-document",
-        "la page hôte ne rapporte pas ses cookies — ceux que l'application " +
-          "pose en JavaScript n'atteindront pas le serveur",
-      );
-      resolve(null);
-    }, DOCUMENT_COOKIE_TIMEOUT_MS);
-    state.cookieAsks.set(id, (rapporte) => {
-      clearTimeout(timer);
-      state.cookieAsks.delete(id);
-      state.cookiesSilentUntil = 0;
-      resolve(rapporte);
-    });
+    state.cookieAsks.set(id, resolve);
+    setTimeout(() => state.cookieAsks.delete(id), DOCUMENT_COOKIE_ABANDON_MS);
   });
   // Toutes les coquilles ouvertes sont interrogées, la première réponse gagne :
   // elles sont same-origin, donc elles voient le même magasin.
   for (const client of coquilles) client.postMessage({ type: "cookies-document-request", id });
-  return parseDocumentCookie(await reponse);
+  if (state.cookieAskFailures >= DOCUMENT_COOKIE_MAX_ATTENTES) return;
+  const arrivee = await Promise.race([reponse, retarder(DOCUMENT_COOKIE_TIMEOUT_MS)]);
+  if (arrivee !== RETARD) return;
+  state.cookieAskFailures += 1;
+  warnOnce(
+    "cookies-document",
+    "la page hôte tarde à rapporter ses cookies — ceux que l'application pose " +
+      "en JavaScript peuvent manquer d'une requête",
+  );
 }
 
 /**
- * Réponse d'une coquille à une demande de cookies. Un rapport sans demande en
- * vol (retardataire, ou message spontané) est ignoré.
+ * @param {number} delai
+ * @returns {Promise<symbol>}
+ */
+function retarder(delai) {
+  return new Promise((resolve) => setTimeout(() => resolve(RETARD), delai));
+}
+
+/**
+ * Rapport d'une coquille sur ses cookies. L'instantané est mis à jour même
+ * quand la demande correspondante a expiré : c'est ce qui fait que le
+ * dispositif se remet tout seul d'un à-coup de la page.
  * @param {{ id?: unknown, cookie?: unknown }} data
  */
 function deliverDocumentCookies(data) {
+  if (typeof data.cookie !== "string") return;
+  state.documentCookie = data.cookie;
   const resoudre = state.cookieAsks.get(data.id);
-  if (resoudre) resoudre(data.cookie);
+  if (!resoudre) return;
+  state.cookieAsks.delete(data.id);
+  state.cookieAskFailures = 0;
+  resoudre(data.cookie);
 }
 
 /**
