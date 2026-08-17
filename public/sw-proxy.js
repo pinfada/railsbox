@@ -21,10 +21,12 @@
 // La logique pure (réécriture des Location, en-têtes d'isolation, pages
 // d'erreur) vit dans shared/proxy-logic.js ; celle du cache d'artefacts dans
 // shared/artifact-cache.js. Les deux sont testées unitairement.
-import { sanitizeMethod } from "./shared/request-codec.js";
+import { sanitizeCookieHeader, sanitizeMethod } from "./shared/request-codec.js";
 import {
   appPrefix,
+  crossOriginRefusal,
   errorPage,
+  isShellClient,
   prepareProxyHeaders,
   responseBodyFor,
   rootStaticPath,
@@ -39,7 +41,7 @@ import {
   obsoleteCacheNames,
   staleFormatCacheNames,
 } from "./shared/artifact-cache.js";
-import { createCookieJar, extractSetCookie } from "./shared/cookie-jar.js";
+import { createCookieJar, extractSetCookie, mergeBrowserCookies } from "./shared/cookie-jar.js";
 
 // lib.webworker type `self` en WorkerGlobalScope générique : ce fichier est
 // un Service Worker, on le déclare une fois pour bénéficier des types
@@ -78,8 +80,11 @@ const CONFIG_REQUEST_INTERVAL_MS = 2_000;
 // est tué dès qu'il est inactif, et perdre le magasin en cours de parcours
 // reviendrait à perdre la session Rails du visiteur (donc son jeton CSRF).
 // La page hôte, elle, ne peut PAS nous le rendre comme elle rend le port du
-// pont : elle n'a jamais vu ces cookies, et c'est exactement l'intérêt du
-// dispositif (les HttpOnly le restent vraiment).
+// pont : elle n'a jamais vu ces cookies. Attention à ne pas surestimer ce que
+// cela protège — cette base vit dans l'origine, donc un XSS de l'application
+// (iframe same-origin) peut l'ouvrir. Ce que le dispositif garantit, c'est que
+// `document.cookie` reste vide ; le reste tient au filtre du document coquille
+// sur les messages et au refus des requêtes inter-origine (SECURITY.md).
 const COOKIE_DB_NAME = "railsbox-cookies";
 const COOKIE_STORE = "jars";
 const COOKIE_KEY = new URL(sw.registration.scope).pathname;
@@ -108,14 +113,39 @@ sw.addEventListener("activate", (event) =>
   event.waitUntil(Promise.all([sw.clients.claim(), dropStaleFormatCaches()])),
 );
 
+// Les deux messages de commande du worker — le pont vers la VM et l'identité
+// des artefacts — ne sont acceptés QUE du document coquille. L'iframe de
+// l'application est un client same-origin comme un autre : sans ce filtre, un
+// XSS dans l'application posait son propre `bridge-port` et recevait chaque
+// descripteur de requête, `cookie:` en clair (donc les cookies `HttpOnly`).
+// La décision est pure et testée : shared/proxy-logic.js.
 sw.addEventListener("message", (event) => {
-  if (event.data?.type === "artifact-config") {
+  if (event.data?.type !== "artifact-config" && event.data?.type !== "bridge-port") return;
+  if (!isShellClient(sourceUrl(event), { origin: sw.location.origin, basePath: BASE_PATH })) {
+    warnOnce(
+      "client-refuse",
+      `message « ${event.data.type} » refusé : seul le document coquille commande le proxy`,
+    );
+    return;
+  }
+  if (event.data.type === "artifact-config") {
     event.waitUntil(adoptArtifactConfig(event.data.config));
     return;
   }
-  if (event.data?.type !== "bridge-port" || !event.ports[0]) return;
+  if (!event.ports[0]) return;
   adoptBridgePort(event.ports[0]);
 });
+
+/**
+ * URL du client émetteur d'un message. `event.source` peut aussi être un
+ * MessagePort ou un autre worker, qui n'en ont pas : sans URL, pas de coquille.
+ * @param {ExtendableMessageEvent} event
+ * @returns {string | null}
+ */
+function sourceUrl(event) {
+  const source = /** @type {any} */ (event.source);
+  return typeof source?.url === "string" ? source.url : null;
+}
 
 /** @param {MessagePort} port */
 function adoptBridgePort(port) {
@@ -442,6 +472,18 @@ async function withIsolationHeaders(request) {
  * @param {URL} url
  */
 async function proxyToVm(request, url) {
+  // Frontière d'origine, AVANT tout le reste : une navigation initiée par un
+  // site tiers arrive bel et bien ici (voir crossOriginRefusal), et le bocal y
+  // attacherait la session de l'application. Le worker est le seul étage qui
+  // connaisse l'origine publique — donc le seul qui puisse trancher.
+  const refus = crossOriginRefusal(
+    {
+      origin: request.headers.get("origin"),
+      secFetchSite: request.headers.get("sec-fetch-site"),
+    },
+    sw.location.origin,
+  );
+  if (refus !== null) return errorResponse(403, refus);
   try {
     const bridgePort = await ensureBridgePort();
     await ensureCookiesRestored();
@@ -471,9 +513,12 @@ async function proxyToVm(request, url) {
       headers: [...request.headers.entries(), ["x-forwarded-proto", "https"]],
       hasBody: hasBody && body !== null,
       forwardHost: url.host,
-      // Le navigateur n'a aucun cookie de l'application à nous donner : c'est
-      // le bocal du proxy qui les tient, et lui seul (shared/cookie-jar.js).
-      cookie: cookieJar.headerFor(url.pathname),
+      // Le bocal du proxy est la source autoritaire (shared/cookie-jar.js) —
+      // mais pas la seule : l'iframe étant same-origin, un `document.cookie =`
+      // de l'application crée un VRAI cookie du navigateur (fuseau horaire,
+      // locale, consentement, js-cookie…). Il faut donc l'y ajouter, sans quoi
+      // ces cookies-là n'atteindraient plus jamais le serveur.
+      cookie: await cookieHeaderFor(url.pathname),
     };
     const reply = await sendToBridge(bridgePort, descriptor, body);
     const headers = await harvestCookies(reply.headers, url.pathname);
@@ -484,10 +529,63 @@ async function proxyToVm(request, url) {
 }
 
 /**
+ * En-tête `Cookie:` complet d'une requête : le bocal du proxy, puis les vrais
+ * cookies du navigateur que le bocal ne connaît pas.
+ *
+ * POURQUOI CE SECOND ÉTAGE. L'iframe est same-origin ; `document.cookie = …`
+ * y crée un cookie du navigateur, que le worker ne voit PAS sur la requête
+ * (`Cookie` est un en-tête interdit sur une Request de FetchEvent) et dont
+ * aucun `Set-Cookie` ne l'a informé. Sans relecture explicite, un motif
+ * courant des applications Rails non modifiées — fuseau horaire posé en JS,
+ * locale, bandeau de consentement, js-cookie — cessait d'atteindre le serveur.
+ * Le Cookie Store API le rend lisible depuis le worker ; là où il manque
+ * (Firefox, WebKit), on retombe sur le bocal seul, l'état d'avant.
+ *
+ * Journalisé quand l'en-tête dépasse ce que la frontière accepte : sans cela,
+ * le visiteur perdait TOUTE sa session en silence — soit le 422 que ce
+ * dispositif existe pour supprimer.
+ * @param {string} requestPath
+ * @returns {Promise<string | null>}
+ */
+async function cookieHeaderFor(requestPath) {
+  const header = mergeBrowserCookies(
+    cookieJar.headerFor(requestPath),
+    await browserCookies(),
+    requestPath,
+  );
+  if (header !== null && sanitizeCookieHeader(header) === null) {
+    warnOnce(
+      "cookies-abandon",
+      "en-tête Cookie refusé à la frontière (trop long ou illisible) — " +
+        "la requête part SANS cookie, l'application peut répondre 422",
+    );
+  }
+  return header;
+}
+
+/**
+ * Cookies que le navigateur tient pour cette portée, ou une liste vide là où
+ * le Cookie Store API n'existe pas. Toute défaillance est sans appel : le
+ * bocal seul reste le comportement de référence.
+ * @returns {Promise<Array<{ name: string, value: string, path?: string }>>}
+ */
+async function browserCookies() {
+  const store = /** @type {any} */ (sw).cookieStore;
+  if (!store?.getAll) return [];
+  try {
+    return (await store.getAll()) ?? [];
+  } catch (error) {
+    warnOnce("cookies-navigateur", `cookies du navigateur illisibles (${error.message})`);
+    return [];
+  }
+}
+
+/**
  * Retire les `Set-Cookie` de la réponse de la VM, les range dans le bocal et
  * persiste celui-ci s'il a changé. Les rendre au document ne servirait à rien
  * — le constructeur `Response` filtre `Set-Cookie` — et les garder ici est ce
- * qui rend les cookies HttpOnly réellement inaccessibles au script.
+ * qui laisse `document.cookie` vide. Pas davantage : voir shared/cookie-jar.js
+ * pour ce que cela protège et ce que cela ne protège pas.
  * @param {Array<[string, string]> | undefined} rawHeaders
  * @param {string} requestPath chemin de la requête, sans chaîne de recherche
  * @returns {Promise<Array<[string, string]>>} en-têtes à rendre au document

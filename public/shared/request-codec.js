@@ -15,12 +15,12 @@ const HOST_PATTERN = /^[a-zA-Z0-9.\-:[\]]+$/;
 //
 // Deux ajouts qui ne sont pas hop-by-hop et méritent leur justification :
 //
-//  - « cookie » : le navigateur n'a AUCUN cookie de l'application (un Service
-//    Worker ne peut pas en faire poser, voir shared/cookie-jar.js). Le seul
-//    magasin qui existe est celui du proxy, et il est injecté par le canal
-//    dédié de buildRequestFrames. Filtrer ici garantit qu'un `Cookie:` fabriqué
-//    par du script de l'application ne puisse pas doubler ni supplanter le
-//    magasin — le bocal reste la source unique.
+//  - « cookie » : le magasin de référence de l'application est celui du proxy
+//    (shared/cookie-jar.js), injecté par le canal dédié de buildRequestFrames —
+//    lequel y a d'abord fusionné les vrais cookies du navigateur que le bocal
+//    ne connaît pas (posés en JavaScript par l'application). Filtrer ici
+//    garantit qu'un `Cookie:` fabriqué ailleurs ne puisse pas doubler ni
+//    supplanter ce canal : une seule voie d'entrée, contrôlée.
 //
 //  - « origin » : Rails compare `request.origin` à `request.base_url`
 //    (forgery_protection_origin_check). Le guest ne peut PAS connaître
@@ -31,14 +31,18 @@ const HOST_PATTERN = /^[a-zA-Z0-9.\-:[\]]+$/;
 //    `origin` nul comme valide (RFC : un client peut légitimement ne pas
 //    l'envoyer), et la protection CSRF reste entièrement assurée par le jeton
 //    de session, que le bocal à cookies fait de nouveau circuler.
-//    C'est sûr ICI parce que ce module est la seule frontière d'entrée du
-//    guest : rien n'atteint la VM sans passer par le Service Worker, qui
-//    n'intercepte que les requêtes de ses propres clients same-origin
-//    (une page tierce n'est pas un client : ses requêtes vers notre origine
-//    ne le traversent jamais), et les documents applicatifs sont servis sous
-//    `form-action 'self'` + `frame-ancestors 'self'`. Une requête inter-origine
-//    forgée n'a aucun chemin jusqu'ici ; il faudrait déjà un XSS DANS
-//    l'application, qui lirait alors le jeton CSRF de toute façon.
+//
+//    ATTENTION — CE RETRAIT NE SE SUFFIT PAS À LUI-MÊME. On a cru ici qu'un
+//    Service Worker « n'intercepte que les requêtes de ses propres clients
+//    same-origin ». C'EST FAUX : dans l'algorithme *Handle Fetch*, une requête
+//    de NAVIGATION est routée par *Match Service Worker Registration* sur
+//    l'URL de la requête, sans considération du client initiateur. Un
+//    formulaire posté depuis un site tiers vers `<origine>/…/app/…` traverse
+//    donc bel et bien le worker. La vérification manquante a été portée là où
+//    l'origine publique est connue — le Service Worker lui-même, qui REFUSE
+//    en 403 toute requête `/app/*` dont l'initiateur n'est pas notre origine
+//    (`crossOriginRefusal`, shared/proxy-logic.js). Retirer l'en-tête reste
+//    correct côté guest ; contrôler, c'est le rôle du worker.
 const STRIPPED_REQUEST_HEADERS = new Set([
   "host",
   "connection",
@@ -105,7 +109,10 @@ export function sanitizeCookieHeader(value) {
   if (value.length > MAX_HEADER_VALUE_LENGTH) return null;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code < 0x20 || code === 0x7f) return null;
+    // Au-delà de U+00FF, le pont côté guest (`http.client`, encodage latin-1)
+    // lève `UnicodeEncodeError` : le contrôle appartient donc bien à cette
+    // frontière, pas au guest, qui n'a que le 502 pour l'exprimer.
+    if (code < 0x20 || code === 0x7f || code > 0xff) return null;
   }
   return value;
 }

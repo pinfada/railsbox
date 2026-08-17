@@ -76,6 +76,16 @@ test("sanitizeCookieHeader accepte un en-tête normal et refuse les injections",
   assert.equal(sanitizeCookieHeader("a=".padEnd(9000, "x")), null, "en-tête démesuré refusé");
 });
 
+test("sanitizeCookieHeader refuse ce que le guest ne sait pas encoder", () => {
+  // Le pont côté guest passe les en-têtes à http.client, qui les encode en
+  // latin-1 : au-delà de U+00FF il lève, et l'exception ressort en 502. Un
+  // é (U+00E9) passe ; un 中 (U+4E2D) doit être arrêté ICI, seul endroit où le
+  // refus reste explicable.
+  assert.equal(sanitizeCookieHeader("nom=café"), "nom=café");
+  assert.equal(sanitizeCookieHeader("nom=中"), null);
+  assert.equal(sanitizeCookieHeader("nom=\u{1F600}"), null, "y compris hors du plan de base");
+});
+
 test("parseCurlHeaders lit statut + en-têtes et retire les hop-by-hop", () => {
   const parsed = parseCurlHeaders(
     "HTTP/1.1 302 Found\r\nLocation: /app/login\r\nContent-Length: 12\r\nConnection: close\r\nSet-Cookie: s=1\r\n\r\n",

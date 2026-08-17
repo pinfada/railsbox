@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import {
   APP_PREFIX,
   appPrefix,
+  crossOriginRefusal,
   normalizeBasePath,
   errorPage,
   escapeHtml,
+  isShellClient,
   prepareProxyHeaders,
   responseBodyFor,
   rewriteLocation,
@@ -14,6 +16,7 @@ import {
 } from "../public/shared/proxy-logic.js";
 
 const SELF = { origin: "http://localhost:8080", host: "localhost:8080" };
+const ORIGINE = "https://pinfada.github.io";
 
 test("rewriteLocation ramène un chemin absolu sans préfixe sous /app", () => {
   assert.equal(rewriteLocation("/users/sign_in", SELF), "/app/users/sign_in");
@@ -81,7 +84,11 @@ test("prepareProxyHeaders applique la CSP applicative aux documents HTML", () =>
   assert.ok(csp.includes("form-action 'self'"), "l'envoi de formulaires externes doit être bloqué");
 });
 
-test("prepareProxyHeaders respecte la CSP de l'application si elle existe", () => {
+test("prepareProxyHeaders ajoute SA CSP même quand l'application en pose une", () => {
+  // Défaut corrigé : la CSP du proxy n'était posée QUE si l'application n'en
+  // fournissait pas — une application à la politique permissive désactivait
+  // donc la nôtre, alors que SECURITY.md la donne pour inconditionnelle. Les
+  // deux politiques s'appliquent désormais conjointement (elles s'intersectent).
   const headers = prepareProxyHeaders(
     [
       ["content-type", "text/html"],
@@ -89,7 +96,9 @@ test("prepareProxyHeaders respecte la CSP de l'application si elle existe", () =
     ],
     SELF,
   );
-  assert.equal(headers.get("content-security-policy"), "default-src 'none'");
+  const csp = headers.get("content-security-policy");
+  assert.ok(csp.includes("default-src 'none'"), "la politique de l'application est conservée");
+  assert.ok(csp.includes("connect-src 'self'"), "celle du proxy s'y ajoute");
 });
 
 test("prepareProxyHeaders n'impose pas de CSP aux réponses non-HTML", () => {
@@ -101,6 +110,78 @@ test("prepareProxyHeaders tolère l'absence d'en-têtes", () => {
   const headers = prepareProxyHeaders(undefined, SELF);
   assert.equal(headers.get("cross-origin-embedder-policy"), "require-corp");
   assert.equal(headers.get("location"), null);
+});
+
+// --- Frontière d'origine (HIGH-1) -----------------------------------------
+//
+// Le Service Worker N'INTERCEPTE PAS que ses propres clients : une navigation
+// est routée sur l'URL de la requête, pas sur son initiateur. Un POST forgé
+// depuis un site tiers traverse donc le proxy, qui y attacherait la session du
+// bocal — et le seul jeton d'authenticité ne couvre pas les routes en
+// skip_forgery_protection. Ces cas figent la règle de refus.
+
+test("crossOriginRefusal refuse un POST forgé depuis un site tiers", () => {
+  const refus = crossOriginRefusal(
+    { origin: "https://evil.example", secFetchSite: "cross-site" },
+    ORIGINE,
+  );
+  assert.ok(refus, "un Origin étranger doit être refusé");
+  assert.match(refus, /evil\.example/);
+});
+
+test("crossOriginRefusal refuse une navigation inter-site SANS Origin", () => {
+  // Une navigation GET n'a pas forcément d'Origin : Sec-Fetch-Site est alors
+  // le seul signal, et c'est justement le cas d'un lien forgé.
+  assert.ok(crossOriginRefusal({ origin: null, secFetchSite: "cross-site" }, ORIGINE));
+  // « same-site » = même domaine enregistrable, autre origine : sur github.io,
+  // le Pages du voisin. Ce n'est pas nous.
+  assert.ok(crossOriginRefusal({ origin: null, secFetchSite: "same-site" }, ORIGINE));
+});
+
+test("crossOriginRefusal laisse passer ce que la sandbox produit elle-même", () => {
+  const legitimes = [
+    // POST de l'iframe applicative : Origin présent, et c'est le nôtre.
+    { origin: ORIGINE, secFetchSite: "same-origin" },
+    // Navigation same-origin en GET : aucun Origin, seul Sec-Fetch-Site parle.
+    { origin: null, secFetchSite: "same-origin" },
+    // Saisie directe ou marque-page du visiteur.
+    { origin: null, secFetchSite: "none" },
+    // Navigateur qui ne pose pas Fetch Metadata : rien ne prouve un abus.
+    { origin: null, secFetchSite: null },
+  ];
+  for (const signaux of legitimes) {
+    assert.equal(
+      crossOriginRefusal(signaux, ORIGINE),
+      null,
+      `aurait dû passer: ${JSON.stringify(signaux)}`,
+    );
+  }
+});
+
+// --- Filtre du document coquille (HIGH-2) ---------------------------------
+
+test("isShellClient refuse l'iframe applicative, seule surface d'un XSS", () => {
+  // Sans ce filtre, un XSS dans l'application postait son propre « bridge-port »
+  // et recevait chaque descripteur de requête, cookie: EN CLAIR.
+  const self = { origin: ORIGINE, basePath: "/railsbox-demo/" };
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/app/posts`, self), false);
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/app`, self), false);
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/app/`, self), false);
+});
+
+test("isShellClient accepte le document coquille, à la racine de publication", () => {
+  const self = { origin: ORIGINE, basePath: "/railsbox-demo/" };
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/`, self), true);
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/index.html?fresh=1`, self), true);
+  // Publication à la racine d'une origine : le cas du développement local.
+  assert.equal(isShellClient(`${ORIGINE}/`, { origin: ORIGINE, basePath: "/" }), true);
+});
+
+test("isShellClient refuse une autre origine et une source sans URL", () => {
+  const self = { origin: ORIGINE, basePath: "/railsbox-demo/" };
+  assert.equal(isShellClient("https://evil.example/railsbox-demo/", self), false);
+  assert.equal(isShellClient(null, self), false);
+  assert.equal(isShellClient("pas une URL", self), false);
 });
 
 test("escapeHtml neutralise les cinq caractères dangereux", () => {

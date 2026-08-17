@@ -14,9 +14,16 @@
 // ici ; chaque requête relayée repart avec l'en-tête `Cookie:` que ce magasin
 // sérialise. Le trajet complet reste à l'intérieur du Service Worker.
 //
-// EFFET DE BORD HEUREUX. Les cookies HttpOnly le sont VRAIMENT : ils vivent
-// dans le Service Worker, hors de portée de tout script — un XSS dans
-// l'application émulée ne peut pas les lire, et `document.cookie` reste vide.
+// CE QUE ÇA CHANGE POUR L'ISOLATION, EXACTEMENT. `document.cookie` reste
+// vide : un script de l'application ne peut pas lire la session par le chemin
+// habituel, et un `HttpOnly` posé par Rails ne lui est pas rendu. Ce n'est PAS
+// « hors de portée de tout script » pour autant, et l'affirmation contraire a
+// figuré ici : l'iframe est same-origin, donc un XSS dans l'application peut
+// ouvrir l'IndexedDB `railsbox-cookies` de l'origine, exactement comme il peut
+// lire le localStorage de l'inspecteur (déjà documenté dans SECURITY.md). Le
+// gain est réel mais borné, et il tient à deux gardes qui vivent ailleurs :
+// le filtre du document coquille sur les messages du worker (proxy-logic.js,
+// `isShellClient`) et le refus des requêtes inter-origine (`crossOriginRefusal`).
 //
 // PÉRIMÈTRE VOLONTAIREMENT RÉDUIT (ADR 0004 : un visiteur = sa VM = ses
 // cookies, aucun partage possible par construction) :
@@ -25,8 +32,11 @@
 //    domaine mal deviné par l'application casserait sa session sans rien
 //    protéger ;
 //  - `Secure` et `SameSite` sont conservés, pas appliqués : le « transport »
-//    est un MessagePort interne à l'onglet, pas un réseau, et la seule origine
-//    capable d'atteindre ce proxy est celle de la coquille elle-même ;
+//    est un MessagePort interne à l'onglet, pas un réseau. `SameSite` n'a plus
+//    d'objet depuis que le Service Worker REFUSE toute requête `/app/*` dont
+//    l'initiateur est inter-site (`crossOriginRefusal`) : ce refus est
+//    strictement plus fort que `SameSite=Lax`, qui laisserait encore passer
+//    une navigation GET inter-site avec ses cookies ;
 //  - `Path`, `Expires`, `Max-Age` et `HttpOnly`, eux, sont pleinement
 //    honorés : ce sont ceux dont dépend le comportement de l'application
 //    (déconnexion = `Max-Age=0`, cookies de scope, expiration de session).
@@ -38,6 +48,12 @@
 // magasin indéfiniment ni produire un en-tête que le guest refusera.
 const MAX_COOKIES = 200;
 const MAX_COOKIE_VALUE_LENGTH = 4096;
+// Borne de l'en-tête `Cookie:` SÉRIALISÉ, alignée sur celle que la frontière
+// d'entrée du guest applique (sanitizeCookieHeader, request-codec.js). La
+// dépasser ne coûtait pas un cookie mais TOUS : l'en-tête entier était
+// abandonné, et le visiteur perdait sa session — le 422 que ce module existe
+// pour supprimer. On évince donc AVANT d'en arriver là.
+export const MAX_COOKIE_HEADER_LENGTH = 8192;
 // Caractères interdits dans un nom ou une valeur de cookie : CR, LF et NUL
 // (injection en-tête), plus « ; » qui forgerait un second cookie. Comparaison
 // par code de caractère : aucune séquence échappée dans une expression
@@ -45,14 +61,41 @@ const MAX_COOKIE_VALUE_LENGTH = 4096;
 const CODES_INTERDITS = new Set([0, 10, 13, 59]);
 
 /**
+ * Un nom ou une valeur peut-il franchir la frontière du guest ?
+ *
+ * Au-delà des caractères d'injection, tout codepoint > U+00FF est refusé : le
+ * pont côté guest passe les en-têtes à `http.client`, qui les encode en
+ * latin-1 et lève `UnicodeEncodeError` au-delà. L'exception y est convertie en
+ * erreur de pont, donc en 502 — et comme le cookie fautif reste dans le bocal
+ * (et dans IndexedDB), le 502 revient à CHAQUE requête, y compris après un
+ * redémarrage du worker.
  * @param {string} texte
  * @returns {boolean}
  */
 function contientInterdit(texte) {
   for (let index = 0; index < texte.length; index += 1) {
-    if (CODES_INTERDITS.has(texte.charCodeAt(index))) return true;
+    const code = texte.charCodeAt(index);
+    if (CODES_INTERDITS.has(code) || code > 0xff) return true;
   }
   return false;
+}
+
+/**
+ * Contrôles d'un cookie déjà analysé, rejoués tels quels sur ce qui remonte de
+ * la persistance : un enregistrement empoisonné dans IndexedDB (que rien
+ * n'empêche un XSS de l'application d'y écrire) doit être refusé au même titre
+ * qu'un `Set-Cookie` malformé.
+ * @param {any} cookie
+ * @returns {boolean}
+ */
+export function isTransmissibleCookie(cookie) {
+  if (!cookie || typeof cookie.name !== "string" || typeof cookie.value !== "string") return false;
+  if (typeof cookie.path !== "string" || !cookie.path.startsWith("/")) return false;
+  if (cookie.name === "" || contientInterdit(cookie.name) || contientInterdit(cookie.value)) {
+    return false;
+  }
+  if (cookie.name.length + cookie.value.length > MAX_COOKIE_VALUE_LENGTH) return false;
+  return cookie.expiresAt === null || Number.isFinite(cookie.expiresAt);
 }
 
 /**
@@ -208,6 +251,54 @@ export function serializeCookies(cookies) {
 }
 
 /**
+ * Complète l'en-tête du bocal avec les VRAIS cookies du navigateur qu'il ne
+ * connaît pas.
+ *
+ * LE DÉFAUT CORRIGÉ. Le bocal n'apprend que par `Set-Cookie`. Or l'iframe est
+ * same-origin : `document.cookie = "timezone=…"` — fuseau horaire, locale,
+ * bandeau de consentement, js-cookie — crée un cookie du navigateur dont
+ * aucune réponse de la VM n'a parlé. Comme le proxy retire par ailleurs tout
+ * `Cookie:` venu du navigateur, ces cookies-là avaient cessé d'atteindre le
+ * serveur : régression silencieuse sur un motif courant des applications Rails
+ * non modifiées.
+ *
+ * LE BOCAL RESTE AUTORITAIRE : un nom qu'il porte déjà n'est jamais doublé ni
+ * remplacé (c'est lui qui tient la session et les `HttpOnly`). On n'ajoute que
+ * ce qui manque, et seulement dans la limite de l'en-tête acceptable.
+ * @param {string | null} header en-tête produit par le bocal
+ * @param {Array<{ name?: string, value?: string, path?: string }> | null | undefined} browserCookies
+ * @param {string} requestPath chemin de la requête (sans chaîne de recherche)
+ * @returns {string | null}
+ */
+export function mergeBrowserCookies(header, browserCookies, requestPath) {
+  const connus = new Set(
+    (header ?? "")
+      .split("; ")
+      .map((paire) => paire.slice(0, paire.indexOf("=")))
+      .filter((nom) => nom !== ""),
+  );
+  let fusion = header ?? "";
+  for (const brut of browserCookies ?? []) {
+    const cookie = {
+      name: brut?.name,
+      value: brut?.value,
+      path: typeof brut?.path === "string" && brut.path.startsWith("/") ? brut.path : "/",
+      expiresAt: null,
+    };
+    if (connus.has(cookie.name) || !isTransmissibleCookie(cookie)) continue;
+    if (!pathMatches(cookie.path, requestPath)) continue;
+    const candidat =
+      fusion === ""
+        ? `${cookie.name}=${cookie.value}`
+        : `${fusion}; ${cookie.name}=${cookie.value}`;
+    if (candidat.length > MAX_COOKIE_HEADER_LENGTH) break;
+    connus.add(cookie.name);
+    fusion = candidat;
+  }
+  return fusion === "" ? null : fusion;
+}
+
+/**
  * Magasin de cookies d'un visiteur. Clé d'unicité : nom + chemin (le domaine
  * n'entre pas en compte, cf. en-tête de fichier).
  *
@@ -220,6 +311,13 @@ export function createCookieJar({ now = () => Date.now() } = {}) {
   // l'en-tête `Cookie:` (RFC 6265 §5.4.2), y compris posés dans la même
   // milliseconde — ce qui arrive à chaque réponse de Rails.
   let sequence = 0;
+  // Rang de DERNIER USAGE, compteur distinct : c'est lui qui désigne la
+  // victime d'une éviction. L'ancienneté de création était un critère
+  // désastreux ici — le cookie de session de Rails est le premier créé et
+  // conserve son rang à chaque réémission (RFC 6265 §5.3 étape 11), donc une
+  // application qui pose beaucoup de cookies évinçait AVANT TOUT la session,
+  // c'est-à-dire exactement ce qu'il fallait garder.
+  let usage = 0;
 
   /** @param {{ name: string, path: string }} cookie */
   const keyOf = (cookie) => `${cookie.name} ${cookie.path}`;
@@ -257,16 +355,42 @@ export function createCookieJar({ now = () => Date.now() } = {}) {
     ) {
       return false; // réémission à l'identique : rien à persister
     }
-    // Un cookie réécrit conserve son rang de création (RFC 6265 §5.3 étape 11).
-    cookies.set(key, { ...cookie, sequence: previous ? previous.sequence : sequence++ });
-    if (cookies.size > MAX_COOKIES) {
-      // Éviction du plus ancien : un magasin sans borne finirait par produire
-      // un en-tête que le guest refuserait, ce qui casserait TOUTES les
-      // requêtes plutôt qu'une seule.
-      const oldest = [...cookies.entries()].sort((a, b) => a[1].sequence - b[1].sequence)[0];
-      cookies.delete(oldest[0]);
-    }
+    // Un cookie réécrit conserve son rang de création (RFC 6265 §5.3 étape 11)
+    // — mais son rang d'usage, lui, repart à neuf : il vient de servir.
+    cookies.set(key, {
+      ...cookie,
+      sequence: previous ? previous.sequence : sequence++,
+      usage: usage++,
+    });
+    evict(key);
     return true;
+  }
+
+  /**
+   * Ramène le magasin sous ses deux bornes — nombre d'entrées ET longueur de
+   * l'en-tête sérialisé — en sacrifiant les cookies les moins récemment
+   * utilisés. La borne de longueur est celle de la frontière du guest : la
+   * franchir faisait abandonner l'en-tête ENTIER, donc perdre la session.
+   *
+   * À usage ÉGAL — le cas courant, puisqu'une même requête emporte d'un coup
+   * tous les cookies de chemin `/` — la victime est le plus RÉCEMMENT créé.
+   * Départager par ancienneté de création ferait retomber dans le défaut
+   * qu'on corrige : le cookie de session de Rails est le premier créé et
+   * conserve son rang à chaque réémission, il serait de nouveau sacrifié le
+   * premier. Une inondation est faite de nouveaux venus ; c'est elle qui paie.
+   * @param {string} protege clé à ne jamais évincer (celle qu'on vient de ranger)
+   */
+  function evict(protege) {
+    const trop = () =>
+      cookies.size > MAX_COOKIES ||
+      serializeCookies([...cookies.values()]).length > MAX_COOKIE_HEADER_LENGTH;
+    while (trop()) {
+      const victime = [...cookies.entries()]
+        .filter(([key]) => key !== protege)
+        .sort((a, b) => a[1].usage - b[1].usage || b[1].sequence - a[1].sequence)[0];
+      if (!victime) return; // seul le cookie protégé subsiste : rien à faire
+      cookies.delete(victime[0]);
+    }
   }
 
   return {
@@ -280,7 +404,7 @@ export function createCookieJar({ now = () => Date.now() } = {}) {
       let changed = false;
       for (const raw of setCookies ?? []) {
         const cookie = parseSetCookie(raw, { requestPath, now: now() });
-        if (cookie === null) continue;
+        if (cookie === null || !isTransmissibleCookie(cookie)) continue;
         changed = store(cookie) || changed;
       }
       return changed;
@@ -298,6 +422,15 @@ export function createCookieJar({ now = () => Date.now() } = {}) {
       const applicables = [...cookies.values()]
         .filter((cookie) => pathMatches(cookie.path, requestPath))
         .sort((a, b) => b.path.length - a.path.length || a.sequence - b.sequence);
+      // Marquage d'usage : un cookie qui repart avec une requête vient de
+      // servir, et ne doit donc pas être la prochaine victime d'une éviction.
+      // UN SEUL rang pour toute la fournée — les distinguer reviendrait à les
+      // classer par l'ordre de la RFC, donc à redésigner la session (premier
+      // cookie de l'en-tête) comme la moins récemment utilisée. L'ORDRE de
+      // l'en-tête, lui, reste celui de la RFC 6265 §5.4.2 : les deux critères
+      // sont indépendants, c'est tout l'intérêt de compteurs distincts.
+      const rangUsage = usage++;
+      for (const cookie of applicables) cookie.usage = rangUsage;
       return applicables.length === 0 ? null : serializeCookies(applicables);
     },
 
@@ -318,16 +451,26 @@ export function createCookieJar({ now = () => Date.now() } = {}) {
     load(saved) {
       cookies.clear();
       sequence = 0;
+      usage = 0;
       for (const cookie of saved ?? []) {
-        if (!cookie || typeof cookie.name !== "string" || typeof cookie.path !== "string") continue;
+        // LES MÊMES CONTRÔLES QU'À L'INGESTION, rejoués : IndexedDB n'est pas
+        // un canal de confiance. Il vit dans l'origine, qu'un XSS de
+        // l'application partage — une entrée forgée y réinjecterait un « ; »
+        // (donc un cookie supplémentaire à la sérialisation) ou un codepoint
+        // hors latin-1, qui fait échouer le pont côté guest en 502 PERSISTANT,
+        // rejoué à chaque réveil du worker.
+        if (!isTransmissibleCookie(cookie)) continue;
         // Le rang de création est conservé s'il a été persisté : c'est lui qui
         // fixe l'ordre de l'en-tête `Cookie:`, et un magasin rechargé doit
         // produire exactement le même que le magasin d'origine.
         const rang = Number.isFinite(cookie.sequence) ? cookie.sequence : sequence;
         sequence = Math.max(sequence, rang + 1);
-        cookies.set(keyOf(cookie), { ...cookie, sequence: rang });
+        const dernierUsage = Number.isFinite(cookie.usage) ? cookie.usage : rang;
+        usage = Math.max(usage, dernierUsage + 1);
+        cookies.set(keyOf(cookie), { ...cookie, sequence: rang, usage: dernierUsage });
       }
       prune();
+      evict(""); // une persistance gonflée ne doit pas ressusciter hors bornes
     },
 
     clear() {

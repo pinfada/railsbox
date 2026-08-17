@@ -87,6 +87,84 @@ export function rootStaticPath(pathname, basePath = "/") {
   return ROOT_STATIC_FILES.has(bare) ? `${base}${ROOT_STATIC_ROOT}${bare}` : null;
 }
 
+// --- Frontière d'origine du proxy -----------------------------------------
+//
+// UN SERVICE WORKER N'INTERCEPTE PAS QUE SES PROPRES CLIENTS. On l'a cru, et
+// c'est faux : l'algorithme *Handle Fetch* route une requête de NAVIGATION
+// (non-subresource) par *Match Service Worker Registration* sur l'URL DE LA
+// REQUÊTE, pas via le client qui l'a initiée. Un formulaire posté depuis
+// evil.example vers `https://<hôte>/<depot>/app/posts` traverse donc ce
+// worker — qui y attacherait le cookie de session du bocal, lequel n'applique
+// pas `SameSite`. Le jeton d'authenticité resterait seul en défense, et il ne
+// couvre pas les routes en `skip_forgery_protection` / `null_session`,
+// fréquentes sur les contrôleurs API des applications non modifiées visées.
+//
+// La parade est ici et nulle part ailleurs : le guest ne connaît pas l'origine
+// publique (c'est pourquoi `request-codec.js` retire `Origin`), mais le worker,
+// lui, la connaît. On CONTRÔLE donc au lieu de RETIRER.
+//
+// Deux signaux, complémentaires parce qu'aucun n'est présent partout :
+//  - `Origin` : posé sur toute requête non-GET/HEAD, donc sur le POST forgé —
+//    mais absent d'une navigation GET, y compris same-origin ;
+//  - `Sec-Fetch-Site` : posé sur les navigations comme sur les sous-ressources,
+//    y compris quand `Origin` manque. `none` = saisie/marque-page du visiteur,
+//    `same-origin` = notre coquille ou notre iframe : les deux sont légitimes.
+//
+// Refuser jusqu'aux navigations GET inter-site est STRICTEMENT PLUS FORT que
+// `SameSite=Lax` (qui les laisserait passer avec leurs cookies) : c'est
+// pourquoi le bocal n'a pas besoin d'apparier `SameSite` — plus aucune requête
+// inter-site n'atteint le pont. Rien de légitime n'y est perdu : un lien
+// entrant vers `/app/…` tombe de toute façon sur une VM qui n'a pas booté.
+const ORIGINES_REFUSEES = new Set(["cross-site", "same-site"]);
+
+/**
+ * Motif de refus d'une requête `/app/*`, ou null si elle peut être relayée.
+ * @param {{ origin?: string | null, secFetchSite?: string | null }} signals
+ *   en-têtes `Origin` et `Sec-Fetch-Site` de la requête (null si absents)
+ * @param {string} selfOrigin origine du Service Worker
+ * @returns {string | null}
+ */
+export function crossOriginRefusal({ origin, secFetchSite }, selfOrigin) {
+  if (typeof origin === "string" && origin !== "" && origin !== selfOrigin) {
+    return `Requête d'origine ${origin} refusée : la sandbox ne relaie que sa propre origine`;
+  }
+  const site = typeof secFetchSite === "string" ? secFetchSite.trim().toLowerCase() : "";
+  if (ORIGINES_REFUSEES.has(site)) {
+    return `Requête inter-site (Sec-Fetch-Site: ${site}) refusée : la sandbox ne relaie que sa propre origine`;
+  }
+  return null;
+}
+
+/**
+ * Le client qui envoie un message au Service Worker est-il le DOCUMENT
+ * COQUILLE, seul habilité à fournir le pont vers la VM et l'identité des
+ * artefacts ?
+ *
+ * Sans ce filtre, un XSS dans l'application (iframe same-origin, donc client
+ * du worker) pouvait poster son propre `bridge-port` : le worker lui aurait
+ * alors livré chaque descripteur de requête, `cookie:` EN CLAIR — les cookies
+ * `HttpOnly` compris. Le même filtre ferme l'abus d'`artifact-config`, qui
+ * détournerait le cache d'artefacts.
+ *
+ * Le critère est la frontière que le proxy possède déjà : `/app/*` est
+ * l'espace de l'application, tout le reste de l'origine est la coquille. Un
+ * document servi sous le préfixe applicatif n'est jamais la coquille.
+ * @param {string | null | undefined} clientUrl
+ * @param {{ origin: string, basePath?: string }} self
+ * @returns {boolean}
+ */
+export function isShellClient(clientUrl, { origin, basePath = "/" }) {
+  let url;
+  try {
+    url = new URL(String(clientUrl));
+  } catch {
+    return false; // client sans URL exploitable : jamais la coquille
+  }
+  if (url.origin !== origin) return false;
+  const prefix = appPrefix(basePath);
+  return url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`);
+}
+
 // Codes pour lesquels le constructeur Response interdit un corps.
 export const BODYLESS_STATUS = new Set([101, 204, 205, 304]);
 
@@ -156,8 +234,15 @@ const APP_DOCUMENT_CSP = [
  * Prépare les en-têtes d'une réponse proxifiée : réécrit Location, pose les
  * en-têtes exigés par l'isolation cross-origin (sous COEP:require-corp, un
  * document imbriqué doit lui-même les porter, et ses sous-ressources un CORP
- * explicite) et applique la CSP applicative aux documents HTML qui n'en
- * apportent pas déjà une (celle de l'application prime si elle existe).
+ * explicite) et applique la CSP applicative à TOUT document HTML.
+ *
+ * La CSP est ajoutée, jamais substituée : une politique déjà posée par
+ * l'application est conservée, et les deux s'appliquent alors CONJOINTEMENT
+ * (le CSP niveau 3 intersecte les politiques multiples, qu'elles arrivent en
+ * plusieurs en-têtes ou en une liste séparée par des virgules). L'ancienne
+ * pose conditionnelle laissait au contraire une application équipée d'une CSP
+ * permissive désactiver la nôtre — alors que SECURITY.md la présentait comme
+ * inconditionnelle.
  * @param {Array<[string, string]> | undefined} rawHeaders
  * @param {{ origin: string, host: string }} self
  * @param {string} [basePath] racine de publication de la coquille
@@ -172,8 +257,8 @@ export function prepareProxyHeaders(rawHeaders, self, basePath = "/") {
   headers.set("Cross-Origin-Embedder-Policy", "require-corp");
   headers.set("Cross-Origin-Resource-Policy", "same-origin");
   const isHtml = (headers.get("content-type") ?? "").includes("text/html");
-  if (isHtml && !headers.has("content-security-policy")) {
-    headers.set("Content-Security-Policy", APP_DOCUMENT_CSP);
+  if (isHtml) {
+    headers.append("Content-Security-Policy", APP_DOCUMENT_CSP);
   }
   return headers;
 }
