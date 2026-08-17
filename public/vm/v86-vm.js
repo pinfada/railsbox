@@ -28,6 +28,21 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const PROBE_TIMEOUT_MS = 10_000;
 // Boot complet noyau + PostgreSQL + Puma sous émulation : jusqu'à ~15 min à
 // froid (large marge) ; quelques secondes après restauration d'instantané.
+//
+// SONDER PLUS SOUVENT COÛTE PLUS QUE CE QUE ÇA RAPPORTE — mesuré, pas supposé.
+// `npm run test:bridage` (tests/bridage/) date l'instant où l'application
+// répond vraiment : la coquille l'annonce 5 à 8,5 s plus tard, et la tentation
+// est grande de resserrer la cadence pour récupérer ces secondes. Le même
+// instrument montre pourquoi ce serait un mauvais échange. Chaque sonde
+// abandonnée fait quand même rendre une page à Rails DANS la VM, et sa réponse
+// remonte le canal série à raison d'un appel JavaScript par octet — sur le
+// thread précisément que le processeur du visiteur ralentit. Ajouter un
+// deuxième sondeur au rythme d'une sonde toutes les 2 s a allongé le boot de
+// 1 % sans bridage, 7 % à 4×, 12 % à 6×, et jusqu'à 133 s au lieu de 37 s à 8× :
+// le mal grandit exactement avec la lenteur de l'appareil qu'on prétendait
+// aider. Et l'instant du réveil se déplace lui aussi avec le bridage (7 s après
+// la création de l'émulateur à 1×, ~16 s à 8×) : aucune cadence fixe plus
+// serrée ne gagne sur toute la plage. D'où ces deux chiffres, inchangés.
 const READY_MAX_ATTEMPTS = 240;
 const READY_INTERVAL_MS = 5_000;
 // L'horloge invitée ne dérive pas seulement au gel de l'instantané : sous

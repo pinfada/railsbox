@@ -161,6 +161,38 @@
         cursor: progress;
         opacity: 0.6;
       }
+      /* État du démarrage : quelle étape, depuis combien de temps. Mesuré sous
+         bridage processeur réel (`npm run test:bridage`) — de 25 s sans bridage
+         à 54 s sur un processeur bridé 8×, pendant lesquelles la coquille
+         n'offrait qu'un journal gris qui défile, puis un cadre vide sous une
+         rangée de badges déjà tous verts. Barre FIXE et non élément de grille :
+         elle apparaît et disparaît sans jamais déplacer la mise en page de
+         l'application. */
+      #etat-demarrage {
+        position: fixed;
+        inset: auto 0 0 0;
+        margin: 0;
+        padding: 0.55rem 1.2rem;
+        font-size: 0.75rem;
+        line-height: 1.5;
+        color: var(--text);
+        background: var(--panel);
+        border-top: 2px solid var(--pending);
+        box-shadow: 0 -6px 18px rgb(0 0 0 / 45%);
+      }
+      #etat-demarrage[hidden] {
+        display: none;
+      }
+      #etat-demarrage::before {
+        content: "◌ ";
+        color: var(--pending);
+      }
+      /* Attente au-delà de ce qui a été mesuré : le ton change, la couleur
+         aussi — sans passer au rouge, qui annoncerait un échec qui n'a pas
+         eu lieu. */
+      #etat-demarrage.tres-lente {
+        border-top-color: var(--error);
+      }
       @media (max-width: 900px) {
         main {
           grid-template-columns: 1fr;
@@ -234,6 +266,10 @@
            alors l'iframe, qui resterait vide et muette. -->
       <section id="diagnostic" role="alert" aria-live="polite" hidden></section>
     </main>
+    <!-- Étape de démarrage en cours et secondes écoulées. Rempli par main.js
+         via public/shared/progression-demarrage.js, retiré dès que la première
+         page de l'application est RENDUE — pas dès qu'elle est demandée. -->
+    <p id="etat-demarrage" role="status" aria-live="polite" hidden></p>
     <link rel="stylesheet" href="env-drawer.css" />
     <script type="module" src="main.js"></script>
   </body>

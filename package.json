@@ -10,6 +10,7 @@
     "test:integration": "node --test \"tests/integration/**/*.it.mjs\"",
     "test:e2e": "playwright test",
     "test:live": "playwright test --config playwright.live.config.mjs",
+    "test:bridage": "playwright test --config playwright.bridage.config.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

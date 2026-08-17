@@ -37,6 +37,7 @@ async function blockExternalTraffic(page) {
 test.describe("Coquille sur téléphone", () => {
   for (const [nom, telephone] of TELEPHONES) {
     test(`tient dans l'écran d'un ${nom}, sans dézoom ni débordement`, async ({ browser }) => {
+      const largeurAppareil = telephone.viewport?.width ?? 0;
       const context = await browser.newContext({ ...telephone });
       const page = await context.newPage();
       await blockExternalTraffic(page);
@@ -57,12 +58,21 @@ test.describe("Coquille sur téléphone", () => {
         };
       });
 
-      // Le document ne doit pas être plus large que l'écran : c'est ce
-      // débordement qui déclenche le dézoom global des navigateurs mobiles.
+      // Deux gardes, et la seconde est celle qui manquait. Comparer le
+      // document à `innerWidth` ne suffit pas : quand la mise en page force
+      // une largeur supérieure à l'écran, le navigateur mobile ÉLARGIT le
+      // viewport de mise en page et dézoome — les deux valeurs restent alors
+      // égales, et le test passe sur une page devenue illisible. Une seule
+      // accolade CSS perdue à une fusion a suffi à reproduire le défaut.
       expect(
         mesures.docWidth,
         `${nom} : le document déborde de l'écran, la page sera dézoomée`,
       ).toBeLessThanOrEqual(mesures.innerWidth + 1);
+      expect(
+        mesures.innerWidth,
+        `${nom} : viewport de mise en page élargi à ${mesures.innerWidth} px pour ` +
+          `un écran de ${largeurAppareil} px — la page est dézoomée, le texte illisible`,
+      ).toBeLessThanOrEqual(largeurAppareil + 1);
 
       // L'application doit dominer l'écran, pas le journal de boot.
       expect(
