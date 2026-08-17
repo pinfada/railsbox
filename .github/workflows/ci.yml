@@ -25,6 +25,15 @@ jobs:
       - run: npm ci
       - name: Lint (ESLint)
         run: npm run lint
+      # Les scripts shell portent la construction entière, et rien ne les
+      # relisait : actionlint ne voit que les blocs `run:` des workflows, et
+      # `bash -n` accepte un « \n » littéral (c'est un argument valide). Un tel
+      # « \n », introduit par une fusion, a collé trois options sur une ligne et
+      # fait perdre à docker son argument de contexte — défaut trouvé par la
+      # première construction d'une application tierce, pas par 519 tests.
+      # shellcheck le nomme immédiatement (SC1012).
+      - name: Lint (shellcheck)
+        run: npm run lint:shell
       - name: Format (Prettier)
         run: npm run format:check
       - name: Typecheck (tsc --checkJs)

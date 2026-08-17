@@ -111,6 +111,13 @@ Quatre niveaux, quatre coûts, quatre choses prouvées. Ils ne se remplacent pas
 | **N4 — recette en ligne**   | `npm run test:live`       | La sandbox **publiée**, à son URL réelle : chemins relatifs, absence de 404, aucune origine externe, aucun préflight, et une **écriture** réelle (billet créé, jeton CSRF compris). | ~2 min, réseau |
 
 `npm run check` (= N1 + lint + format + typecheck sur trois cibles) est **la
+
+`npm run check` inclut `npm run lint:shell` : shellcheck relit les scripts de
+construction. Il utilise le binaire du système s'il est là, sinon Docker ; faute
+des deux, il refuse au lieu de laisser croire que le contrôle a eu lieu. Ce
+contrôle existe parce qu'un « 
+ » littéral introduit par une fusion a fait
+perdre à docker son argument de contexte, sans qu'aucun des tests le voie.
 porte** : c'est exactement ce que joue la CI, et il doit être vert avant tout
 commit.
 

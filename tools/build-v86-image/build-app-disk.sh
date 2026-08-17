@@ -93,7 +93,8 @@ trap 'rm -rf "$WORK_DIR" "$ARGS_FILE"' EXIT
 # analyse même. Supposer 3.3-r2 refuserait à tort une application d'une autre
 # série. Sans --base, la vérification est simplement annoncée comme non faite —
 # le workflow, lui, la passe toujours, et c'est là que les neuf minutes vivent.
-if ! node "$SCRIPT_DIR/manifest-to-args.mjs" "$APP_DIR" "$NAME" \n     ${BASE_REVISION:+--base "$BASE_REVISION"} > "$ARGS_FILE"; then
+if ! node "$SCRIPT_DIR/manifest-to-args.mjs" "$APP_DIR" "$NAME" \
+     ${BASE_REVISION:+--base "$BASE_REVISION"} > "$ARGS_FILE"; then
   echo "✗ Construction refusée : voir le rapport ci-dessus." >&2
   exit 1
 fi
