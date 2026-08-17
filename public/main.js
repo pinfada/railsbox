@@ -11,6 +11,7 @@ import {
   releverCapacites,
   resumerManques,
 } from "./shared/prerequis-demarrage.js";
+import { creerIndicateurDemarrage } from "./shared/progression-demarrage.js";
 import { createVeilleController } from "./shared/veille.js";
 
 // Tout est relatif à la page : la coquille est publiée à la racine en
@@ -33,6 +34,24 @@ const MAX_LOG_LINES = 800;
 const logElement = document.getElementById("boot-log");
 const frameElement = /** @type {HTMLIFrameElement} */ (document.getElementById("app-frame"));
 const diagnosticElement = document.getElementById("diagnostic");
+const etatElement = document.getElementById("etat-demarrage");
+
+// Le journal de boot est long, gris, et défile : il informe qui le lit, pas qui
+// attend. La mesure sous bridage processeur (npm run test:bridage) a chiffré
+// cette attente sur la sandbox publiée : 25 s avant que l'application soit
+// visible sans bridage, 39 s à 6×, 50 à 54 s à 8×. Cette ligne dit où l'on en
+// est, et depuis combien de temps.
+const indicateur = creerIndicateurDemarrage({
+  afficher: (etat) => {
+    if (!etatElement) return;
+    etatElement.textContent = etat.texte;
+    etatElement.classList.toggle("tres-lente", etat.lenteur === "tres-lente");
+    etatElement.hidden = false;
+  },
+  terminer: () => {
+    if (etatElement) etatElement.hidden = true;
+  },
+});
 
 function logLine(text) {
   // Chaque ligne passe par le détecteur : une variable manquante citée par
@@ -56,6 +75,7 @@ function setBadge(id, ok) {
 async function start() {
   if (!checkBrowserSupport()) return;
 
+  indicateur.etape("serviceWorker");
   logLine("Enregistrement du Service Worker proxy…");
   await navigator.serviceWorker.register(new URL("sw-proxy.js", document.baseURI), {
     type: "module",
@@ -68,9 +88,11 @@ async function start() {
   // Service Worker dès sa lecture, donc avant la première requête de v86.
   navigator.serviceWorker.addEventListener("message", onWorkerMessage);
 
+  indicateur.etape("isolation");
   await ensureCrossOriginIsolated();
   setBadge("coi", true);
 
+  indicateur.etape("vm");
   const vm = await bootSelectedEngine();
   vmInstance = vm;
   window.__vm = vm; // hook de diagnostic (DevTools)
@@ -84,10 +106,20 @@ async function start() {
 
   installInspector(vm);
 
+  indicateur.etape("application");
   logLine("Attente du serveur applicatif à l'intérieur de la VM…");
   await waitForApplication(vm);
   setBadge("http", true);
 
+  // Dernière étape, et la seule que rien ne signalait : la VM doit encore
+  // RENDRE cette page. Mesuré sous bridage : 1 s sans bridage, 3,7 à 4,4 s à
+  // 4×, 7,3 à 7,6 s à 6×, 12,6 à 14,5 s à 8× — le tout sous une rangée de
+  // badges déjà tous verts, donc sans qu'aucun signal ne distingue « ça
+  // arrive » de « c'est bloqué ».
+  // L'indicateur reste donc jusqu'au chargement effectif du cadre, et non
+  // jusqu'à la simple affectation de son adresse.
+  indicateur.etape("premierePage");
+  frameElement.addEventListener("load", () => indicateur.fin(), { once: true });
   frameElement.src = APP_URL;
   logLine(`Application disponible → iframe sur ${APP_URL}`);
 
@@ -326,6 +358,9 @@ function ensureCrossOriginIsolated() {
 }
 
 start().catch((error) => {
+  // Le diagnostic remplace l'application : l'indicateur d'attente n'a plus
+  // rien à indiquer et masquerait le bas de l'explication.
+  indicateur.fin();
   logLine(`ERREUR FATALE: ${error.message}`);
   showDiagnostic("Le démarrage a échoué", error.message);
   for (const id of ["sw", "coi", "vm", "http"]) {

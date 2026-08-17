@@ -83,6 +83,38 @@ test.describe("Page hôte", () => {
     expect(isolation.hasSharedArrayBuffer, "SharedArrayBuffer doit être disponible").toBe(true);
   });
 
+  test("annonce l'étape de démarrage en cours et le temps écoulé", async ({ page }) => {
+    // Ce que garde ce test : la mesure sous bridage processeur
+    // (npm run test:bridage) chiffre à 54 s l'attente d'un appareil d'entrée de
+    // gamme avant de voir l'application, dont 14 s sous une rangée de badges
+    // déjà tous verts. Pendant tout ce temps la coquille n'offrait qu'un
+    // journal gris qui défile. L'indicateur d'étape est la réponse ; s'il
+    // cessait de s'afficher, personne ne s'en apercevrait.
+    //
+    // La configuration de la VM est retenue en vol : la coquille reste sur
+    // l'étape « démarrage de la VM », et l'indicateur s'observe sans course.
+    await page.route("**/disks/v86-config.json", async (route) => {
+      await new Promise((resoudre) => setTimeout(resoudre, 20_000));
+      await route.abort().catch(() => {});
+    });
+    await page.reload();
+
+    const etat = page.locator("#etat-demarrage");
+    await expect(etat, "l'indicateur doit nommer l'étape en cours").toContainText(
+      /Étape \d\/\d · .+ · \d+ s/,
+      { timeout: SERVICE_WORKER_TIMEOUT_MS },
+    );
+    await expect(etat, "l'indicateur doit être une région de statut").toHaveAttribute(
+      "role",
+      "status",
+    );
+    // Le compteur doit AVANCER : figé, il ressemblerait à un blocage — ce qui
+    // est exactement l'impression qu'il est censé dissiper.
+    await expect(etat, "le compteur de secondes doit progresser").toContainText(/· [1-9]\d* s/, {
+      timeout: SERVICE_WORKER_TIMEOUT_MS,
+    });
+  });
+
   test("déclare une CSP et confine l'application dans un bac-à-sable", async ({ page }) => {
     const csp = await page
       .locator('meta[http-equiv="Content-Security-Policy"]')
