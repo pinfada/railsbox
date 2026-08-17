@@ -134,6 +134,33 @@
         color: var(--text);
         white-space: pre-wrap;
       }
+      /* Ton « info » : un onglet secondaire n'a rien cassé, le rouge de panne
+         y serait un mensonge. */
+      #diagnostic.info h2 {
+        color: var(--accent);
+      }
+      #diagnostic button {
+        margin-top: 1.4rem;
+        padding: 0.55rem 1.1rem;
+        font: inherit;
+        font-size: 0.8rem;
+        color: var(--bg);
+        background: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      #diagnostic button:hover:not(:disabled) {
+        filter: brightness(1.12);
+      }
+      #diagnostic button:focus-visible {
+        outline: 2px solid var(--text);
+        outline-offset: 2px;
+      }
+      #diagnostic button:disabled {
+        cursor: progress;
+        opacity: 0.6;
+      }
       @media (max-width: 900px) {
         main {
           grid-template-columns: 1fr;

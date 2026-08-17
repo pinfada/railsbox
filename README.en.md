@@ -124,7 +124,11 @@ silently.
 
 **Visitor CPU**: emulation runs on the tab's processor — that is the "server"
 each visitor brings. A tab hidden for more than 15 s suspends the VM and gives
-the CPU back; returning resumes it with the guest clock resynced.
+the CPU back; returning resumes it with the guest clock resynced. **Only one
+sandbox runs at a time per browser**: an exclusive lock (Web Locks) designates
+the active tab, and a second tab opened on the same sandbox boots no VM at all —
+it shows "already open in another tab" plus a button to take over here, at which
+point the other tab releases its own VM.
 
 **What the host must provide** — and GitHub Pages does: CORS `*`, `Range`
 requests, and nothing else. The `COOP`/`COEP` isolation headers that static
@@ -152,9 +156,12 @@ data. Everything that goes into a sandbox is public (see
 application running, not a screenshot. No paid cold start, no free tier that
 sleeps, no invoice arriving because the link worked too well.
 
-**Instructors, bootcamps, tutorial authors.** Thirty tabs means thirty isolated
-environments: every learner is root in *their own* copy, nobody's mistakes leak
-into anybody else's, and there is nothing to install before starting. A refresh
+**Instructors, bootcamps, tutorial authors.** Thirty learners means thirty
+isolated environments: every learner is root in *their own* copy, nobody's
+mistakes leak into anybody else's, and there is nothing to install before
+starting. The isolation is the browser's, so it separates **visitors**, not
+tabs: two tabs of the same browser share one sandbox, and only one of them runs
+it at a time — the second one offers to take over. A refresh
 resets everything, and `?fresh=1` at the end of the URL ignores the snapshot
 and starts from a cold boot.
 
@@ -445,7 +452,9 @@ Two consequences that define the project:
 
 - **Per-visitor isolation is a feature, not a limitation.** Everyone gets their
   own copy; their data never leaves their browser. Nobody can pollute anybody
-  else's trial, and the model is GDPR-compatible by construction.
+  else's trial, and the model is GDPR-compatible by construction. The exact
+  granularity is the browser, not the tab: two tabs of the same browser share
+  one sandbox, of which a single instance runs at a time.
 - **The defensible value is the recipe, not the engine.** v86 is open source and
   anyone can reuse it. What compounds is the buildpack — the twenty-two
   iterations, the i386 traps, the auto-detection, the base image library — the
@@ -760,11 +769,12 @@ public/
 │   │                              cookies: without it, no Rails session)
 │   ├── prerequis-demarrage.js     browser capabilities, reload recovery
 │   ├── veille.js                  VM suspension when the tab is hidden
+│   ├── election-onglet.js         Web Locks: a single VM per browser
 │   ├── env-detector.js            missing-variable detection
 │   └── v86-config.js              v86 config: single disk, or base + application
 └── vm/
     └── v86-vm.js                  v86 boot, snapshot, clock, serial bridge
-tests/                             370 unit tests + integration (real VM) + E2E
+tests/                             379 unit tests + integration (real VM) + E2E
 ├── integration/                   serial protocol against a real v86 VM (Node)
 ├── e2e/                           full browser boot (Playwright)
 └── live/                          suite for the PUBLISHED sandbox (network, out of CI)
