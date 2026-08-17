@@ -444,6 +444,7 @@ A file at the root of the application completes or corrects auto-detection:
 ```yaml
 ruby: 3.3.12 # SERIES only — see the box below
 database: sqlite3 # otherwise config/database.yml, then the pg gem in the lock
+database_prepare: migrate # stopgap: replay migrations instead of loading schema
 seed:
   command: "bin/rails db:seed" # runs at BUILD time, before the snapshot
   auto_login: "demo@example.com" # the visitor arrives signed in
@@ -454,10 +455,11 @@ assets:
   output: ["public/dist"] # produced directories to ship into the sandbox
 ```
 
-Five keys are recognised — `ruby`, `database`, `seed`, `env`, `assets` — and
-inside the `assets:` block two keys are read, `scripts` and `output` (anything
-else there is ignored with a warning); anything else raises a diagnostic.
-`database` accepts `postgresql` or `sqlite3`. `env:` values are treated as
+Six keys are recognised — `ruby`, `database`, `database_prepare`, `seed`, `env`,
+`assets` — and inside the `assets:` block two keys are read, `scripts` and
+`output` (anything else there is ignored with a warning); anything else raises a
+diagnostic. `database` accepts `postgresql` or `sqlite3`, `database_prepare`
+accepts `schema` (default) or `migrate`. `env:` values are treated as
 **inert data**, never evaluated at build time (see [`SECURITY.md`](SECURITY.md)).
 
 `assets.output` accepts only paths **relative** to the application root, with no
@@ -528,6 +530,48 @@ and detection refuses rather than letting the application fail with a
 `ruby:` selects a **series**, not a patch: the patch running in the VM is the
 base's. What that means for a strict `Gemfile` constraint: "[Pinning a Ruby
 version](#pinning-a-ruby-version-what-base-allows-and-what-it-does-not)".
+
+#### Data seeded by a **migration** will not arrive
+
+railsbox prepares the database with `rails db:prepare`. On an **empty**
+database — every build — that task loads `db/schema.rb`, i.e. the
+**structure**, then marks every migration as applied **without running a single
+one**. A migration that inserts reference data (currencies, roles, categories,
+countries, settings) therefore never runs, the table stays empty, and the
+failure only surfaces much later — in the seeds, as an incomprehensible
+validation error:
+
+```
+Validation failed: Currency XAF non supporté (attendu : )   ← the list is EMPTY
+```
+
+Analysis now says so **before** the build, naming the files:
+
+```
+- [data-bearing-migration] 1 migration écrit des données (execute d'un INSERT SQL) :
+  db/migrate/20260514210000_create_currencies.rb. […]
+```
+
+**This is not a railsbox limitation, it is an application defect**, and that is
+why railsbox does not silently paper over it: `db/schema.rb` does not carry
+those rows, so **any** environment rebuilt from the schema gets the same empty
+table — a `rails db:setup` on a fresh machine, a CI database, a review app.
+railsbox always starts from an empty database: it does not create the failure,
+it **reveals** it. The lasting fix is a move: reference data belongs in
+`db/seeds.rb`, not in a migration.
+
+That leaves the maintainer who wants to publish a demo **now**, without touching
+the application. One key, explicit opt-in:
+
+```yaml
+database_prepare: migrate # instead of db:prepare: db:create db:migrate
+```
+
+It replays the **whole** migration history on every build. What it costs, and
+what analysis restates as a warning: it is slower, it can fail on an old
+migration that no longer runs under a recent Rails (with no fallback — an
+explicit choice must fail loudly), and it fixes **the sandbox only**: the
+application stays broken everywhere else.
 
 ### Demo data and auto-login
 

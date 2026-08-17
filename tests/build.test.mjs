@@ -4,9 +4,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  DB_PREPARE_MIGRATE,
+  DB_PREPARE_SCHEMA,
   DEFAULT_RUBY_VERSION,
   RUBY_PATCH_LEVELS,
   analyzeApp,
+  dbPrepareCommand,
   assetsPlan,
   buildArgs,
   defaultAppName,
@@ -598,4 +601,47 @@ BUNDLED WITH
   assert.equal(analysis.args.ASSETS_STAGE, "amd64");
   assert.equal(analysis.args.HOST_ASSETS, "1");
   assert.equal(analysis.args.ASSET_PRECOMPILE, "0");
+});
+
+// --- Préparation de la base --------------------------------------------------
+
+test("la préparation par défaut charge le schéma, migrations porteuses ou non", () => {
+  assert.deepEqual(dbPrepareCommand(), { strategy: "schema", command: DB_PREPARE_SCHEMA });
+  // Le point de l'arbitrage : relever des migrations porteuses de données ne
+  // change PAS la commande. railsbox signale un défaut applicatif, il ne le
+  // masque pas en rejouant l'historique dans le dos du mainteneur.
+  assert.deepEqual(dbPrepareCommand({ dataMigrations: ["20260514210000_create_currencies.rb"] }), {
+    strategy: "schema",
+    command: DB_PREPARE_SCHEMA,
+  });
+});
+
+test("database_prepare: migrate produit db:create db:migrate, sans repli silencieux", () => {
+  const prepare = dbPrepareCommand({ strategy: "migrate" });
+  assert.deepEqual(prepare, { strategy: "migrate", command: DB_PREPARE_MIGRATE });
+  // Aucun « || » : un choix explicite doit échouer bruyamment, pas se faire
+  // rattraper par un chargement de schéma qui remettrait la table à vide.
+  assert.ok(!prepare.command.includes("||"));
+});
+
+test("une valeur non reconnue retombe sur le chargement du schéma", () => {
+  for (const strategy of ["auto", "", null, undefined, "Migrate"]) {
+    assert.equal(dbPrepareCommand({ strategy }).command, DB_PREPARE_SCHEMA, String(strategy));
+  }
+});
+
+test("la clé railsbox.yml pilote bien DB_PREPARE_COMMAND de bout en bout", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": SQLITE_LOCK,
+    ".ruby-version": "3.3.12\n",
+    "config/database.yml": "production:\n  adapter: sqlite3\n",
+    "db/migrate/20260514210000_create_currencies.rb":
+      "def up\n  execute \"INSERT INTO currencies (code) VALUES ('XAF')\"\nend\n",
+    "railsbox.yml": "database_prepare: migrate\n",
+  });
+  const analysis = await analyzeApp(dir, "demo");
+  assert.equal(analysis.args.DB_PREPARE_COMMAND, DB_PREPARE_MIGRATE);
+  assert.equal(analysis.args.DB_PREPARE_STRATEGY, "migrate");
+  assert.deepEqual(analysis.manifest.dataMigrations, ["20260514210000_create_currencies.rb"]);
 });

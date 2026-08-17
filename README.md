@@ -458,6 +458,7 @@ Un fichier à la racine de l'application complète ou corrige l'auto-détection 
 ```yaml
 ruby: 3.3.12 # SÉRIE seulement — voir l'encadré ci-dessous
 database: sqlite3 # sinon config/database.yml, puis la gem pg du lock
+database_prepare: migrate # dépannage : rejoue les migrations au lieu du schéma
 seed:
   command: "bin/rails db:seed" # exécuté au BUILD, avant la capture d'instantané
   auto_login: "demo@example.com" # le visiteur arrive connecté
@@ -469,10 +470,11 @@ assets:
 system_packages: [libmagickwand-dev] # paquets Debian que vos gems exigent
 ```
 
-Six clés sont reconnues — `ruby`, `database`, `seed`, `env`, `assets`,
-`system_packages` — et toute autre déclenche un diagnostic. Dans le bloc
-`assets:`, deux clés sont lues, `scripts` et `output` : toute autre y est
-ignorée avec un avertissement. `database` accepte `postgresql` ou `sqlite3`.
+Sept clés sont reconnues — `ruby`, `database`, `database_prepare`, `seed`,
+`env`, `assets`, `system_packages` — et toute autre déclenche un diagnostic.
+Dans le bloc `assets:`, deux clés sont lues, `scripts` et `output` : toute
+autre y est ignorée avec un avertissement. `database` accepte `postgresql` ou
+`sqlite3`, `database_prepare` accepte `schema` (défaut) ou `migrate`.
 Les valeurs `env:` sont traitées comme des **données inertes**, jamais
 évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
 
@@ -551,6 +553,52 @@ la détection refuse plutôt que de laisser l'application échouer sur un
 celui de la base. Ce que cela implique pour une contrainte stricte de
 `Gemfile` : « [Épingler une version de
 Ruby](#épingler-une-version-de-ruby--ce-que-base-permet-et-ce-quil-ne-permet-pas) ».
+
+#### Les données amorcées par une **migration** n'arriveront pas
+
+railsbox prépare la base avec `rails db:prepare`. Sur une base **vierge** — le
+cas de toute construction — cette tâche charge `db/schema.rb`, c'est-à-dire la
+**structure**, puis marque toutes les migrations comme appliquées **sans en
+jouer une seule**. Une migration qui insère des données de référence (devises,
+rôles, catégories, pays, réglages) ne s'exécute donc jamais, la table reste
+vide, et la panne n'éclate que bien plus loin — dans les seeds, sous la forme
+d'une validation incompréhensible :
+
+```
+Validation failed: Currency XAF non supporté (attendu : )   ← la liste est VIDE
+```
+
+L'analyse le dit maintenant **avant** la construction, en nommant les
+fichiers :
+
+```
+- [data-bearing-migration] 1 migration écrit des données (execute d'un INSERT SQL) :
+  db/migrate/20260514210000_create_currencies.rb. railsbox prépare la base avec
+  `rails db:prepare`, qui sur une base VIERGE charge db/schema.rb — la structure,
+  pas les données — […]
+  Remède : Déplacez l'amorçage de ces données dans db/seeds.rb […]
+```
+
+**Ce n'est pas une limite de railsbox, c'est un défaut de l'application**, et
+c'est pour cela que railsbox ne le corrige pas tout seul : `db/schema.rb` ne
+porte pas ces lignes, donc **tout** environnement recréé depuis le schéma
+obtient la même table vide — un `rails db:setup` sur un poste neuf, une base de
+CI, une review app. railsbox part toujours d'une base vierge : il ne crée pas la
+panne, il la **révèle**. La correction durable tient en un déplacement : les
+données de référence vont dans `db/seeds.rb`, pas dans une migration.
+
+Reste le cas du mainteneur qui veut publier sa démonstration **maintenant**,
+sans toucher à son application. Une clé, en opt-in explicite :
+
+```yaml
+database_prepare: migrate # au lieu de db:prepare : db:create db:migrate
+```
+
+Elle rejoue **tout** l'historique des migrations à chaque construction. Ce que
+cela coûte, et que l'analyse répète en avertissement : c'est plus lent, cela
+peut échouer sur une vieille migration qui ne tourne plus sous Rails récent
+(sans repli — un choix explicite doit échouer bruyamment), et cela ne répare
+**que la sandbox** : l'application reste cassée partout ailleurs.
 
 ### Bibliothèques système
 

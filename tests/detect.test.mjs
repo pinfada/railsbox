@@ -10,7 +10,16 @@ import {
   readOptionalFile,
 } from "../tools/detect/detect.mjs";
 import { collectNativeGems, detectServices, parseLockSpecs } from "../tools/detect/gems.mjs";
-import { mergeManifest, parseRailsboxYml } from "../tools/detect/manifest.mjs";
+import {
+  DATABASE_PREPARE_VALUES,
+  mergeManifest,
+  parseRailsboxYml,
+} from "../tools/detect/manifest.mjs";
+import {
+  dataWriteReasons,
+  scanDataMigrations,
+  stripRubyComments,
+} from "../tools/detect/migrations.mjs";
 import { REMEDIES, formatReport, hasBlocking } from "../tools/detect/report.mjs";
 
 /** @typedef {import("../tools/detect/findings.mjs").Finding} Finding */
@@ -832,4 +841,170 @@ test("auto_login reste un scalaire simple", () => {
   );
   assert.equal(manifest.seed.autoLogin, "admin@example.com");
   assert.equal(manifest.seed.autoLoginCode, undefined);
+});
+
+// --- Migrations porteuses de données -----------------------------------------
+
+const MIGRATION_INSERT = `class CreateCurrencies < ActiveRecord::Migration[7.1]
+  def change
+    create_table :currencies, id: false do |t|
+      t.string :code, primary_key: true, limit: 3, null: false
+    end
+
+    reversible do |dir|
+      dir.up do
+        execute <<~SQL
+          INSERT INTO currencies (code, label) VALUES ('XAF', 'Franc CFA');
+        SQL
+      end
+    end
+  end
+end
+`;
+
+/** Migration de pur DDL : rien de ce qu'elle fait ne manque à un schema.rb. */
+const MIGRATION_DDL = `class AddIndexToOrders < ActiveRecord::Migration[7.1]
+  def change
+    add_column :orders, :updated_by, :string
+    add_index :orders, :updated_by, name: "index_orders_on_updated_at"
+    execute "CREATE INDEX CONCURRENTLY idx_orders_status ON orders (status)"
+    execute "ALTER TABLE orders ALTER COLUMN status SET DEFAULT 'new'"
+  end
+end
+`;
+
+test("une migration qui exécute un INSERT est signalée, fichier nommé", () => {
+  assert.deepEqual(
+    scanDataMigrations([{ name: "20260514210000_create_currencies.rb", text: MIGRATION_INSERT }]),
+    [{ file: "20260514210000_create_currencies.rb", reasons: ["execute d'un INSERT SQL"] }],
+  );
+});
+
+test("une migration qui crée des lignes par un modèle est signalée", () => {
+  const source = `class SeedRoles < ActiveRecord::Migration[7.1]
+    def up
+      Role.create!(name: "admin")
+      Setting.find_or_create_by(key: "devise")
+    end
+  end`;
+  const [trouve] = scanDataMigrations([{ name: "20240101000000_seed_roles.rb", text: source }]);
+  assert.equal(trouve.file, "20240101000000_seed_roles.rb");
+  assert.match(trouve.reasons.join(" "), /create!/);
+});
+
+test("insert_all et upsert_all comptent aussi comme des écritures", () => {
+  for (const appel of ["Country.insert_all([{ code: 'FR' }])", "Tax.upsert_all(rows)"]) {
+    assert.equal(dataWriteReasons(appel).length, 1, appel);
+  }
+});
+
+// --- Faux positifs : ce qui ne doit PAS être signalé --------------------------
+
+test("une migration de pur DDL n'est pas signalée", () => {
+  assert.deepEqual(
+    scanDataMigrations([{ name: "20240101000000_ddl.rb", text: MIGRATION_DDL }]),
+    [],
+  );
+});
+
+test("create_table et create_join_table ne sont pas des écritures de données", () => {
+  const source = `def change
+    create_table :commerces
+    create_join_table :commerces, :products
+    t.timestamps
+  end`;
+  assert.deepEqual(dataWriteReasons(source), []);
+});
+
+test("un INSERT en commentaire ne déclenche rien", () => {
+  const source = `def up
+    # execute "INSERT INTO currencies VALUES ('XAF')" — retiré, voir db/seeds.rb
+    add_column :currencies, :suffix, :string
+  end`;
+  assert.deepEqual(dataWriteReasons(source), []);
+});
+
+test("un UPDATE sans SET (identifiant, colonne updated_at) ne déclenche rien", () => {
+  const source = `def change
+    execute "CREATE INDEX index_updates_on_updated_at ON updates (updated_at)"
+  end`;
+  assert.deepEqual(dataWriteReasons(source), []);
+});
+
+test("un INSERT sans execute (chaîne de documentation) ne déclenche rien", () => {
+  const source = `def change
+    add_column :notes, :body, :text, comment: "rempli par INSERT INTO notes"
+  end`;
+  assert.deepEqual(dataWriteReasons(source), []);
+});
+
+test("un dièse dans une chaîne ne coupe pas la ligne analysée", () => {
+  assert.equal(
+    stripRubyComments(`execute "INSERT INTO t VALUES ('#1')" # commentaire`).trim(),
+    `execute "INSERT INTO t VALUES ('#1')"`,
+  );
+});
+
+test("detectApp relève la migration porteuse de données et l'annonce en avertissement", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": LOCK_MINIMAL,
+    ".ruby-version": "3.3.12\n",
+    "db/migrate/20260514210000_create_currencies.rb": MIGRATION_INSERT,
+    "db/migrate/20240101000000_ddl.rb": MIGRATION_DDL,
+  });
+  const { manifest, findings } = await detectApp(dir);
+  assert.deepEqual(manifest.dataMigrations, ["20260514210000_create_currencies.rb"]);
+  const finding = findByCode(findings, "data-bearing-migration");
+  assert.equal(finding.severity, "warning");
+  // Le fichier est NOMMÉ et le mécanisme expliqué : sans les deux, le rapport
+  // laisse le mainteneur devant la même validation absurde qu'avant.
+  assert.match(finding.message, /db\/migrate\/20260514210000_create_currencies\.rb/);
+  assert.match(finding.message, /db\/schema\.rb/);
+  assert.ok(REMEDIES["data-bearing-migration"]);
+});
+
+test("une application sans db/migrate ne produit aucun diagnostic de migration", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": LOCK_MINIMAL,
+    ".ruby-version": "3.3.12\n",
+  });
+  const { manifest, findings } = await detectApp(dir);
+  assert.deepEqual(manifest.dataMigrations, []);
+  assert.equal(findByCode(findings, "data-bearing-migration"), undefined);
+});
+
+// --- Clé database_prepare ----------------------------------------------------
+
+test("database_prepare accepte schema et migrate", () => {
+  for (const valeur of DATABASE_PREPARE_VALUES) {
+    const { manifest, findings } = parseRailsboxYml(`database_prepare: ${valeur}\n`);
+    assert.equal(manifest.databasePrepare, valeur);
+    assert.deepEqual(findings, []);
+  }
+});
+
+test("une valeur inconnue de database_prepare est refusée avec ses valeurs admises", () => {
+  const { manifest, findings } = parseRailsboxYml("database_prepare: auto\n");
+  assert.equal(manifest.databasePrepare, undefined);
+  const finding = findByCode(findings, "invalid-manifest-value");
+  assert.match(finding.message, /database_prepare/);
+  assert.match(finding.message, /schema, migrate/);
+});
+
+test("database_prepare: migrate avertit de ce qu'il ne corrige pas", () => {
+  const detected = { dataMigrations: ["20260514210000_create_currencies.rb"] };
+  const { manifest, findings } = mergeManifest(detected, { databasePrepare: "migrate" });
+  assert.equal(manifest.databasePrepare, "migrate");
+  const finding = findByCode(findings, "database-prepare-migrate");
+  assert.equal(finding.severity, "warning");
+  assert.match(finding.message, /db\/schema\.rb/);
+  assert.ok(REMEDIES["database-prepare-migrate"]);
+});
+
+test("database_prepare: schema est le défaut et ne produit aucun avertissement", () => {
+  const detected = { dataMigrations: ["20260514210000_create_currencies.rb"] };
+  const { findings } = mergeManifest(detected, { databasePrepare: "schema" });
+  assert.equal(findByCode(findings, "database-prepare-migrate"), undefined);
 });

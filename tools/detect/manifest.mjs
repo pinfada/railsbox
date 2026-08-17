@@ -24,6 +24,8 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {{forceSsl: string|null, forceSslEnv: string|null, assumeSsl: string|null, enforced: boolean}} [ssl] réglages SSL de production
  * @property {string|null} [rails] version de Rails résolue
  * @property {string|null} [database] adaptateur de base de données
+ * @property {string} [databasePrepare] préparation de la base (schema ou migrate)
+ * @property {readonly string[]} [dataMigrations] migrations qui écrivent des lignes
  * @property {readonly string[]} [databaseAdapters] adaptateurs vus dans config/database.yml
  * @property {import("./sqlite.mjs").SqliteDriverState} [sqliteDriver] disponibilité du pilote sqlite3
  * @property {string|null} [bundler] version de Bundler ayant produit le lock
@@ -56,8 +58,28 @@ const NESTED_KEYS = Object.freeze({
 /** Valeurs acceptées pour `database:`. */
 const DATABASE_VALUES = Object.freeze(["postgresql", "sqlite3"]);
 
+/**
+ * Valeurs acceptées pour `database_prepare:` — COMMENT la base est préparée,
+ * quand `database:` dit seulement AVEC QUOI.
+ *
+ * - `schema` (défaut) : `db:prepare`, donc chargement de db/schema.rb. Rapide,
+ *   insensible aux vieilles migrations qui ne tournent plus, et fidèle à ce que
+ *   fait Rails lui-même sur une base neuve.
+ * - `migrate` : `db:create db:migrate`, tout l'historique rejoué. ÉCHAPPATOIRE
+ *   explicite pour qui ne peut pas corriger son application tout de suite ; ne
+ *   la corrige pas ailleurs, et coûte le rejeu complet à chaque construction.
+ *
+ * Aucune valeur « auto » : la bascule automatique a été écartée délibérément
+ * (voir le diagnostic data-bearing-migration) — railsbox signale un défaut
+ * applicatif, il ne le masque pas.
+ */
+export const DATABASE_PREPARE_VALUES = Object.freeze(["schema", "migrate"]);
+
 /** Clés scalaires de premier niveau. */
-const SCALAR_KEYS = Object.freeze(["ruby", "database"]);
+const SCALAR_KEYS = Object.freeze(["ruby", "database", "database_prepare"]);
+
+/** Correspondance clé YAML → clé du manifeste, pour les scalaires renommés. */
+const SCALAR_TARGETS = Object.freeze({ database_prepare: "databasePrepare" });
 
 /**
  * Clés de premier niveau portant une LISTE (`clé: [a, b]` ou `clé: a`).
@@ -254,6 +276,19 @@ function applyTopLevel(state, key, value, lineNumber) {
     state.manifest.ruby = value;
     return;
   }
+  if (key === "database_prepare") {
+    if (typeof value !== "string" || !DATABASE_PREPARE_VALUES.includes(value)) {
+      pushInvalidValue(
+        state,
+        "database_prepare",
+        lineNumber,
+        `valeurs admises : ${DATABASE_PREPARE_VALUES.join(", ")}`,
+      );
+      return;
+    }
+    state.manifest.databasePrepare = value;
+    return;
+  }
   if (typeof value !== "string" || !DATABASE_VALUES.includes(value)) {
     pushInvalidValue(
       state,
@@ -394,10 +429,14 @@ export function mergeManifest(detected, declared) {
   /** @type {Manifest} */
   const merged = { ...detected };
   for (const key of SCALAR_KEYS) {
-    if (declared[key] === undefined) continue;
-    recordOverride(findings, key, detected[key], declared[key]);
-    merged[key] = declared[key];
+    // La clé YAML sert au message (c'est ce que le mainteneur a écrit), la clé
+    // du manifeste au transport : `database_prepare` → `databasePrepare`.
+    const target = SCALAR_TARGETS[key] ?? key;
+    if (declared[target] === undefined) continue;
+    recordOverride(findings, key, detected[target], declared[target]);
+    merged[target] = declared[target];
   }
+  findings.push(...describeDatabasePrepare(detected, declared.databasePrepare));
   // La provenance doit suivre la valeur, sinon le rapport ment sur sa source.
   if (declared.ruby !== undefined) {
     merged.rubySource = "railsbox.yml";
@@ -467,6 +506,39 @@ export function mergeManifest(detected, declared) {
     if (Object.keys(assets).length > 0) merged.assets = assets;
   }
   return { manifest: deepFreeze(merged), findings: Object.freeze(findings) };
+}
+
+/**
+ * Dit ce que coûte l'échappatoire `database_prepare: migrate`.
+ *
+ * Elle est légitime — un mainteneur ne peut pas toujours corriger son
+ * application avant de la montrer — mais elle ne doit pas passer pour un
+ * correctif : elle ne répare que la sandbox, l'application reste cassée sur
+ * toute autre base recréée depuis le schéma, et le rejeu complet de
+ * l'historique est plus lent et peut trébucher sur une migration ancienne.
+ * @param {Manifest} detected manifeste détecté (porte les migrations relevées)
+ * @param {string|undefined} declared valeur déclarée dans railsbox.yml
+ * @returns {Finding[]} diagnostics
+ */
+function describeDatabasePrepare(detected, declared) {
+  if (declared !== "migrate") return [];
+  const migrations = detected.dataMigrations ?? [];
+  const constat =
+    migrations.length > 0
+      ? `les données de ${migrations.join(", ")} seront bien insérées dans la sandbox, mais ` +
+        "l'application reste cassée partout où sa base est recréée depuis db/schema.rb " +
+        "(rails db:setup, base de CI, review app)"
+      : "aucune migration porteuse de données n'a pourtant été relevée : la clé ne fait " +
+        "que ralentir la construction";
+  return [
+    createFinding(
+      SEVERITY.WARNING,
+      "database-prepare-migrate",
+      "database_prepare: migrate rejoue TOUT l'historique des migrations à chaque " +
+        `construction (db:create db:migrate au lieu de db:prepare) : ${constat}.`,
+      { files: migrations },
+    ),
+  ];
 }
 
 /**
