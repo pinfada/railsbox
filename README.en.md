@@ -94,6 +94,12 @@ summary reports the stage it picked, the Ruby version and the detected database.
 | Downloaded to get there | ~32 MB from the artifact repository + the gzipped snapshot |
 | Navigation, forms, POSTs | normal, served by the VM |
 
+While the visitor waits, a status bar names the current step and counts the
+seconds ("Step 5/5 · First page rendered by the VM · 31 s"). It exists because
+CPU-throttled measurement demanded it: the final phase — between all-green
+badges and the first painted page — takes 1 s on a desktop but up to 14 s on a
+slow device, with nothing to tell "almost there" from "stuck".
+
 The 1.45 GB shared rootfs is never downloaded whole: v86 reads only the chunks
 it touches, around thirty out of 363. And it reads them only once — the Service
 Worker keeps them in Cache Storage, so a returning visitor downloads nothing
@@ -311,6 +317,7 @@ their session, which no snapshot can contain.
 | `assets-url` | `https://pinfada.github.io/railsbox-assets` | artifact repository root |
 | `base-image` | `ghcr.io/pinfada/railsbox-base` | build image (must match `base`) |
 | `railsbox-ref` | `main` | railsbox version used to build |
+| `railsbox-repo` | `pinfada/railsbox` | which railsbox repository to use — **point it at your fork** to verify a shell or proxy change end to end |
 
 The `publish-key` secret — a write deploy key — is **required** as soon as
 `target-repo` is set: the workflow token is only valid for the current
@@ -821,7 +828,7 @@ public/
 │   └── v86-config.js              v86 config: single disk, or base + application
 └── vm/
     └── v86-vm.js                  v86 boot, snapshot, clock, serial bridge
-tests/                             405 unit tests + integration (real VM) + E2E
+tests/                             408 unit tests + integration (real VM) + E2E
 ├── integration/                   serial protocol against a real v86 VM (Node)
 ├── e2e/                           full browser boot (Playwright)
 └── live/                          suite for the PUBLISHED sandbox (network, out of CI)

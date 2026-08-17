@@ -95,6 +95,13 @@ construction affiche l'étage retenu, la version de Ruby et la base détectée.
 | Téléchargé pour cela | ~32 Mo depuis le dépôt d'artefacts + l'instantané gzippé |
 | Navigation, formulaires, POST | normaux, servis par la VM |
 
+Pendant l'attente, une barre nomme l'étape en cours et compte les secondes
+(« Étape 5/5 · Rendu de la première page par la VM · 31 s »). Elle existe
+parce que la mesure sous processeur bridé l'exigeait : la dernière phase, entre
+badges tous verts et première page affichée, dure 1 s sur une machine de bureau
+mais jusqu'à 14 s sur un appareil lent — sans rien qui distingue « ça arrive »
+de « c'est bloqué ».
+
 Le rootfs mutualisé de 1,45 Go n'est jamais téléchargé en entier : v86 en lit
 les morceaux qu'il touche, une trentaine sur 363. Et il ne les lit qu'une fois :
 le Service Worker les garde en Cache Storage, si bien qu'un visiteur qui revient
@@ -319,6 +326,7 @@ contenir.
 | `assets-url` | `https://pinfada.github.io/railsbox-assets` | racine du dépôt d'artefacts |
 | `base-image` | `ghcr.io/pinfada/railsbox-base` | image de construction (doit correspondre à `base`) |
 | `railsbox-ref` | `main` | version de railsbox utilisée pour construire |
+| `railsbox-repo` | `pinfada/railsbox` | dépôt railsbox à utiliser — **mettez-y votre fork** pour vérifier de bout en bout un changement de la coquille ou du proxy |
 
 Secret `publish-key` : clé de déploiement en écriture, **obligatoire** dès que
 `target-repo` est renseigné — le jeton du workflow ne vaut que pour le dépôt
@@ -864,7 +872,7 @@ public/
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
     └── v86-vm.js                  boot v86, instantané, horloge, pont série
-tests/                             405 tests unitaires + intégration (VM réelle) + E2E
+tests/                             408 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
 ├── e2e/                           boot navigateur complet (Playwright)
 ├── live/                          recette de la sandbox PUBLIÉE (réseau, hors CI)

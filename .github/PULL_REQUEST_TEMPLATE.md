@@ -42,11 +42,24 @@ en ligne les a tous trouvés.
 - [ ] `npm run test:e2e` est vert (il exerce le **vrai** `sw-proxy.js`, sans VM : bocal à cookies, cache d'artefacts, page hôte).
 - [ ] `npm run test:live` a été joué, et contre quelle URL : <!-- URL, ou « pas pu — voir ci-dessous » -->
 
-> Vous ne pouvez pas encore construire une sandbox depuis une branche de fork :
-> `construire-sandbox.yml` récupère toujours le code de `pinfada/railsbox`
-> (voir le chantier « Construire une sandbox depuis un fork » dans
-> [`docs/chantiers.md`](https://github.com/pinfada/railsbox/blob/main/docs/chantiers.md)). Si c'est votre cas, dites-le
-> simplement : le mainteneur joue `verifier-sandbox.yml` avant la fusion.
+> **Comment vérifier votre changement de bout en bout depuis votre fork.**
+> `construire-sandbox.yml` accepte une entrée `railsbox-repo` : pointez-la sur
+> votre fork et sa branche, publiez la sandbox dans un dépôt public à vous,
+> puis jouez la recette en ligne dessus.
+>
+> ```yaml
+> uses: VOTRE-COMPTE/railsbox/.github/workflows/construire-sandbox.yml@VOTRE-BRANCHE
+> with:
+>   railsbox-repo: VOTRE-COMPTE/railsbox
+>   railsbox-ref: VOTRE-BRANCHE
+> ```
+>
+> ```bash
+> RAILSBOX_SANDBOX_URL=https://VOTRE-COMPTE.github.io/VOTRE-DEPOT/ npm run test:live
+> ```
+>
+> Si vous n'avez pas pu, dites-le simplement : le mainteneur joue
+> `verifier-sandbox.yml` avant la fusion.
 
 ## Décisions et frontières
 

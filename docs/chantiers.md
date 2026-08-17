@@ -72,7 +72,7 @@ l'initrd et l'instantané.
 
 Cette absence est la plus grosse marche à l'entrée du projet. Elle a un
 corollaire mesurable : `tests/e2e/vm-disks.mjs` exige encore
-`jiyufit.ext2` et `jiyufit-state.bin`, des noms de la voie monolithique
+~~`jiyufit.ext2` et `jiyufit-state.bin`, des noms de la voie monolithique~~ (corrigé : le portail lit désormais `v86-config.json` — voir `tests/e2e/vm-disks.mjs`) — anciennement des noms de la voie monolithique
 héritée. Autrement dit, **même avec des artefacts découpés valides,
 `tests/e2e/vm-boot.e2e.spec.mjs` s'ignore** — et un test ignoré ressemble trait
 pour trait à un test réussi.
