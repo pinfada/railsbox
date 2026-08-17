@@ -207,15 +207,21 @@ test.describe("Bocal à cookies du proxy", () => {
 
   /** @type {import("@playwright/test").Page} */
   let page;
+  // Contexte explicite : le test de la frontière d'origine ouvre une SECONDE
+  // page, sur 127.0.0.1, qui doit partager l'enregistrement du Service Worker
+  // — donc le même contexte de navigateur.
+  /** @type {import("@playwright/test").BrowserContext} */
+  let contexte;
 
   test.beforeAll(async ({ browser }) => {
-    page = await browser.newPage();
+    contexte = await browser.newContext();
+    page = await contexte.newPage();
     await installerWorker(page);
     await installerPontFactice(page);
   });
 
   test.afterAll(async () => {
-    await page?.close();
+    await contexte?.close();
   });
 
   test("range le Set-Cookie de la VM sans jamais le rendre au navigateur", async () => {
@@ -312,6 +318,111 @@ test.describe("Bocal à cookies du proxy", () => {
     const derniere = (await requetesGuest(page)).at(-1);
     expect(derniere.cookie, "la session effacée ne doit plus repartir").toBe(
       "railsbox_auto_login=1",
+    );
+  });
+
+  test("refuse un POST de formulaire venu d'une AUTRE origine (HIGH-1)", async () => {
+    // Le défaut : on croyait qu'un Service Worker n'intercepte que les
+    // requêtes de ses propres clients. C'est faux — une requête de NAVIGATION
+    // est routée par *Match Service Worker Registration* sur l'URL de la
+    // requête, sans considération de l'initiateur. Le proxy y attachait donc
+    // la session du bocal (qui n'applique pas SameSite), et le jeton
+    // d'authenticité ne couvre pas les routes en skip_forgery_protection.
+    //
+    // Reproduction FIDÈLE, pas simulée : 127.0.0.1 et localhost sont deux
+    // origines distinctes servies par le même serveur de test. La page tierce
+    // poste un vrai formulaire vers l'origine de la sandbox ; c'est bien une
+    // navigation inter-origine que le navigateur route jusqu'à notre worker.
+    const avant = (await requetesGuest(page)).length;
+    const port = new URL(page.url()).port;
+    const tiers = await contexte.newPage();
+    try {
+      await tiers.goto(`http://127.0.0.1:${port}${HOST_PATH}`);
+      await tiers.evaluate((cible) => {
+        const fenetre = /** @type {any} */ (globalThis);
+        const formulaire = fenetre.document.createElement("form");
+        formulaire.method = "POST";
+        formulaire.action = cible;
+        const champ = fenetre.document.createElement("input");
+        champ.name = "post[title]";
+        champ.value = "forge";
+        formulaire.append(champ);
+        fenetre.document.body.append(formulaire);
+        formulaire.submit();
+      }, `http://localhost:${port}/app/posts`);
+      await tiers.waitForURL(/\/app\/posts$/);
+
+      const corps = (await tiers.textContent("body")) ?? "";
+      expect(corps, "la requête inter-origine doit être refusée en 403").toContain("403");
+      expect(corps).toContain("refusée");
+      expect(await requetesGuest(page), "et RIEN ne doit atteindre la VM").toHaveLength(avant);
+    } finally {
+      await tiers.close();
+    }
+  });
+
+  test("refuse un bridge-port qui ne vient pas du document coquille (HIGH-2)", async () => {
+    // « Les cookies HttpOnly sont hors de portée de tout script » était faux :
+    // chaque descripteur qui part sur le pont porte `cookie:` EN CLAIR, et le
+    // pont était accepté de n'importe quel client. Un XSS dans l'application
+    // (iframe same-origin, donc client du worker) n'avait qu'à poser son
+    // propre port. On rejoue ici ce détournement depuis un document servi SOUS
+    // /app/ — la surface exacte d'un tel XSS.
+    const capture = await page.evaluate(async () => {
+      const fenetre = /** @type {any} */ (globalThis);
+      fenetre.__captureXss = null;
+      const cadre = fenetre.document.createElement("iframe");
+      cadre.src = "/app/xss-simule";
+      fenetre.document.body.append(cadre);
+      await new Promise((resoudre) => cadre.addEventListener("load", resoudre));
+
+      // Script INLINE injecté dans le document applicatif : il s'exécute avec
+      // l'iframe pour client, ce qui est tout l'objet du test. (`eval` serait
+      // refusé par la CSP applicative, `unsafe-eval` n'y figurant pas.)
+      const script = cadre.contentDocument.createElement("script");
+      script.textContent = `
+        const canal = new MessageChannel();
+        canal.port1.onmessage = () => { parent.__captureXss = "descripteur intercepté"; };
+        navigator.serviceWorker.controller.postMessage({ type: "bridge-port" }, [canal.port2]);
+        fetch("/app/posts/1");
+      `;
+      cadre.contentDocument.body.append(script);
+      await new Promise((resoudre) => fenetre.setTimeout(resoudre, 1500));
+      cadre.remove();
+      return fenetre.__captureXss ?? "aucun message";
+    });
+    expect(capture, "le port d'un client applicatif ne doit rien recevoir").toBe("aucun message");
+
+    // Et le pont légitime, lui, sert toujours : la requête lancée par l'iframe
+    // a bien été relayée par le port de la page hôte.
+    const derniere = (await requetesGuest(page)).at(-1);
+    expect(derniere.path, "la VM répond toujours par le pont de la coquille").toBe("/app/posts/1");
+  });
+
+  test("laisse passer les cookies posés en JavaScript par l'application (MEDIUM-6)", async () => {
+    // Régression du bocal : l'iframe est same-origin, donc `document.cookie =`
+    // crée un VRAI cookie du navigateur — que le proxy retirait de la requête
+    // sans que le bocal en ait jamais entendu parler. Motif courant d'une
+    // application Rails non modifiée (fuseau, locale, consentement, js-cookie).
+    //
+    // La relecture passe par le Cookie Store API, seul moyen pour un Service
+    // Worker de voir les cookies du navigateur. Là où il manque (Firefox,
+    // WebKit), le proxy retombe sur le bocal seul : il n'y a rien à vérifier.
+    const cookieStoreDisponible = await page.evaluate(() => "cookieStore" in globalThis);
+    test.skip(!cookieStoreDisponible, "Cookie Store API absente de ce moteur");
+
+    await requete(page, "/app/posts/new"); // repose une session (effacée plus haut)
+    await page.evaluate(() => {
+      /** @type {any} */ (globalThis).document.cookie = "timezone=Europe/Paris; path=/";
+    });
+    await requete(page, "/app/posts/1");
+
+    const derniere = (await requetesGuest(page)).at(-1);
+    expect(derniere.cookie, "le cookie posé en JS doit atteindre le serveur").toContain(
+      "timezone=Europe/Paris",
+    );
+    expect(derniere.cookie, "sans évincer celui que le bocal tient").toContain(
+      `${SESSION}=graine-csrf`,
     );
   });
 

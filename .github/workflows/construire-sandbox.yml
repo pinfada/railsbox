@@ -125,23 +125,34 @@ jobs:
           # Assaini dans TOUS les cas : le nom finit dans des chemins, des
           # messages de commit et le résumé — jamais tel que fourni.
           nom="$(printf '%s' "$nom" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
+          # Assainies AU MÊME TITRE que le nom, et pour une raison plus grave :
+          # ces valeurs sont ECRITES DANS LE FICHIER D'ENVIRONNEMENT du job.
+          # Une entrée porteuse d'un saut de ligne y définissait la variable de
+          # son choix — dans un job qui porte contents:write et le secret de
+          # publication. « tr -c » remplace tout ce qui sort du jeu autorisé,
+          # sauts de ligne compris : une seule ligne en sort, toujours.
+          base="$(printf '%s' "$IN_BASE" | tr -c 'a-zA-Z0-9._-' '-')"
+          assets="$(printf '%s' "$IN_ASSETS_URL" | tr -c 'a-zA-Z0-9._:/-' '-')"
           # Via GITHUB_ENV et non GITHUB_OUTPUT : les étapes suivantes lisent
           # des variables d'environnement, jamais une interpolation d'entrée
           # dans le texte de leur script.
           echo "SB_NOM=$nom" >> "$GITHUB_ENV"
-          echo "SB_BASE=base-${IN_BASE}" >> "$GITHUB_ENV"
-          echo "SB_RACINE=${IN_ASSETS_URL}/base-${IN_BASE}" >> "$GITHUB_ENV"
+          echo "SB_VERSION_BASE=$base" >> "$GITHUB_ENV"
+          echo "SB_ASSETS=$assets" >> "$GITHUB_ENV"
+          echo "SB_BASE=base-${base}" >> "$GITHUB_ENV"
+          echo "SB_RACINE=${assets}/base-${base}" >> "$GITHUB_ENV"
           # Racine publique de la sandbox : « /depot » sur un Pages de projet.
           # L'application doit être montée dessus, sinon elle génère ses liens
           # et ses assets à la racine du domaine, hors du site.
           cible="$IN_TARGET_REPO"
           [ -n "$cible" ] || cible="$GITHUB_REPOSITORY"
-          echo "SB_PREFIXE=/${cible##*/}" >> "$GITHUB_ENV"
+          prefixe="$(printf '%s' "${cible##*/}" | tr -c 'a-zA-Z0-9._-' '-')"
+          echo "SB_PREFIXE=/${prefixe}" >> "$GITHUB_ENV"
           # Journal de l'étape en cours : chaque étape faillible y déverse sa
           # sortie (tee), et l'étape de diagnostic le classe si le job échoue.
           # Une seule et même fiche, réécrite : seule la dernière étape compte.
           echo "SB_JOURNAL=${RUNNER_TEMP}/journal-etape.txt" >> "$GITHUB_ENV"
-          echo "Sandbox « $nom » sur la base ${IN_BASE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Sandbox « $nom » sur la base ${base}" >> "$GITHUB_STEP_SUMMARY"
 
       # L'analyse est de toute façon rejouée par build-app-disk.sh : elle est
       # faite ici pour le MAINTENEUR. L'étage de précompilation retenu et les
@@ -224,7 +235,7 @@ jobs:
           set -o pipefail
           echo "SB_ETAPE=Construction du disque applicatif" >> "$GITHUB_ENV"
           {
-            docker pull -q "${IN_BASE_IMAGE}:${IN_BASE}"
+            docker pull -q "${IN_BASE_IMAGE}:${SB_VERSION_BASE}"
             # Tableau et non chaîne : une commande de seed contient des espaces,
             # qu'une expansion non quotée découperait en arguments distincts.
             extra=()
@@ -232,7 +243,7 @@ jobs:
             sudo -E env "PATH=$PATH" bash tools/build-v86-image/build-app-disk.sh \
               "${GITHUB_WORKSPACE}/application/${IN_APP_PATH}" \
               --name "$SB_NOM" \
-              --base "${IN_BASE_IMAGE}:${IN_BASE}" \
+              --base "${IN_BASE_IMAGE}:${SB_VERSION_BASE}" \
               --mount-prefix "$SB_PREFIXE" \
               "${extra[@]}"
             sudo chown -R "$USER" public/disks
@@ -386,7 +397,7 @@ jobs:
             echo "à un service de badges, et rien à maintenir."
             echo ""
             echo "Activez GitHub Pages sur la branche \`gh-pages\` si ce n'est pas déjà fait."
-            echo "Le rootfs mutualisé est servi par \`${IN_ASSETS_URL}\` :"
+            echo "Le rootfs mutualisé est servi par \`${SB_ASSETS}\` :"
             echo "le dépôt n'héberge que l'application."
           } >> "$GITHUB_STEP_SUMMARY"
 

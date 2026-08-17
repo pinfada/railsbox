@@ -9,10 +9,12 @@ import {
   createCookieJar,
   defaultPath,
   extractSetCookie,
+  mergeBrowserCookies,
   parseSetCookie,
   pathMatches,
   serializeCookies,
 } from "../public/shared/cookie-jar.js";
+import { sanitizeCookieHeader } from "../public/shared/request-codec.js";
 
 const MAINTENANT = Date.UTC(2026, 0, 1, 12, 0, 0);
 
@@ -206,4 +208,110 @@ test("le bocal reste borné même si l'application déraille", () => {
   }
   assert.ok(jar.size <= 200, `taille bornée, obtenu ${jar.size}`);
   assert.ok(jar.headerFor("/app/").includes("c249=1"), "le plus récent est conservé");
+});
+
+// --- MEDIUM-3 : la persistance n'est pas un canal de confiance ------------
+
+test("load refuse une entrée persistée qui réinjecterait un « ; »", () => {
+  // IndexedDB vit dans l'origine, qu'un XSS de l'application partage : une
+  // entrée forgée y ferait naître un SECOND cookie à la sérialisation.
+  const { jar } = bocal();
+  jar.load([
+    { name: "session", path: "/", value: "a; admin=1", expiresAt: null },
+    { name: "sain", path: "/", value: "ok", expiresAt: null },
+  ]);
+  assert.equal(jar.size, 1, "l'entrée empoisonnée est écartée");
+  assert.equal(jar.headerFor("/app/"), "sain=ok");
+});
+
+test("ni le bocal ni la frontière n'acceptent un codepoint hors latin-1", () => {
+  // Le pont côté guest encode les en-têtes en latin-1 : au-delà de U+00FF il
+  // lève, ce qui se traduit par un 502. Persisté, ce 502 revient à CHAQUE
+  // requête, y compris après un redémarrage du worker.
+  const hanzi = "valeur中";
+  assert.equal(parseSetCookie(`a=${hanzi}; Path=/`), null, "refusé dès l'ingestion");
+
+  const { jar } = bocal();
+  jar.load([{ name: "a", path: "/", value: hanzi, expiresAt: null }]);
+  assert.equal(jar.size, 0, "refusé aussi au rechargement");
+
+  assert.equal(sanitizeCookieHeader(`a=${hanzi}`), null, "et refusé à la frontière du guest");
+});
+
+// --- MEDIUM-4 : perdre TOUS les cookies plutôt qu'un seul -----------------
+
+test("le bocal borne l'en-tête SÉRIALISÉ, au lieu de le faire abandonner", () => {
+  // sanitizeCookieHeader rend null au-delà de 8192 octets : aucun cookie ne
+  // part alors, soit exactement le 422 que le bocal existe pour éliminer.
+  const { jar } = bocal();
+  jar.ingest(["_session=graine-csrf; Path=/"], "/app/");
+  for (let index = 0; index < 40; index += 1) {
+    jar.headerFor("/app/"); // la session sert à chaque requête
+    jar.ingest([`gros${index}=${"x".repeat(500)}; Path=/`], "/app/");
+  }
+  const entete = jar.headerFor("/app/");
+  assert.ok(entete.length <= 8192, `en-tête borné, obtenu ${entete.length}`);
+  assert.equal(sanitizeCookieHeader(entete), entete, "la frontière du guest l'accepte");
+});
+
+// --- MEDIUM-5 : la session ne doit JAMAIS être la première évincée --------
+
+test("l'éviction sacrifie le moins récemment UTILISÉ, pas le plus ancien", () => {
+  // La session Rails est créée en premier et garde son rang de création à
+  // chaque réémission : évincer par ancienneté de création la désignait
+  // systématiquement victime. Elle repart pourtant à chaque requête.
+  const { jar } = bocal();
+  jar.ingest(["_session=graine-csrf; Path=/"], "/app/");
+  for (let index = 0; index < 260; index += 1) {
+    jar.headerFor("/app/"); // la session est relue à chaque passage
+    jar.ingest([`jetable${index}=1; Path=/`], "/app/");
+  }
+  assert.ok(
+    jar.headerFor("/app/").includes("_session=graine-csrf"),
+    "la session doit survivre à l'inondation",
+  );
+});
+
+// --- MEDIUM-6 : les cookies posés en JavaScript par l'application ---------
+
+test("mergeBrowserCookies ajoute ce que le bocal ignore, sans le supplanter", () => {
+  // L'iframe est same-origin : « document.cookie = "timezone=…" » crée un vrai
+  // cookie du navigateur, dont aucun Set-Cookie n'a informé le bocal. Sans
+  // fusion, ce motif courant (fuseau, locale, consentement) n'atteint plus
+  // jamais le serveur.
+  const fusion = mergeBrowserCookies(
+    "_session=graine-csrf",
+    [
+      { name: "timezone", value: "Europe/Paris", path: "/" },
+      { name: "_session", value: "usurpe", path: "/" },
+    ],
+    "/app/posts",
+  );
+  assert.equal(fusion, "_session=graine-csrf; timezone=Europe/Paris");
+});
+
+test("mergeBrowserCookies filtre chemin, injection et en-tête trop long", () => {
+  assert.equal(
+    mergeBrowserCookies(null, [{ name: "admin", value: "1", path: "/autre" }], "/app/posts"),
+    null,
+    "un cookie d'un autre chemin ne part pas",
+  );
+  assert.equal(
+    mergeBrowserCookies(null, [{ name: "a", value: "1; admin=1", path: "/" }], "/app/"),
+    null,
+    "une valeur porteuse de « ; » forgerait un second cookie",
+  );
+  const plein = `s=${"x".repeat(8100)}`;
+  assert.equal(
+    mergeBrowserCookies(plein, [{ name: "tz", value: "x".repeat(200), path: "/" }], "/app/"),
+    plein,
+    "on n'ajoute rien qui ferait dépasser la borne de l'en-tête",
+  );
+});
+
+test("mergeBrowserCookies sans Cookie Store rend l'en-tête du bocal intact", () => {
+  // Firefox et WebKit n'exposent pas cookieStore au worker : on doit y
+  // retomber exactement sur le comportement d'avant.
+  assert.equal(mergeBrowserCookies("a=1", [], "/app/"), "a=1");
+  assert.equal(mergeBrowserCookies(null, undefined, "/app/"), null);
 });

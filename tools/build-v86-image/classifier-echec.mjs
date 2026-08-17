@@ -282,19 +282,28 @@ function extraireFin(lignes) {
 }
 
 /**
- * Met en forme une tranche de lignes : bruit retiré, largeur bornée, secrets masqués.
+ * Met en forme une tranche de lignes : bruit retiré, secrets masqués, PUIS
+ * largeur bornée.
+ *
+ * L'ORDRE EST LE CORRECTIF. Tronquer d'abord coupait un jeton en deux au 200e
+ * caractère : le motif de caviardage ne reconnaissait plus rien, et la moitié
+ * gauche du secret partait telle quelle dans un résumé public. Le caviardage
+ * s'applique donc au texte entier — il le faut de toute façon pour les blocs
+ * multilignes (clés privées) — et la troncature ne voit plus que du texte déjà
+ * assaini.
  * @param {{texte: string, bruit: boolean}[]} tranche lignes à assembler
  * @returns {string} extrait prêt à afficher
  */
 function assembler(tranche) {
   const retenues = tranche
     .filter((ligne) => !ligne.bruit && ligne.texte.trim() !== "")
-    .map((ligne) =>
-      ligne.texte.length > LARGEUR_EXTRAIT
-        ? `${ligne.texte.slice(0, LARGEUR_EXTRAIT)}…`
-        : ligne.texte,
-    );
-  return caviarder(retenues.join("\n"));
+    .map((ligne) => ligne.texte);
+  return caviarder(retenues.join("\n"))
+    .split("\n")
+    .map((texte) =>
+      texte.length > LARGEUR_EXTRAIT ? `${texte.slice(0, LARGEUR_EXTRAIT)}…` : texte,
+    )
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------

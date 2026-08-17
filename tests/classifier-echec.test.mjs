@@ -455,6 +455,24 @@ test("une ligne démesurée est tronquée dans l'extrait", () => {
   assert.ok(longue.endsWith("…"));
 });
 
+test("un jeton au-delà de la troncature est caviardé quand même", () => {
+  // Le défaut : la ligne était tronquée à 200 caractères AVANT le caviardage.
+  // Un jeton qui commençait au 190e caractère se retrouvait coupé en deux, le
+  // motif ne le reconnaissait plus, et sa moitié gauche partait telle quelle
+  // dans un résumé PUBLIC. On caviarde donc d'abord, on tronque ensuite.
+  // Le jeton commence au 185e caractère : tronquer d'abord n'en laissait que
+  // quinze, trop peu pour que le motif (16 caractères au minimum) le
+  // reconnaisse — « ghp_0123456789a » atterrissait donc en clair.
+  const jeton = "ghp_0123456789abcdefghijklmnop";
+  const diagnostic = classer(
+    [
+      "✗ La base ne fournit pas les bibliothèques système : libvips-dev",
+      `${"x".repeat(162)} Authorization: Bearer ${jeton} suite`,
+    ].join("\n"),
+  );
+  assert.doesNotMatch(diagnostic.extrait, /ghp_/, "pas même un fragment de jeton");
+});
+
 test("caviarder retire clés privées et jetons, y compris hors URL", () => {
   const assaini = caviarder(
     [
