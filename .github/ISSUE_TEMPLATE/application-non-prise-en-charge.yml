@@ -1,0 +1,141 @@
+name: Ma stack n'est pas prise en charge
+description: >-
+  L'analyse refuse votre application, la construction échoue, ou la sandbox
+  produite ne correspond pas à votre stack (adaptateur, chaîne d'assets, gems).
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        *English is welcome — answer in English if you prefer.*
+
+
+        railsbox ne modifie pas votre application : il la **classe**, puis
+        construit à partir de ce classement. Un refus ou une construction ratée
+        se diagnostique donc à partir de trois pièces, et de trois seulement :
+        ce que l'auto-détection a compris (`tools/detect`), ce que votre verrou
+        de dépendances déclare, et ce que le classifieur d'échecs a dit du
+        journal. Les champs ci-dessous les demandent une par une.
+
+
+        Le guest est un **i386**, sans réseau sortant. Deux conséquences
+        reviennent presque toujours : une gem livrée seulement en binaire
+        `x86_64-linux` ne s'installe pas, et un outil d'assets sans binaire i386
+        doit être précompilé sur l'étage amd64 du runner
+        (`tools/detect/assets.mjs`).
+
+  - type: textarea
+    id: rapport-detection
+    attributes:
+      label: Rapport de l'auto-détection
+      description: >-
+        La pièce maîtresse : elle dit ce que railsbox a compris de votre
+        application, avec un code de diagnostic stable par ligne. Elle
+        n'exige ni Docker, ni VM, ni artefact.
+
+
+        ```
+
+        git clone https://github.com/pinfada/railsbox && cd railsbox && npm ci
+
+        node tools/detect/cli.mjs /chemin/vers/votre-application
+
+        ```
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: adaptateur
+    attributes:
+      label: Adaptateur de base de données
+      description: >-
+        La valeur `adapter:` de `config/database.yml` (environnement de
+        production). `postgresql` et `sqlite3` sont pris en charge ; `mysql2` et
+        `trilogy` sont reconnus et refusés explicitement.
+      placeholder: postgresql
+    validations:
+      required: true
+
+  - type: textarea
+    id: gemfile-lock
+    attributes:
+      label: Extraits du Gemfile.lock
+      description: >-
+        Trois blocs suffisent, ne collez pas le fichier entier : `RUBY VERSION`,
+        `PLATFORMS`, et les lignes des gems concernées — adaptateur (`pg`,
+        `sqlite3`…), assets (`tailwindcss-*`, `dartsass-*`, `*bundling-rails`,
+        `propshaft`, `sprockets-rails`) et toute gem à extension native que vous
+        soupçonnez.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: chaine-assets
+    attributes:
+      label: Chaîne d'assets
+      description: >-
+        Le bloc `scripts` de votre `package.json` (ou « aucun package.json »),
+        et le nom du verrou présent à la racine — `package-lock.json`,
+        `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`. railsbox n'installe qu'avec
+        npm : un verrou d'un autre gestionnaire est signalé, pas rejoué.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: ruby
+    attributes:
+      label: Version de Ruby demandée
+      description: >-
+        Contenu de `.ruby-version`, ou la ligne `ruby` de votre `Gemfile`. La
+        base fournit un Ruby figé que le disque applicatif ne peut pas
+        remplacer : une version hors des séries publiées est un refus, pas un
+        détail.
+      placeholder: 3.3.12
+    validations:
+      required: true
+
+  - type: textarea
+    id: railsbox-yml
+    attributes:
+      label: Votre railsbox.yml
+      description: >-
+        Si vous en avez un. C'est par ce fichier qu'on corrige l'auto-détection
+        (`ruby`, `database`, `seed`, `assets`, `env`) — et une clé mal comprise
+        y produit son propre diagnostic.
+      render: yaml
+
+  - type: textarea
+    id: verdict-construction
+    attributes:
+      label: Verdict du classifieur d'échecs
+      description: >-
+        Si la construction a tourné et échoué : le bloc « Pourquoi la
+        construction a échoué » du résumé du job (catégorie, code, remède,
+        extrait du journal), plus le tableau « Plan de construction » affiché en
+        début de job. C'est cette paire — ce que railsbox a décidé, puis où ça a
+        cassé — qui localise le défaut.
+      render: text
+
+  - type: input
+    id: application
+    attributes:
+      label: Lien vers l'application
+      description: >-
+        Si elle est publique. Un dépôt qu'on peut cloner vaut mieux que
+        n'importe quelle description — c'est ainsi que le panel de contrôle a
+        gagné rubygems.org et mastodon.
+      placeholder: https://github.com/compte/application
+
+  - type: textarea
+    id: attendu
+    attributes:
+      label: Ce que vous attendiez
+      description: >-
+        Une phrase. Une prise en charge nouvelle se juge à ce qu'elle coûte à la
+        base mutualisée : un paquet système ajouté pèse sur toutes les
+        sandboxes, y compris celles qui ne s'en servent pas.
+    validations:
+      required: true

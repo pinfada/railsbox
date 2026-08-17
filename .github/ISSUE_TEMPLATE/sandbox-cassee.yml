@@ -1,0 +1,146 @@
+name: Une sandbox publiée est cassée
+description: >-
+  La démonstration ne boote pas, boote mal, ou l'application ne répond pas dans
+  l'iframe. Pour une CONSTRUCTION qui échoue, prenez l'autre gabarit.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        *English is welcome — answer in English if you prefer.*
+
+
+        Une sandbox tourne **entièrement dans le navigateur du visiteur** : nous
+        n'avons aucun journal serveur à consulter, aucune trace côté hôte. Tout
+        ce qui permet de diagnostiquer est dans votre onglet, et les champs
+        ci-dessous sont la liste de ce qu'il faut en extraire. Une issue qui
+        n'en porte aucun ne peut être que refermée par une demande de
+        précisions.
+
+  - type: input
+    id: url
+    attributes:
+      label: URL de la sandbox publiée
+      description: L'adresse exacte que vous avez ouverte, barre oblique finale comprise.
+      placeholder: https://compte.github.io/mon-application/
+    validations:
+      required: true
+
+  - type: input
+    id: base
+    attributes:
+      label: Version de base épinglée
+      description: >-
+        Champ `baseName` de `<URL de la sandbox>disks/v86-config.json` — ouvrez
+        ce fichier dans un onglet, il est public. Une base publiée est immuable
+        (ADR 0004) : savoir laquelle vous chargez sépare un défaut de la base
+        d'un défaut de votre disque applicatif.
+      placeholder: base-3.3-r2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: moteur
+    attributes:
+      label: Moteur du navigateur
+      description: >-
+        Le moteur, pas la marque : Edge, Brave et Opera sont des Chromium.
+        Seul Chromium passe la recette hebdomadaire — Firefox et WebKit sont
+        mesurés fonctionnels mais vérifiés à la demande.
+      options:
+        - Chromium (Chrome, Edge, Brave, Opera…)
+        - Firefox
+        - WebKit (Safari)
+        - Autre / je ne sais pas
+    validations:
+      required: true
+
+  - type: input
+    id: version-navigateur
+    attributes:
+      label: Version du navigateur et système
+      placeholder: Chrome 141 · Windows 11 — ou Safari 18 · iOS 18, iPhone 13
+    validations:
+      required: true
+
+  - type: dropdown
+    id: badge
+    attributes:
+      label: Dernier badge passé au rouge
+      description: >-
+        Les quatre badges de la coquille jalonnent le démarrage, dans cet ordre.
+        Le premier qui vire au rouge dit à quel étage l'affaire se joue.
+      options:
+        - Service Worker
+        - Isolation COI
+        - VM v86
+        - Serveur HTTP
+        - Les quatre sont verts — le défaut est dans l'application affichée
+        - Aucun ne bouge / la page reste vide
+    validations:
+      required: true
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal de boot
+      description: >-
+        Le contenu du panneau de journal de la coquille, du début jusqu'à
+        l'échec. Il porte les lignes du noyau, celles de Puma et celles du pont
+        série (`[pont] …`) : c'est la pièce la plus utile de toutes. Ne le
+        tronquez pas par le début — la cause y est presque toujours.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: recette
+    attributes:
+      label: Sortie de la recette en ligne
+      description: >-
+        La recette rejoue le parcours complet d'un visiteur contre VOTRE URL, et
+        distingue un défaut de publication d'un défaut d'application. Elle
+        n'exige aucun artefact local.
+
+
+        ```
+
+        git clone https://github.com/pinfada/railsbox && cd railsbox
+
+        npm ci && npx playwright install --with-deps chromium
+
+        RAILSBOX_SANDBOX_URL=https://compte.github.io/mon-application/ npm run test:live
+
+        ```
+
+
+        Collez la sortie, même verte : une recette au vert sur une sandbox que
+        vous voyez cassée est en soi un renseignement.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Erreurs de la console du navigateur
+      description: >-
+        Onglet Console, puis Réseau. Nous cherchons en particulier les lignes
+        `[sw] …` (le proxy se plaint sous ce préfixe), les refus de CSP, les
+        échecs CORS et les 404 sur `disks/`.
+      render: text
+
+  - type: checkboxes
+    id: verifications
+    attributes:
+      label: Vérifications préalables
+      options:
+        - label: >-
+            J'ai rechargé avec `?fresh=1` à la fin de l'URL (purge l'instantané
+            mis en cache dans ce navigateur et force un boot à froid).
+        - label: >-
+            J'ai réessayé dans une fenêtre privée ou un profil neuf (écarte un
+            Service Worker ou un cache d'artefacts périmé).
+        - label: >-
+            Le journal et les captures que je joins ne contiennent aucune donnée
+            réelle : une sandbox est publique par nature (voir `SECURITY.md`).

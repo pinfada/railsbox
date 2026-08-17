@@ -820,7 +820,10 @@ tools/
 │                                  + surcouches PostgreSQL (demo-pg/) et
 │                                  Tailwind (demo-tailwind/)
 └── bench-serial.mjs               mesure du coût du chemin chaud série
-docs/decisions/                    ADR : distribution des artefacts, découpage base/app
+docs/
+├── architecture.md                carte du code : trajet d'une requête, par où lire
+├── chantiers.md                   chantiers ouverts, avec critère de réussite
+└── decisions/                     ADR : distribution des artefacts, découpage base/app
 SECURITY.md · CONTRIBUTING.md      modèle de menace · conventions
 ```
 
@@ -835,4 +838,20 @@ logiciels libres (Linux, Ruby, Rails…) sous leurs licences respectives.
 
 ## Contribuer
 
-Conventions, style et attentes de tests : [`CONTRIBUTING.md`](CONTRIBUTING.md).
+railsbox n'a qu'un mainteneur. Ces trois portes existent pour que ça change —
+elles se lisent dans cet ordre :
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — monter un environnement (trois niveaux,
+  du plus léger au plus coûteux), quels tests jouer selon ce qu'on touche, où
+  vivent les décisions, conventions et processus.
+- [`docs/architecture.md`](docs/architecture.md) — la carte du code : les six
+  fichiers qui portent l'essentiel, et le trajet complet d'une requête HTTP du
+  clic du visiteur jusqu'à Puma et retour.
+- [`docs/chantiers.md`](docs/chantiers.md) — huit chantiers ouverts, chacun avec
+  son contexte, ses fichiers et un critère de réussite vérifiable.
+
+Pour signaler quelque chose, les gabarits d'issue demandent ce qui permet de
+diagnostiquer : une sandbox tourne entièrement dans l'onglet du visiteur, il n'y
+a aucun journal serveur à consulter. Une faille se signale en privé (onglet
+Security du dépôt), jamais par une issue publique — voir
+[`SECURITY.md`](SECURITY.md).
