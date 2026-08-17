@@ -781,7 +781,10 @@ tools/
 ├── demo-app/                      `rails new` validation application (demo/)
 │                                  + its PostgreSQL overlay (demo-pg/) and Tailwind (demo-tailwind/)
 └── bench-serial.mjs               measures the cost of the serial hot path
-docs/decisions/                    ADRs: artifact distribution, base/app split
+docs/
+├── architecture.md                code map: a request's full trip, where to start
+├── chantiers.md                   open work items, each with a success criterion
+└── decisions/                     ADRs: artifact distribution, base/app split
 SECURITY.md · CONTRIBUTING.md      threat model · conventions
 ```
 
@@ -796,6 +799,26 @@ LGPL). The rootfs images published in `railsbox-assets` contain free software
 
 ## Contributing
 
-Conventions, style and test expectations: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-(in French). Note that user-facing strings and comments in this project are
-written in French; code identifiers are in English.
+railsbox has a single maintainer. Three doors exist to change that — read them
+in this order:
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — setting up an environment (three tiers,
+  from lightest to costliest), which tests to run for what you touch, where the
+  decisions live, conventions and process.
+- [`docs/architecture.md`](docs/architecture.md) — the code map: the six files
+  that carry the substance, and an HTTP request's full trip from the visitor's
+  click to Puma and back.
+- [`docs/chantiers.md`](docs/chantiers.md) — eight open work items, each with
+  its context, the files involved and a verifiable success criterion.
+
+All three are **in French**, as are the ADRs, the code comments and the commit
+messages. This is a deliberate choice, not an oversight: most of this
+repository's reasoning lives in its comments, and a translation diverges at the
+first fix. Code identifiers are in English. **Issue templates and pull requests
+accept English** — answer in English if you prefer. Making the entry practicable
+without reading French is [work item 7](docs/chantiers.md).
+
+To report something, the issue templates ask for what makes a diagnosis
+possible: a sandbox runs entirely in the visitor's tab, there is no server log
+to consult. Report a vulnerability privately (the repository's Security tab),
+never through a public issue — see [`SECURITY.md`](SECURITY.md) (in French).

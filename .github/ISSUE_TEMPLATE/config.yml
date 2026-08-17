@@ -1,0 +1,18 @@
+# Les issues vierges restent ouvertes : les deux gabarits ci-contre couvrent les
+# deux signalements qui ont besoin de pièces jointes précises pour être
+# diagnosticables. Une idée, une question ou un défaut du dépôt lui-même n'a
+# rien à gagner à passer par un formulaire — un troisième gabarit ne ferait que
+# recopier le champ « décrivez le problème ».
+blank_issues_enabled: true
+
+contact_links:
+  - name: Vulnérabilité de sécurité (signalement privé)
+    url: https://github.com/pinfada/railsbox/security/advisories/new
+    about: >-
+      N'ouvrez JAMAIS d'issue publique pour une faille. Le modèle de menace et
+      les frontières défendues sont décrits dans SECURITY.md.
+  - name: Par où commencer à contribuer
+    url: https://github.com/pinfada/railsbox/blob/main/docs/chantiers.md
+    about: >-
+      Chantiers ouverts, avec leur contexte, les fichiers concernés et le
+      critère de réussite. Lisez aussi docs/architecture.md et CONTRIBUTING.md.
