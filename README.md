@@ -113,10 +113,12 @@ démonstration publiée et sur une réplique locale de la publication :
 Seule différence mesurée : la première requête traversant le pont série coûte
 environ 6 s sous Firefox, contre 1 s ailleurs.
 
-**Mobile** : non validé. L'émulation x86 sur un processeur de téléphone est
-nettement plus lente, et la mémoire d'un onglet mobile est bien plus vite
-arbitrée par le système. Un badge cliqué depuis un téléphone peut aboutir —
-comptez-y comme un bonus, pas comme le chemin nominal. Les recettes jouent Chromium par
+**Mobile** : la coquille est adaptée aux téléphones — mise en page vérifiée à
+320, 390 et 393 px (`tests/e2e/coquille-mobile.e2e.spec.mjs`), et le boot
+aboutit en émulation mobile sur la sandbox publiée (21–26 s). Ce qui n'est pas
+mesuré : un **vrai** processeur de téléphone, nettement plus lent qu'un
+émulateur de bureau, et la mémoire d'un onglet mobile, bien plus vite arbitrée
+par le système. Comptez le mobile comme praticable, pas comme garanti. Les recettes jouent Chromium par
 défaut ; `RAILSBOX_MOTEURS=tous` (ou une liste : `firefox,webkit`) élargit
 `npm run test:live` et `npm run test:e2e` aux trois moteurs. Les webviews qui
 bloquent les Service Workers ne peuvent pas fonctionner, par construction — la

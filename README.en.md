@@ -111,9 +111,12 @@ demo and a faithful local replica of the publication:
 Only measured difference: the first request through the serial bridge costs
 about 6 s on Firefox versus 1 s elsewhere.
 
-**Mobile**: not validated. x86 emulation on a phone CPU is markedly slower, and
-mobile tabs get memory-reclaimed far sooner. A badge clicked from a phone may
-work — treat it as a bonus, not as the nominal path. Recipes run Chromium by default;
+**Mobile**: the shell is phone-ready — layout verified at 320, 390 and 393 px
+(`tests/e2e/coquille-mobile.e2e.spec.mjs`), and the boot completes under mobile
+emulation against the published sandbox (21–26 s). What is not measured: a
+**real** phone CPU, markedly slower than a desktop emulator, and mobile tab
+memory, reclaimed far sooner by the OS. Treat mobile as workable, not
+guaranteed. Recipes run Chromium by default;
 `RAILSBOX_MOTEURS=tous` (or a list: `firefox,webkit`) widens `npm run test:live`
 and `npm run test:e2e` to all three. Webviews that block Service Workers cannot
 work, by construction — the shell now tells the visitor so instead of failing

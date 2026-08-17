@@ -144,6 +144,41 @@
           border-bottom: 1px solid var(--border);
         }
       }
+      /* Téléphones. Deux défauts mesurés en émulation mobile sur la sandbox
+         publiée : l'en-tête en ligne imposait une largeur minimale de 468 px,
+         si bien que tout écran plus étroit dézoomait la page entière (texte à
+         ~10 px réels) ; et le journal de boot mangeait 40 % d'un écran où le
+         visiteur vient voir l'APPLICATION. `dvh` plutôt que `vh` : la barre
+         d'URL mobile rogne autrement le bas de la page. */
+      @media (max-width: 640px) {
+        body {
+          height: 100dvh;
+        }
+        header {
+          flex-wrap: wrap;
+          gap: 0.5rem 0.9rem;
+          padding: 0.6rem 0.9rem;
+        }
+        header h1 {
+          font-size: 0.95rem;
+        }
+        .badges {
+          gap: 0.4rem;
+          margin-left: 0;
+          width: 100%;
+        }
+        .badge {
+          font-size: 0.66rem;
+          padding: 0.2rem 0.45rem;
+        }
+        main {
+          grid-template-rows: minmax(0, 22%) minmax(0, 78%);
+        }
+        #boot-log {
+          font-size: 0.7rem;
+          padding: 0.6rem 0.8rem;
+        }
+      }
     </style>
   </head>
   <body>
