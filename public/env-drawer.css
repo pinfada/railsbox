@@ -63,7 +63,9 @@
   position: fixed;
   top: 0;
   right: 0;
-  height: 100vh;
+  /* dvh : sur mobile, 100vh inclut la barre d'URL rétractable — le bas du
+     panneau (ses boutons d'action) passait sous le pli. */
+  height: 100dvh;
   width: var(--env-largeur);
   background: var(--panel);
   border-left: 1px solid var(--border);
