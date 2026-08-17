@@ -58,7 +58,7 @@ dans sa propre VM. En conséquence :
 | Application ↔ page hôte | iframe `sandbox` (pas de navigation du parent, pas de popups) |
 | XSS dans l'application → exfiltration réseau | CSP **toujours** ajoutée aux documents `/app` proxifiés (`connect-src 'self'`, `form-action 'self'`) — fetch/XHR/beacon et formulaires vers des tiers sont bloqués. Une politique posée par l'application n'y substitue pas la nôtre : les deux s'appliquent conjointement. **Canal résiduel assumé** : `img-src` reste large (fonds de carte) — un pixel-beacon image reste possible depuis une app compromise ; l'iframe étant same-origin, une telle app peut aussi lire le `localStorage` de la page et l'IndexedDB de l'origine (d'où l'option « session seulement » de l'inspecteur) |
 | Requêtes inter-origine → VM | refusées en **403** par le Service Worker (`crossOriginRefusal`) : un `Origin` étranger, ou un `Sec-Fetch-Site` `cross-site`/`same-site`, n'atteint jamais le pont |
-| Commandes du proxy (pont VM, identité des artefacts) | acceptées du **seul document coquille** (`isShellClient`) : un client servi sous `/app/` — la surface d'un XSS applicatif — ne peut ni détourner le pont ni empoisonner le cache |
+| Commandes du proxy (pont VM, identité des artefacts, cookies du document) | acceptées du **seul document coquille** (`isShellClient`) : un client servi sous `/app/` — la surface d'un XSS applicatif — ne peut ni détourner le pont, ni empoisonner le cache, ni dicter au proxy des cookies que le navigateur ne lui montre pas |
 | Deux onglets sur la même sandbox | un verrou exclusif Web Locks (`shared/election-onglet.js`) élit l'onglet actif : un seul boote une VM, le second l'annonce au visiteur et propose de reprendre la main. L'isolation entre sandboxes est celle des **visiteurs**, pas des onglets — le Service Worker ne retient qu'un pont, si bien que deux VM concurrentes faisaient partir les écritures d'un onglet dans la VM de l'autre |
 | Page hôte | Content-Security-Policy (`index.html`), `X-Content-Type-Options: nosniff` |
 | Serveur de dev | anti-traversée de répertoire (`resolveSafePath`, testée) |
@@ -72,7 +72,7 @@ en-tête interdit sur une `Response` construite, silencieusement filtré. Le
 proxy tient donc lui-même le magasin — sans quoi la session Rails n'existe
 pas, et **toute écriture est refusée en 422 `InvalidAuthenticityToken`**.
 
-Trois conséquences côté sécurité, dont deux corrigent des affirmations qui ont
+Quatre conséquences côté sécurité, dont deux corrigent des affirmations qui ont
 figuré ici et qui étaient fausses.
 
 - **Ce que l'isolation gagne, exactement.** `document.cookie` reste vide : la
@@ -112,6 +112,33 @@ figuré ici et qui étaient fausses.
   bocal n'a pas besoin d'apparier `SameSite`. Restent légitimes, et préservées :
   les requêtes de la coquille et de l'iframe (`Sec-Fetch-Site: same-origin`),
   et l'ouverture directe par le visiteur (`none`).
+- **Les cookies que l'application pose en JavaScript sont rapportés par la
+  coquille, jamais par l'application.** Le bocal n'apprend que par
+  `Set-Cookie` ; or l'iframe est same-origin, donc `document.cookie = "timezone=…"`
+  (fuseau, locale, consentement, js-cookie) crée un vrai cookie du navigateur
+  dont aucune réponse de la VM n'a parlé. Un Service Worker n'a pas de DOM et
+  ne voit pas non plus l'en-tête `Cookie` des requêtes qu'il intercepte : il
+  DEMANDE donc ces cookies à ses clients (`cookies-document-request`), et
+  n'interroge que ceux qui passent `isShellClient` — jamais un document servi
+  sous `/app/`, qui pourrait sinon dicter des cookies que le navigateur ne lui
+  montre pas. Trois gardes encadrent ce qui revient : le **bocal reste
+  autoritaire** (un nom qu'il porte n'est ni doublé ni remplacé, la session et
+  les `HttpOnly` sont donc hors d'atteinte de ce chemin), le rapport passe par
+  les **mêmes validations que l'ingestion** (`isTransmissibleCookie` : ni CR/LF,
+  ni `;`, ni codepoint hors latin-1, longueurs bornées), et rien ne circule
+  dans l'autre sens — la demande est vide, la réponse ne peut porter que ce que
+  le navigateur expose déjà à la page. L'implémentation précédente s'appuyait
+  sur le **Cookie Store API**, absent de WebKit et tardif dans Firefox : la
+  fusion n'avait pas lieu sur deux moteurs sur trois. Quand la coquille tarde à
+  répondre, le proxy repart sur son **dernier rapport connu** plutôt que sur
+  rien : un cookie que l'application vient d'effacer peut donc l'accompagner
+  une requête de plus — sans effet sur ce que le bocal, lui, tient. Limite
+  subsistante,
+  mesurée et assumée : un cookie posé **sans `Path` explicite** depuis une page
+  `/app/…` prend `<base>/app` pour chemin, reste invisible du document coquille
+  et n'est donc pas récupéré — c'était déjà la portée exacte du Cookie Store
+  API. Les trois moteurs se comportent ici à l'identique
+  (`tests/e2e/cookies-proxy.e2e.spec.mjs`).
 
 ## Hors périmètre (assumé)
 

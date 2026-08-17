@@ -718,6 +718,13 @@ sign the visitor out. `document.cookie` stays empty on the page, which is *not*
 the same as putting cookies out of a script's reach: see
 [`SECURITY.md`](SECURITY.md).
 
+The jar is not the only source: the iframe being same-origin, a
+`document.cookie = "timezone=…"` set by the application creates a real browser
+cookie no VM response ever mentioned. A Service Worker has no DOM, so it *asks
+the host page* for them (`cookies-document-request`) and appends them to the
+header without ever overriding its own. That relay replaced a first attempt
+built on the Cookie Store API, which existed on only one engine out of three.
+
 A security corollary, found in review: that jar attaches the session cookie to
 **every** request the Service Worker relays — and a SW handles *navigations*
 into its scope whatever their initiator, not just its own clients'

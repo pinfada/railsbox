@@ -102,6 +102,11 @@ async function start() {
   // Installé AVANT le boot : la configuration des artefacts est déclarée au
   // Service Worker dès sa lecture, donc avant la première requête de v86.
   navigator.serviceWorker.addEventListener("message", onWorkerMessage);
+  // La file de messages du worker vers la page est DÉSACTIVÉE tant qu'on n'a
+  // pas posé `onmessage` ou appelé ceci : avec `addEventListener` seul, les
+  // demandes du worker (pont, artefacts, cookies) peuvent n'être jamais
+  // délivrées. Chromium se montre indulgent, la spécification ne l'est pas.
+  navigator.serviceWorker.startMessages?.();
 
   await ensureCrossOriginIsolated();
   setBadge("coi", true);
@@ -317,6 +322,30 @@ async function bootSelectedEngine() {
 function onWorkerMessage(event) {
   if (event.data?.type === "bridge-port-request" && vmInstance) sendBridgePort(vmInstance);
   if (event.data?.type === "artifact-config-request") declareArtifacts(artifactConfig);
+  if (event.data?.type === "cookies-document-request") sendDocumentCookies(event.data.id);
+}
+
+/**
+ * Rapporte au Service Worker les cookies VISIBLES DU DOCUMENT.
+ *
+ * Un worker n'a pas de DOM : `document.cookie` lui est inaccessible, et le
+ * navigateur ne lui montre pas non plus l'en-tête `Cookie` des requêtes qu'il
+ * intercepte. Sans ce relais, les cookies que l'application se pose elle-même
+ * en JavaScript (fuseau horaire, locale, bandeau de consentement, js-cookie)
+ * n'atteignent plus jamais le serveur — l'iframe est same-origin, donc cette
+ * page voit exactement les mêmes que l'application, aux cookies de chemin
+ * `/app` près (vérifié dans tests/e2e/cookies-proxy.e2e.spec.mjs).
+ *
+ * On n'envoie que ce que le navigateur nous montre : jamais un `HttpOnly`. Le
+ * bocal du worker reste autoritaire, un nom qu'il porte déjà n'est pas écrasé.
+ * @param {unknown} id identifiant de la demande, à renvoyer tel quel
+ */
+function sendDocumentCookies(id) {
+  navigator.serviceWorker.controller?.postMessage({
+    type: "cookies-document",
+    id,
+    cookie: document.cookie,
+  });
 }
 
 /** @param {Record<string, any> | null} config */

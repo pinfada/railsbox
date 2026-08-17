@@ -41,7 +41,12 @@ import {
   obsoleteCacheNames,
   staleFormatCacheNames,
 } from "./shared/artifact-cache.js";
-import { createCookieJar, extractSetCookie, mergeBrowserCookies } from "./shared/cookie-jar.js";
+import {
+  createCookieJar,
+  extractSetCookie,
+  mergeBrowserCookies,
+  parseDocumentCookie,
+} from "./shared/cookie-jar.js";
 
 // lib.webworker type `self` en WorkerGlobalScope générique : ce fichier est
 // un Service Worker, on le déclare une fois pour bénéficier des types
@@ -74,6 +79,24 @@ const QUOTA_HEADROOM = 0.9;
 const STORAGE_ESTIMATE_TTL_MS = 5_000;
 // Intervalle minimal entre deux demandes de configuration à la page hôte.
 const CONFIG_REQUEST_INTERVAL_MS = 2_000;
+// Délai au-delà duquel on cesse d'ATTENDRE la réponse de la coquille sur les
+// cookies qu'elle voit : la requête part alors avec le dernier rapport connu.
+// Généreux à dessein — le tout premier aller-retour a été mesuré à 1,3 s sur
+// Firefox, le temps que le worker démarre. La demande, elle, n'est jamais
+// annulée : une réponse tardive rafraîchit l'instantané, dont la requête
+// suivante profite. C'est ce qui rend l'à-coup indolore au lieu de le
+// propager.
+const DOCUMENT_COOKIE_TIMEOUT_MS = 2_000;
+// Au-delà de ce nombre d'attentes déçues d'affilée, on demande SANS attendre :
+// une coquille durablement muette (page figée, main.js d'une version
+// antérieure encore en cache) ne doit pas taxer chaque requête du délai
+// ci-dessus. La première réponse qui arrive remet le compteur à zéro.
+const DOCUMENT_COOKIE_MAX_ATTENTES = 3;
+// Une demande restée sans réponse est oubliée au bout de ce délai : sans quoi
+// une coquille muette ferait enfler la table des demandes en vol.
+const DOCUMENT_COOKIE_ABANDON_MS = 30_000;
+// Marqueur d'attente déçue, distinct de toute valeur de `document.cookie`.
+const RETARD = Symbol("retard");
 // Magasin de cookies du visiteur (voir shared/cookie-jar.js) : le navigateur
 // ne peut pas le tenir pour nous, un Service Worker ne pouvant pas faire poser
 // de cookie. Persisté en IndexedDB sous une clé dérivée de la portée — le SW
@@ -104,6 +127,14 @@ const state = {
   // Service Worker, avant la première requête relayée.
   cookiesRestored: null,
   cookieDb: null, // connexion IndexedDB du bocal, ouverte à la demande
+  // Dernier `document.cookie` rapporté par la coquille, et demandes en vol
+  // (identifiant -> résolution). L'instantané est ce qui sert quand la réponse
+  // tarde : sans lui, un seul à-coup de la page privait de leurs cookies
+  // TOUTES les requêtes qui suivaient.
+  documentCookie: "",
+  cookieAsks: new Map(),
+  nextCookieAsk: 1,
+  cookieAskFailures: 0,
 };
 
 const cookieJar = createCookieJar();
@@ -113,14 +144,20 @@ sw.addEventListener("activate", (event) =>
   event.waitUntil(Promise.all([sw.clients.claim(), dropStaleFormatCaches()])),
 );
 
-// Les deux messages de commande du worker — le pont vers la VM et l'identité
-// des artefacts — ne sont acceptés QUE du document coquille. L'iframe de
-// l'application est un client same-origin comme un autre : sans ce filtre, un
-// XSS dans l'application posait son propre `bridge-port` et recevait chaque
-// descripteur de requête, `cookie:` en clair (donc les cookies `HttpOnly`).
+// Les messages de commande du worker — le pont vers la VM, l'identité des
+// artefacts, les cookies visibles du document — ne sont acceptés QUE du
+// document coquille. L'iframe de l'application est un client same-origin comme
+// un autre : sans ce filtre, un XSS dans l'application posait son propre
+// `bridge-port` et recevait chaque descripteur de requête, `cookie:` en clair
+// (donc les cookies `HttpOnly`). Le filtre s'applique par CONSTRUCTION à tout
+// message de cette liste, y compris `cookies-document`, arrivé plus tard : un
+// client applicatif ne peut donc pas non plus dicter au proxy des cookies que
+// le navigateur ne lui montre pas.
 // La décision est pure et testée : shared/proxy-logic.js.
+const MESSAGES_COQUILLE = new Set(["artifact-config", "bridge-port", "cookies-document"]);
+
 sw.addEventListener("message", (event) => {
-  if (event.data?.type !== "artifact-config" && event.data?.type !== "bridge-port") return;
+  if (!MESSAGES_COQUILLE.has(event.data?.type)) return;
   if (!isShellClient(sourceUrl(event), { origin: sw.location.origin, basePath: BASE_PATH })) {
     warnOnce(
       "client-refuse",
@@ -130,6 +167,10 @@ sw.addEventListener("message", (event) => {
   }
   if (event.data.type === "artifact-config") {
     event.waitUntil(adoptArtifactConfig(event.data.config));
+    return;
+  }
+  if (event.data.type === "cookies-document") {
+    deliverDocumentCookies(event.data);
     return;
   }
   if (!event.ports[0]) return;
@@ -538,8 +579,8 @@ async function proxyToVm(request, url) {
  * aucun `Set-Cookie` ne l'a informé. Sans relecture explicite, un motif
  * courant des applications Rails non modifiées — fuseau horaire posé en JS,
  * locale, bandeau de consentement, js-cookie — cessait d'atteindre le serveur.
- * Le Cookie Store API le rend lisible depuis le worker ; là où il manque
- * (Firefox, WebKit), on retombe sur le bocal seul, l'état d'avant.
+ * La relecture passe par le document coquille (voir documentCookies), seul
+ * chemin qui existe sur les TROIS moteurs.
  *
  * Journalisé quand l'en-tête dépasse ce que la frontière accepte : sans cela,
  * le visiteur perdait TOUTE sa session en silence — soit le 422 que ce
@@ -550,7 +591,7 @@ async function proxyToVm(request, url) {
 async function cookieHeaderFor(requestPath) {
   const header = mergeBrowserCookies(
     cookieJar.headerFor(requestPath),
-    await browserCookies(),
+    await documentCookies(),
     requestPath,
   );
   if (header !== null && sanitizeCookieHeader(header) === null) {
@@ -564,20 +605,91 @@ async function cookieHeaderFor(requestPath) {
 }
 
 /**
- * Cookies que le navigateur tient pour cette portée, ou une liste vide là où
- * le Cookie Store API n'existe pas. Toute défaillance est sans appel : le
- * bocal seul reste le comportement de référence.
- * @returns {Promise<Array<{ name: string, value: string, path?: string }>>}
+ * Cookies que le NAVIGATEUR tient et dont le bocal n'a jamais entendu parler,
+ * relus par le seul client habilité à parler au worker : le document coquille.
+ *
+ * POURQUOI PAS LE COOKIE STORE API. C'était l'implémentation précédente, et
+ * elle ne fonctionnait que sur un moteur : `cookieStore` est absent de WebKit
+ * (mesuré, tests/e2e/cookies-proxy.e2e.spec.mjs) et n'est arrivé que
+ * tardivement dans Firefox. La fusion n'avait donc pas lieu chez deux visiteurs
+ * sur trois, et aucun test ne pouvait le voir — celui qui existait s'ignorait
+ * là où le manque était. Un Service Worker n'a pas de DOM, mais ses clients en
+ * ont un : on demande, ils répondent. Le motif est celui déjà en service pour
+ * `bridge-port` et `artifact-config`, à ceci près que le sens de la demande est
+ * inversé (c'est le worker qui interroge).
+ *
+ * CE QUE ÇA NE DONNE À PERSONNE. On n'interroge que les clients qui passent
+ * `isShellClient` — jamais l'iframe applicative, qui pourrait sinon dicter au
+ * proxy des cookies que le navigateur ne lui montre pas. Aucun secret ne
+ * circule dans ce sens : la demande est vide, la réponse ne peut porter que ce
+ * que le navigateur expose déjà à la page (jamais un `HttpOnly`), le bocal
+ * reste autoritaire à la fusion, et `mergeBrowserCookies` rejoue sur ce qui
+ * revient les validations d'`ingest` (`isTransmissibleCookie`).
+ *
+ * Clients CONTRÔLÉS uniquement : un client que ce worker ne contrôle pas n'a
+ * pas de `controller`, donc aucun moyen de répondre — l'interroger ne
+ * coûterait qu'un délai d'attente.
+ * @returns {Promise<Array<{ name: string, value: string, path: string }>>}
  */
-async function browserCookies() {
-  const store = /** @type {any} */ (sw).cookieStore;
-  if (!store?.getAll) return [];
-  try {
-    return (await store.getAll()) ?? [];
-  } catch (error) {
-    warnOnce("cookies-navigateur", `cookies du navigateur illisibles (${error.message})`);
-    return [];
-  }
+async function documentCookies() {
+  await refreshDocumentCookies();
+  return parseDocumentCookie(state.documentCookie);
+}
+
+/**
+ * Rafraîchit l'instantané des cookies du document. Attend la réponse, mais
+ * jamais au-delà du délai : passé celui-ci, la requête part avec le dernier
+ * rapport connu plutôt que sans rien. La demande reste en vol, et la réponse
+ * qui finit par arriver sert la requête suivante.
+ * @returns {Promise<void>}
+ */
+async function refreshDocumentCookies() {
+  const clientList = await sw.clients.matchAll({ type: "window" });
+  const coquilles = clientList.filter((client) =>
+    isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH }),
+  );
+  if (coquilles.length === 0) return;
+  const id = state.nextCookieAsk++;
+  const reponse = new Promise((resolve) => {
+    state.cookieAsks.set(id, resolve);
+    setTimeout(() => state.cookieAsks.delete(id), DOCUMENT_COOKIE_ABANDON_MS);
+  });
+  // Toutes les coquilles ouvertes sont interrogées, la première réponse gagne :
+  // elles sont same-origin, donc elles voient le même magasin.
+  for (const client of coquilles) client.postMessage({ type: "cookies-document-request", id });
+  if (state.cookieAskFailures >= DOCUMENT_COOKIE_MAX_ATTENTES) return;
+  const arrivee = await Promise.race([reponse, retarder(DOCUMENT_COOKIE_TIMEOUT_MS)]);
+  if (arrivee !== RETARD) return;
+  state.cookieAskFailures += 1;
+  warnOnce(
+    "cookies-document",
+    "la page hôte tarde à rapporter ses cookies — ceux que l'application pose " +
+      "en JavaScript peuvent manquer d'une requête",
+  );
+}
+
+/**
+ * @param {number} delai
+ * @returns {Promise<symbol>}
+ */
+function retarder(delai) {
+  return new Promise((resolve) => setTimeout(() => resolve(RETARD), delai));
+}
+
+/**
+ * Rapport d'une coquille sur ses cookies. L'instantané est mis à jour même
+ * quand la demande correspondante a expiré : c'est ce qui fait que le
+ * dispositif se remet tout seul d'un à-coup de la page.
+ * @param {{ id?: unknown, cookie?: unknown }} data
+ */
+function deliverDocumentCookies(data) {
+  if (typeof data.cookie !== "string") return;
+  state.documentCookie = data.cookie;
+  const resoudre = state.cookieAsks.get(data.id);
+  if (!resoudre) return;
+  state.cookieAsks.delete(data.id);
+  state.cookieAskFailures = 0;
+  resoudre(data.cookie);
 }
 
 /**

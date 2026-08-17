@@ -251,6 +251,45 @@ export function serializeCookies(cookies) {
 }
 
 /**
+ * Analyse une valeur de `document.cookie` rapportée par un client.
+ *
+ * POURQUOI CE DÉTOUR. Un Service Worker n'a pas de DOM : `document.cookie` lui
+ * est inaccessible, et le navigateur ne lui montre pas davantage l'en-tête
+ * `Cookie` des requêtes qu'il intercepte. Seul un CLIENT peut lire ces
+ * cookies-là et les lui rapporter — d'où ce format d'entrée, qui est exactement
+ * la chaîne que le navigateur expose au document, valeurs comprises telles
+ * qu'elles repartiraient dans un en-tête `Cookie:`.
+ *
+ * AUCUN CHEMIN N'Y FIGURE, et il n'en manque pas : le navigateur ne montre à un
+ * document que les cookies dont le chemin apparie DÉJÀ celui du document. Le
+ * seul rapporteur autorisé étant la coquille (servie à la racine de
+ * publication), tout ce qu'elle voit apparie par construction « <base>/app/… » ;
+ * leur prêter « / » ne les élargit donc pas. Le revers est réel et assumé : un
+ * cookie posé par l'application SANS `path` explicite prend « <base>/app » pour
+ * chemin, reste invisible de la coquille, et n'est donc pas récupéré — la même
+ * limite exactement que celle du Cookie Store API, dont la portée est celle de
+ * l'enregistrement du worker.
+ * @param {unknown} raw valeur brute de `document.cookie`, telle qu'un client la
+ *   rapporte — donc de type non garanti, comme tout ce qui vient d'un message
+ * @returns {Array<{ name: string, value: string, path: string }>}
+ */
+export function parseDocumentCookie(raw) {
+  if (typeof raw !== "string" || raw === "") return [];
+  const cookies = [];
+  for (const paire of raw.split(";")) {
+    const separateur = paire.indexOf("=");
+    // « = » en position 0 ou absent : cookie à nom vide, que le navigateur
+    // rend comme sa seule valeur. Sans nom, rien à réémettre.
+    if (separateur <= 0) continue;
+    const name = paire.slice(0, separateur).trim();
+    const value = paire.slice(separateur + 1).trim();
+    if (name === "") continue;
+    cookies.push({ name, value, path: "/" });
+  }
+  return cookies;
+}
+
+/**
  * Complète l'en-tête du bocal avec les VRAIS cookies du navigateur qu'il ne
  * connaît pas.
  *

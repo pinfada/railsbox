@@ -750,6 +750,14 @@ reviendrait à déconnecter le visiteur. `document.cookie` reste vide côté pag
 ce qui n'est PAS une mise hors de portée du script : voir
 [`SECURITY.md`](SECURITY.md).
 
+Le bocal n'est pas la seule source : l'iframe étant same-origin, un
+`document.cookie = "timezone=…"` posé par l'application crée un vrai cookie du
+navigateur dont aucune réponse de la VM n'a parlé. Un Service Worker n'ayant
+pas de DOM, il les **demande à la page hôte** (`cookies-document-request`) et
+les ajoute à l'en-tête sans jamais supplanter les siens. Ce relais a remplacé
+un premier essai fondé sur le Cookie Store API, qui n'existait que sur un
+moteur sur trois.
+
 Corollaire de sécurité, découvert en revue : ce magasin attache le cookie de
 session à **toute** requête que le Service Worker relaie — or un SW prend en
 charge les **navigations** vers sa portée quelle qu'en soit l'origine
