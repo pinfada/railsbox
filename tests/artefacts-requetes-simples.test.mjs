@@ -87,10 +87,16 @@ function corpsFonction(source, prefixe) {
 }
 
 test("aucun fetch de la coquille n'ajoute d'en-tête à ses requêtes", () => {
-  // main.js (v86-config.json) et v86-vm.js (instantané pré-calculé) sont les
-  // deux seuls endroits où NOTRE code télécharge un artefact. Un `headers:`
-  // y suffirait à préflighter la requête une fois la base cross-origin.
-  for (const fichier of ["public/main.js", "public/vm/v86-vm.js", "public/env-drawer.js"]) {
+  // main.js (v86-config.json) et shared/snapshot-parts.js (instantané
+  // pré-calculé, entier ou en morceaux) sont les seuls endroits où NOTRE code
+  // télécharge un artefact. Un `headers:` y suffirait à préflighter la requête
+  // une fois la base cross-origin.
+  for (const fichier of [
+    "public/main.js",
+    "public/vm/v86-vm.js",
+    "public/shared/snapshot-parts.js",
+    "public/env-drawer.js",
+  ]) {
     for (const appel of appelsFetch(lire(fichier))) {
       assert.doesNotMatch(
         appel,
@@ -109,6 +115,7 @@ test("le code du navigateur n'écrit jamais d'en-tête de requête non safelist�
     "public/main.js",
     "public/vm/v86-vm.js",
     "public/sw-proxy.js",
+    "public/shared/snapshot-parts.js",
     "public/shared/v86-config.js",
   ]) {
     const source = lire(fichier);
@@ -238,4 +245,47 @@ test("le workflow de publication découpe toujours la base et l'application", ()
   const workflow = lire(".github/workflows/construire-sandbox.yml");
   assert.match(workflow, /--base-chunk-size/, "la base publiée doit être découpée");
   assert.match(workflow, /--app-chunk-size/, "le disque applicatif publié doit être découpé");
+});
+
+test("le workflow de publication découpe aussi l'instantané", () => {
+  // L'instantané a rejoint les disques (ADR 0003) : publié d'un seul tenant, la
+  // limite de 95 Mo par fichier de Pages devenait un plafond de mémoire
+  // utilisable — atteint par la première application tierce réelle, au dernier
+  // mètre d'une construction de vingt minutes.
+  const workflow = lire(".github/workflows/construire-sandbox.yml");
+  assert.match(
+    workflow,
+    /split-artifact\.mjs \\\n\s*"public\/disks\/\$\{nom\}-split-state\.bin" --gzip/,
+    "l'instantané publié doit être découpé en morceaux gzippés",
+  );
+  assert.doesNotMatch(
+    workflow,
+    /gzip -kf "public\/disks\/\$\{nom\}-split-state\.bin"/,
+    "l'instantané ne doit plus être publié d'un seul tenant",
+  );
+});
+
+test("la coquille lit les morceaux de l'instantané par des GET nus", () => {
+  // Même contrainte que pour les disques, sur un chemin que v86 ne fournit
+  // pas : c'est NOTRE code qui télécharge, donc c'est à lui de ne poser ni
+  // en-tête ni Range. Un `Range:` suffirait à préflighter, et le dépôt
+  // d'artefacts répond 405 à OPTIONS.
+  const source = lire("public/shared/snapshot-parts.js");
+  // Le chemin doit exister, sans quoi les assertions ci-dessous porteraient
+  // sur rien.
+  assert.match(
+    source,
+    /async function fetchPart/,
+    "le chemin des morceaux d'instantané doit exister dans la coquille",
+  );
+  for (const appel of appelsFetch(source)) {
+    assert.doesNotMatch(appel, /range/i, `ce fetch demande un Range — ${appel}`);
+    // Aucun init : `cache: "no-store"` suffirait à injecter Pragma et
+    // Cache-Control, donc à préflighter la requête (même règle que sw-proxy.js).
+    assert.doesNotMatch(
+      appel,
+      /[{,]\s*headers|cache\s*:|mode\s*:|credentials\s*:/,
+      `ce fetch modifie la requête — ${appel}`,
+    );
+  }
 });

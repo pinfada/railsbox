@@ -101,7 +101,7 @@ construction affiche l'étage retenu, la version de Ruby et la base détectée.
 | Ce que fait le visiteur | Mesuré |
 | --- | --- |
 | Application affichée | **~20–25 s** (instantané restauré) |
-| Téléchargé pour cela | ~32 Mo depuis le dépôt d'artefacts + l'instantané gzippé |
+| Téléchargé pour cela | ~32 Mo depuis le dépôt d'artefacts + l'instantané, en morceaux de 4 Mio gzippés (76 Mo pour la démonstration) |
 | Navigation, formulaires, POST | normaux, servis par la VM |
 
 Pendant l'attente, une barre nomme l'étape en cours et compte les secondes
@@ -806,10 +806,26 @@ Secret `publish-key` : clé de déploiement en écriture, **obligatoire** dès q
 `target-repo` est renseigné — le jeton du workflow ne vaut que pour le dépôt
 courant.
 
-Deux garde-fous refusent explicitement plutôt que de publier une démonstration
-qui échouerait au chargement : la limite de **95 Mo par fichier** de GitHub
-Pages, et une application dont l'étage amd64 ne produit **aucun** asset (une
-application sans CSS est une panne que le visiteur découvrirait à l'affichage).
+Trois garde-fous refusent explicitement plutôt que de publier une démonstration
+qui échouerait au chargement : l'absence d'un **inventaire de morceaux**
+(`-parts.json`) pour le disque applicatif ou l'instantané, signe qu'une étape de
+découpage a été sautée ; un fichier au-delà de la limite de **95 Mo par fichier**
+de GitHub Pages ; et une application dont l'étage amd64 ne produit **aucun**
+asset (une application sans CSS est une panne que le visiteur découvrirait à
+l'affichage).
+
+Le second ne peut plus concerner un artefact de la VM : rootfs, disque
+applicatif **et instantané mémoire** sont découpés en morceaux de 4 Mio
+([ADR 0003](docs/decisions/0003-artefacts-en-fichiers-parties.md)). Un fichier
+encore trop gros vient donc de l'application, et le message le dit — il n'y a
+rien à découper, il y a quelque chose à alléger.
+
+Ce troisième découpage est récent, et il a une histoire. L'instantané était
+publié d'un seul tenant parce que rien n'obligeait à faire autrement : gzippé,
+celui de la démonstration pèse 76 Mo. La limite de l'hébergeur était donc
+devenue, sans que rien ne le dise, **un plafond de mémoire utilisable** — une
+application plus lourde (PostgreSQL, Rails 7.1, un back-office) produit 118 Mo
+d'instantané et la construction échouait à la dernière minute des vingt.
 
 ### Épingler une version de Ruby : ce que `base:` permet, et ce qu'il ne permet pas
 
@@ -1240,8 +1256,8 @@ Storage**, en stratégie « cache d'abord » :
 
 | Point | Choix |
 | --- | --- |
-| Ce qui est mis en cache | les fichiers-parties des disques découpés, le noyau, l'initrd — **et rien d'autre que ce qui est nommé dans la configuration v86** |
-| Ce qui ne l'est pas | l'instantané mémoire, déjà mis en cache par la page dans IndexedDB ; un disque lu par requêtes `Range`, dont les réponses 206 sont refusées par Cache Storage ; toute requête portant un en-tête `Range` |
+| Ce qui est mis en cache | les fichiers-parties des disques découpés **et de l'instantané**, le noyau, l'initrd — **et rien d'autre que ce qui est nommé dans la configuration v86** |
+| Ce qui ne l'est pas | un instantané publié d'un seul tenant (sandbox d'avant le découpage), qui est de toute façon mis en cache par la page dans IndexedDB ; un disque lu par requêtes `Range`, dont les réponses 206 sont refusées par Cache Storage ; toute requête portant un en-tête `Range` |
 | Nom du cache | dérivé de la configuration entière, `builtAt` compris. L'URL du disque applicatif étant stable d'une construction à l'autre, un cache indexé par la seule URL panacherait les morceaux de deux images après une reconstruction — c'est-à-dire corromprait le système de fichiers. Un changement de configuration bascule sur un cache neuf et supprime l'ancien. |
 | En-têtes | **aucun n'est ajouté.** Les requêtes vers Pages doivent rester « simples » au sens CORS, sous peine d'un préflight que l'hébergeur ne sait pas honorer ([ADR 0001](docs/decisions/0001-distribution-artefacts.md)). La requête est réémise telle quelle, la réponse rendue telle quelle. |
 | Quota | `StorageManager.estimate` avant écriture, marge de 10 % ; un échec d'écriture est journalisé une fois et sans effet — **la requête aboutit toujours**, avec ou sans cache. |
@@ -1376,14 +1392,58 @@ fourni par l'image monte l'application via `Rack::URLMap`, **sans toucher au cod
 applicatif**. Défaut trouvé en cliquant sur un lien — pas en regardant la page
 d'accueil s'afficher.
 
-### Quatre pièges de l'instantané mémoire
+### Cinq pièges de l'instantané mémoire
 
 | Piège | Traitement |
 | --- | --- |
 | Gel d'horloge | trame `TIME` + `date -s` au-delà de 2 s de dérive |
 | Fuite mémoire — `URL.createObjectURL` sur 650 Mo n'est jamais libéré | supprimé à la racine : v86 accepte `initial_state: { buffer }` |
-| Boot à froid de 13 min chez l'utilisateur | instantané généré en CI, livré en gzip, téléchargé si le cache local est vide |
+| Boot à froid de 13 min chez l'utilisateur | instantané généré en CI, livré compressé, téléchargé si le cache local est vide |
+| Publié d'un seul tenant, il butait sur les 95 Mo par fichier de Pages | découpé en morceaux de 4 Mio gzippés, comme les disques, et réassemblé par la coquille (voir ci-dessous) |
 | v86 émet **un événement JS par octet** (369 282 pour le CSS) | assembleur `Uint8Array` pré-alloué : **24 ns/octet**, 8,9 ms pour 270 Ko |
+
+### L'instantané en morceaux : découper avant ou après la compression ?
+
+Les disques sont découpés depuis l'[ADR 0003](docs/decisions/0003-artefacts-en-fichiers-parties.md)
+parce que **v86 sait lire des morceaux tout seul**. L'instantané, non : c'est la
+coquille qui le télécharge et le passe à v86 en `ArrayBuffer`. Le découper
+supposait donc d'écrire le réassemblage — et le format restait libre. Deux
+options, tranchées à la mesure sur l'instantané de la démonstration (273 Mo
+bruts) :
+
+| Stratégie | Publié | Ratio | Morceaux |
+| --- | --- | --- | --- |
+| gzip d'un seul tenant (avant) | 79 819 683 o | 27,86 % | 1 |
+| **découpe 4 Mio puis gzip par morceau** | **79 843 531 o** | **27,87 %** | **69** |
+| découpe 16 Mio puis gzip par morceau | 79 833 378 o | 27,86 % | 18 |
+
+**Découper avant de compresser coûte 0,03 %** — 23 848 octets sur 76 Mo. Une
+image mémoire n'a pas de redondance à longue portée, et la fenêtre de gzip
+n'exploitait déjà rien au-delà de quelques centaines de kilo-octets. Le seul
+argument en faveur de « compresser d'abord, découper le `.gz` » ne pèse donc
+rien, alors qu'il coûterait trois choses : des bornes de morceaux exprimées dans
+un flux compressé (donc sans rapport avec l'artefact, et la convention de nommage
+de v86 ne voudrait plus rien dire), l'impossibilité de réessayer un morceau seul,
+et un flux unique de plusieurs centaines de Mo à faire transiter au
+réassemblage.
+
+Trois conséquences pratiques :
+
+- **gzip et non zstd**, seule divergence avec les disques. Ceux-là sont
+  décompressés par v86, qui embarque son décodeur zstd ; l'instantané l'est par
+  nous, avec `DecompressionStream` — gzip sur les trois moteurs, zstd sur un
+  seul.
+- **Un seul tampon alloué**, à la taille annoncée par l'inventaire, où chaque
+  morceau est écrit à sa place. Mesuré dans un vrai Chromium sur l'instantané de
+  la démonstration : pic de l'onglet **834 Mo** avec l'ancien chemin (qui
+  matérialisait le flux décompressé avant de le recopier), **680 à 734 Mo** avec
+  le nouveau — soit **100 à 155 Mo de moins**, pour un temps de boot inchangé
+  (19,1 s contre 19,2 s jusqu'au badge HTTP vert).
+- **C'est la présence de l'inventaire `-parts.json` qui décide du format**, pas
+  un champ de configuration. Une sandbox publiée avant le découpage n'en a pas :
+  la coquille retombe sur le fichier d'un seul tenant, et il n'y a rien à
+  reconstruire. Les deux chemins sont exécutés par `npm test`
+  (`tests/snapshot-transport.test.mjs`), avec de vrais octets gzippés.
 
 ### Un Service Worker ne peut pas poser de cookie
 

@@ -17,8 +17,9 @@
 // Deux invariants gouvernent tout ce qui suit :
 //
 //  1. ON NE CACHE QUE CE QUI EST NOMMÉ DANS LA CONFIGURATION V86. Pas
-//     d'heuristique sur l'URL seule : le disque, le disque applicatif, le
-//     noyau et l'initrd de la configuration courante, et rien d'autre.
+//     d'heuristique sur l'URL seule : le disque, le disque applicatif,
+//     l'instantané, le noyau et l'initrd de la configuration courante, et rien
+//     d'autre.
 //  2. LE NOM DU CACHE PORTE L'IDENTITÉ DE LA CONSTRUCTION. L'URL du disque
 //     applicatif (`disks/<app>-app.ext2.zst`) est stable d'une construction à
 //     l'autre : un cache indexé par la seule URL servirait des morceaux
@@ -118,9 +119,18 @@ export function isCacheableRequestShape({ method, rangeHeader }) {
  * Les disques ne sont retenus QUE s'ils sont découpés en fichiers-parties
  * (`diskChunkSize` / `appDiskChunkSize`, ADR 0003) : un disque d'un seul
  * tenant est lu par requêtes Range, hors du périmètre de ce cache.
+ *
+ * L'INSTANTANÉ, lui, est retenu SANS CONDITION, et c'est volontaire. Il est
+ * découpé depuis 2026-08-17 (même ADR), mais la configuration ne le dit pas :
+ * c'est la présence de son inventaire `-parts.json` qui tranche, côté coquille,
+ * pour que les sandboxes déjà publiées continuent de fonctionner sans être
+ * reconstruites. Le retenir ici est sans risque — un instantané d'un seul
+ * tenant n'engendre aucune URL de la forme « fichier-partie », donc aucune
+ * requête ne peut correspondre — et cela évite d'ajouter à la configuration un
+ * champ qui pourrait diverger de la réalité des fichiers publiés.
  * @param {Record<string, any> | null | undefined} config
  * @param {string} baseHref racine de publication (portée du Service Worker)
- * @returns {{ kernel: string | null, initrd: string | null, disks: string[] }}
+ * @returns {{ kernel: string | null, initrd: string | null, disks: string[], state: string | null }}
  */
 export function immutableArtifacts(config, baseHref) {
   const absolute = (value) => {
@@ -139,13 +149,14 @@ export function immutableArtifacts(config, baseHref) {
     kernel: absolute(config?.kernel),
     initrd: absolute(config?.initrd),
     disks: /** @type {string[]} */ (disks.filter((url) => url !== null)),
+    state: absolute(config?.state),
   };
 }
 
 /**
  * Une URL désigne-t-elle un artefact immuable de la configuration courante ?
- * C'est la vérification qui fait foi : elle n'accepte que le noyau, l'initrd
- * et les morceaux des disques effectivement déclarés.
+ * C'est la vérification qui fait foi : elle n'accepte que le noyau, l'initrd,
+ * et les morceaux des disques et de l'instantané effectivement déclarés.
  * @param {string} url URL absolue
  * @param {ReturnType<typeof immutableArtifacts> | null | undefined} artifacts
  * @returns {boolean}
@@ -155,7 +166,8 @@ export function isCacheableArtifactUrl(url, artifacts) {
   const href = String(url);
   if (href === artifacts.kernel || href === artifacts.initrd) return true;
   const parent = artifactUrlOfPart(href);
-  return parent !== null && artifacts.disks.includes(parent);
+  if (parent === null) return false;
+  return parent === artifacts.state || artifacts.disks.includes(parent);
 }
 
 // Champs de la configuration qui identifient une construction. Tout ce qui
@@ -172,6 +184,9 @@ const IDENTITY_FIELDS = [
   "appDiskChunkSize",
   "kernel",
   "initrd",
+  // L'instantané est mis en cache morceau par morceau au même titre que les
+  // disques : son identité doit donc entrer dans celle du cache.
+  "state",
 ];
 
 /**

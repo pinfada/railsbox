@@ -136,12 +136,68 @@ test("isCacheableArtifactUrl n'accepte que les artefacts déclarés", () => {
   assert.equal(cacheable("https://ailleurs.example/pirate-0-4194304.ext2.zst"), false);
   // Le disque complet n'est pas un morceau.
   assert.equal(cacheable("https://compte.github.io/depot/disks/demo-app.ext2.zst"), false);
-  // L'instantané est déjà mis en cache par la page (IndexedDB).
+  // L'instantané COMPLET non plus : il est téléchargé d'un bloc et mis en
+  // cache par la page dans IndexedDB. Seuls ses morceaux passent ici.
   assert.equal(cacheable("https://compte.github.io/depot/disks/demo-state.bin.gz"), false);
 });
 
 test("isCacheableArtifactUrl est faux sans inventaire", () => {
   assert.equal(isCacheableArtifactUrl("/disks/demo-app-0-4194304.ext2", null), false);
+});
+
+// --- Morceaux de l'instantané (ADR 0003, extension de 2026-08-17) ----------
+
+test("les morceaux de l'instantané sont mis en cache comme ceux des disques", () => {
+  // Sans cela, le visiteur qui revient retéléchargerait l'instantané entier
+  // dès que son cache IndexedDB a été évincé — le plus gros transfert de la
+  // sandbox, et celui que GitHub Pages plafonne à max-age=600.
+  const config = productionConfig({ state: "disks/demo-split-state.bin.gz" });
+  const artefacts = immutableArtifacts(config, BASE_HREF);
+  assert.equal(artefacts.state, "https://compte.github.io/depot/disks/demo-split-state.bin.gz");
+
+  const morceau = partName(
+    "https://compte.github.io/depot/disks/demo-split-state.bin.gz",
+    8 * DEFAULT_CHUNK_BYTES,
+    DEFAULT_CHUNK_BYTES,
+  );
+  assert.equal(looksLikeImmutableArtifact(morceau), true);
+  assert.equal(isCacheableArtifactUrl(morceau, artefacts), true);
+});
+
+test("l'instantané est retenu même quand la configuration ne dit pas qu'il est découpé", () => {
+  // La configuration ne porte AUCUN « stateChunkSize » : c'est la présence de
+  // l'inventaire `-parts.json` qui tranche, côté coquille, pour que les
+  // sandboxes déjà publiées continuent de se charger sans être reconstruites.
+  // Le retenir ici est sans risque — un instantané d'un seul tenant n'engendre
+  // aucune URL de la forme « fichier-partie », donc aucune requête à mettre en
+  // cache — et évite un champ de configuration qui pourrait mentir.
+  const config = productionConfig({ state: "disks/demo-split-state.bin.gz" });
+  assert.equal("stateChunkSize" in config, false);
+  assert.notEqual(immutableArtifacts(config, BASE_HREF).state, null);
+});
+
+test("un morceau d'instantané étranger à la configuration reste au réseau", () => {
+  const artefacts = immutableArtifacts(
+    productionConfig({ state: "disks/demo-split-state.bin.gz" }),
+    BASE_HREF,
+  );
+  assert.equal(
+    isCacheableArtifactUrl(
+      "https://compte.github.io/depot/disks/autre-app-state.bin-0-4194304.gz",
+      artefacts,
+    ),
+    false,
+  );
+});
+
+test("changer d'instantané change le nom du cache", () => {
+  // L'instantané est désormais un artefact mis en cache : son identité doit
+  // entrer dans celle du cache, sans quoi une reconstruction resservirait les
+  // morceaux de la précédente — un instantané panaché, donc une VM corrompue.
+  assert.notEqual(
+    cacheNameFor(productionConfig({ state: "disks/demo-split-state.bin.gz" })),
+    cacheNameFor(productionConfig({ state: "disks/demo-autre-state.bin.gz" })),
+  );
 });
 
 // --- Nom de cache et invalidation ------------------------------------------

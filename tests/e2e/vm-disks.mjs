@@ -33,13 +33,20 @@ function artifactExists(name) {
 /**
  * Ne retient que les références LOCALES : une URL absolue désigne le dépôt
  * d'artefacts, que le navigateur ira chercher lui-même.
+ *
+ * Les deux écritures de chemin local sont acceptées. La publication émet du
+ * relatif (`disks/x`, obligatoire sur un Pages de projet, ADR 0004) ; une
+ * construction locale émet de l'absolu (`/disks/x`). N'accepter que la première
+ * faisait s'ignorer TOUTE la suite VM d'un contributeur qui venait de
+ * construire ses artefacts — et un test qui s'ignore ressemble trait pour trait
+ * à un test qui passe.
  * @param {unknown} value valeur d'une clé de la configuration v86
  * @returns {string | null} chemin relatif à public/disks/, ou null
  */
 function localArtifact(value) {
   if (typeof value !== "string" || value === "") return null;
   if (/^https?:\/\//.test(value)) return null;
-  return value.replace(/^disks\//, "");
+  return value.replace(/^\/?disks\//, "");
 }
 
 /**

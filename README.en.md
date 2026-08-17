@@ -99,7 +99,7 @@ summary reports the stage it picked, the Ruby version and the detected database.
 | What the visitor does | Measured |
 | --- | --- |
 | Application on screen | **~20–25 s** (snapshot restored) |
-| Downloaded to get there | ~32 MB from the artifact repository + the gzipped snapshot |
+| Downloaded to get there | ~32 MB from the artifact repository + the snapshot, in gzipped 4 MiB chunks (76 MB for the demo) |
 | Navigation, forms, POSTs | normal, served by the VM |
 
 While the visitor waits, a status bar names the current step and counts the
@@ -755,10 +755,24 @@ The `publish-key` secret — a write deploy key — is **required** as soon as
 `target-repo` is set: the workflow token is only valid for the current
 repository.
 
-Two guardrails refuse outright rather than publish a demo that would fail to
-load: GitHub Pages' **95 MB per-file limit**, and an application whose amd64
-stage produces **no** assets at all (an application with no CSS is a failure the
-visitor would discover when the page renders).
+Three guardrails refuse outright rather than publish a demo that would fail to
+load: a missing **chunk inventory** (`-parts.json`) for the application disk or
+the snapshot, which means a splitting step was skipped; a file beyond GitHub
+Pages' **95 MB per-file limit**; and an application whose amd64 stage produces
+**no** assets at all (an application with no CSS is a failure the visitor would
+discover when the page renders).
+
+The second can no longer be a VM artifact: rootfs, application disk **and memory
+snapshot** are all split into 4 MiB chunks
+([ADR 0003](docs/decisions/0003-artefacts-en-fichiers-parties.md)). A file still
+over the limit therefore comes from the application, and the message says so —
+there is nothing to split, there is something to trim.
+
+That third split is recent, and it has a history. The snapshot was published as a
+single file because nothing forced otherwise: gzipped, the demo's weighs 76 MB.
+The host's limit had therefore quietly become **a ceiling on usable memory** — a
+heavier application (PostgreSQL, Rails 7.1, an admin back end) produces a 118 MB
+snapshot, and the build failed on the last minute of twenty.
 
 ### Pinning a Ruby version: what `base:` allows, and what it does not
 
@@ -1165,8 +1179,8 @@ cache in Cache Storage**, cache-first:
 
 | Point | Choice |
 | --- | --- |
-| What is cached | the part-files of the split disks, the kernel, the initrd — **and nothing beyond what the v86 configuration names** |
-| What is not | the memory snapshot, already cached by the page in IndexedDB; a disk read via `Range` requests, whose 206 responses Cache Storage rejects; any request carrying a `Range` header |
+| What is cached | the part-files of the split disks **and of the snapshot**, the kernel, the initrd — **and nothing beyond what the v86 configuration names** |
+| What is not | a snapshot published as a single file (a sandbox built before the split), which the page caches in IndexedDB anyway; a disk read via `Range` requests, whose 206 responses Cache Storage rejects; any request carrying a `Range` header |
 | Cache name | derived from the whole configuration, `builtAt` included. Since the application disk URL is stable across builds, a cache keyed by URL alone would blend chunks from two images after a rebuild — that is, corrupt the filesystem. A configuration change switches to a fresh cache and deletes the old one. |
 | Headers | **none are added.** Requests to Pages must stay "simple" in the CORS sense, otherwise they trigger a preflight the host cannot honour ([ADR 0001](docs/decisions/0001-distribution-artefacts.md)). The request is replayed as is, the response returned as is. |
 | Quota | `StorageManager.estimate` before writing, with a 10% margin; a write failure is logged once and has no effect — **the request always completes**, cache or no cache. |
@@ -1289,14 +1303,53 @@ root. The fix is standard sub-URI deployment: a `config.ru` provided by the imag
 mounts the application through `Rack::URLMap`, **without touching application
 code**. Found by clicking a link — not by watching the home page render.
 
-**Four memory-snapshot traps.**
+**Five memory-snapshot traps.**
 
 | Trap | Treatment |
 | --- | --- |
 | Clock freeze | `TIME` frame + `date -s` beyond 2 s of drift |
 | Memory leak — `URL.createObjectURL` on 650 MB is never released | removed at the root: v86 accepts `initial_state: { buffer }` |
-| 13-minute cold boot for the user | snapshot generated in CI, shipped gzipped, downloaded when the local cache is empty |
+| 13-minute cold boot for the user | snapshot generated in CI, shipped compressed, downloaded when the local cache is empty |
+| Published as one file, it hit Pages' 95 MB per-file limit | split into gzipped 4 MiB chunks, like the disks, and reassembled by the shell (see below) |
 | v86 emits **one JS event per byte** (369,282 for the stylesheet) | pre-allocated `Uint8Array` assembler: **24 ns/byte**, 8.9 ms for 270 KB |
+
+**Splitting the snapshot: before or after compression?** The disks have been
+split since [ADR 0003](docs/decisions/0003-artefacts-en-fichiers-parties.md)
+because **v86 can read chunks on its own**. The snapshot cannot: the shell
+downloads it and hands v86 an `ArrayBuffer`. Splitting it meant writing the
+reassembly ourselves — so the format was ours to choose. Two options, settled by
+measurement on the demo's snapshot (273 MB raw):
+
+| Strategy | Published | Ratio | Chunks |
+| --- | --- | --- | --- |
+| single gzip file (before) | 79,819,683 B | 27.86% | 1 |
+| **split at 4 MiB, then gzip each chunk** | **79,843,531 B** | **27.87%** | **69** |
+| split at 16 MiB, then gzip each chunk | 79,833,378 B | 27.86% | 18 |
+
+**Splitting before compressing costs 0.03%** — 23,848 bytes out of 76 MB. A
+memory image has no long-range redundancy, and gzip's window was already
+exploiting nothing beyond a few hundred kilobytes. The one argument for
+"compress first, split the `.gz`" therefore weighs nothing, while it would cost
+three things: chunk boundaries expressed in a *compressed* stream (unrelated to
+the artifact, making v86's naming convention meaningless), no way to retry a
+single chunk, and a single several-hundred-MB stream to pipe through at
+reassembly.
+
+Three practical consequences:
+
+- **gzip, not zstd** — the only divergence from the disks. Those are decompressed
+  by v86, which ships its own zstd decoder; the snapshot is decompressed by us,
+  with `DecompressionStream`: gzip on all three engines, zstd on one.
+- **One buffer, allocated once** at the size the inventory announces, with each
+  chunk written at its offset. Measured in a real Chromium on the demo's
+  snapshot: tab peak **834 MB** on the old path (which materialised the
+  decompressed stream before copying it), **680–734 MB** on the new one — **100
+  to 155 MB less**, for an unchanged boot time (19.1 s vs 19.2 s to a green HTTP
+  badge).
+- **The presence of the `-parts.json` inventory decides the format**, not a
+  configuration field. A sandbox published before the split has none: the shell
+  falls back to the single file, and nothing needs rebuilding. Both paths run
+  under `npm test` (`tests/snapshot-transport.test.mjs`), on real gzipped bytes.
 
 **A Service Worker cannot set a cookie.** `Set-Cookie` is a *forbidden*
 response header on a constructed `Response`: the Fetch API drops it silently.

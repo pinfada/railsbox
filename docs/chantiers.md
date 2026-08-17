@@ -75,7 +75,10 @@ corollaire mesurable : `tests/e2e/vm-disks.mjs` exige encore
 ~~`jiyufit.ext2` et `jiyufit-state.bin`, des noms de la voie monolithique~~ (corrigé : le portail lit désormais `v86-config.json` — voir `tests/e2e/vm-disks.mjs`) — anciennement des noms de la voie monolithique
 héritée. Autrement dit, **même avec des artefacts découpés valides,
 `tests/e2e/vm-boot.e2e.spec.mjs` s'ignore** — et un test ignoré ressemble trait
-pour trait à un test réussi.
+pour trait à un test réussi. (Second volet corrigé le 2026-08-17 : le portail
+acceptait les chemins relatifs de la publication mais pas les chemins absolus
+qu'écrit une construction locale, ce qui suffisait à faire s'ignorer toute la
+suite VM chez le contributeur qui venait pourtant de tout construire.)
 
 Deux pièges à traiter, sans quoi le script ne servira à rien :
 
@@ -238,7 +241,10 @@ mobile comme praticable, pas comme garanti. » Deux inconnues restent entières 
 un processeur de téléphone réel est plus lent qu'un émulateur de bureau, et la
 mémoire d'un onglet mobile est arbitrée par le système, qui peut tuer l'onglet
 au moment précis où l'instantané de plusieurs centaines de mégaoctets est
-restauré.
+restauré. Le découpage de l'instantané (ADR 0003, 2026-08-17) a fait baisser ce
+pic de 100 à 155 Mo sur la démonstration, mesuré dans un Chromium de bureau —
+c'est autant de marge gagnée, pas une garantie : seule une mesure sur appareil
+réel dira si elle suffit.
 
 C'est le chantier le moins technique et l'un des plus utiles : il ne demande pas
 de lire le code, il demande un appareil et une méthode.

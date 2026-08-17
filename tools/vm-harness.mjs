@@ -12,6 +12,8 @@
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
 import { V86 } from "v86";
 
 import { parseCurlHeaders } from "../public/shared/request-codec.js";
@@ -30,6 +32,8 @@ import {
   isSplitConfig,
   memoryBytes,
 } from "../public/shared/v86-config.js";
+
+const decompress = promisify(gunzip);
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_READY_ATTEMPTS = 240;
@@ -78,9 +82,15 @@ export async function bootHarness({
     (config.state ? toFile(config.state) : join(disksDir, `${config.name ?? "jiyufit"}-state.bin`));
   let initialState = null;
   if (useSnapshot && existsSync(resolvedStatePath)) {
+    // La configuration peut désigner l'instantané COMPRESSÉ (`state` en « .gz »
+    // dès que la publication le découpe, ADR 0003). Le navigateur décompresse
+    // avec DecompressionStream ; ici c'est zlib. Sans cela, v86 recevrait des
+    // octets gzip en guise d'instantané et repartirait en boot à froid — treize
+    // minutes, sans que rien ne dise pourquoi.
+    const brut = await readFile(resolvedStatePath);
+    const raw = /\.gz$/.test(resolvedStatePath) ? await decompress(brut) : brut;
     // Copie explicite : le Buffer de Node partage un pool interne, v86 exige
     // un ArrayBuffer propre qu'il peut consommer.
-    const raw = await readFile(resolvedStatePath);
     initialState = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
     onLog(`[harness] instantané chargé (${Math.round(initialState.byteLength / 1048576)} Mo)`);
   }
