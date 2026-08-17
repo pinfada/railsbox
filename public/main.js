@@ -4,6 +4,12 @@
 import { createEnvironmentRegistry } from "./shared/env-detector.js";
 import { createEnvironmentDrawer } from "./env-drawer.js";
 import {
+  ROLE_PRINCIPAL,
+  creerElection,
+  nomVerrou,
+  verrousDisponibles,
+} from "./shared/election-onglet.js";
+import {
   GARDE_CONTROLE,
   GARDE_ISOLATION,
   decisionReprise,
@@ -18,17 +24,31 @@ import { createVeilleController } from "./shared/veille.js";
 // démonstration (ADR 0004). Un chemin absolu y sortirait du site.
 const APP_URL = new URL("app/", document.baseURI).pathname;
 const V86_CONFIG_URL = new URL("disks/v86-config.json", document.baseURI).href;
+// Chemin de la coquille elle-même : il nomme le verrou d'élection, pour que
+// deux démonstrations publiées sur la même origine ne se bloquent pas.
+const SHELL_PATH = new URL("./", document.baseURI).pathname;
 // Deuxième chance après réparation : l'application vient d'être relancée
 // avec les nouvelles variables, elle doit rebooter (plusieurs minutes).
 const MAX_REPAIR_RETRIES = 2;
 
 let inspector = null;
+// Élection de l'onglet actif ; null tant que Web Locks n'est pas disponible.
+let election = null;
 // VM et configuration courantes, retenues au niveau du module : le Service
 // Worker peut être tué et redémarré à tout moment, et redemande alors l'une
 // ou l'autre à la page — hors de toute pile d'appel.
 let vmInstance = null;
 let artifactConfig = null;
 const MAX_LOG_LINES = 800;
+const BADGE_IDS = ["sw", "coi", "vm", "http"];
+
+const TITRE_SECONDAIRE = "Cette démonstration est déjà ouverte dans un autre onglet";
+const DETAIL_SECONDAIRE =
+  "Une seule sandbox tourne à la fois par navigateur : l'émulation x86 est lourde, et deux " +
+  "VM pour un seul service rendu doubleraient la charge du processeur sans rien apporter. " +
+  "L'autre onglet garde la main tant que vous ne la reprenez pas ici ; si vous la reprenez, " +
+  "il libère sa VM et affiche ce même message.";
+const LIBELLE_REPRISE = "Reprendre la sandbox dans cet onglet";
 
 const logElement = document.getElementById("boot-log");
 const frameElement = /** @type {HTMLIFrameElement} */ (document.getElementById("app-frame"));
@@ -53,8 +73,23 @@ function setBadge(id, ok) {
   badge.classList.add(ok ? "ok" : "error");
 }
 
+/**
+ * Remet les quatre badges dans un même état. `null` les laisse neutres : dans
+ * un onglet secondaire, rien n'est en cours, et un badge « pending » se lirait
+ * comme un chargement qui n'arrive jamais.
+ * @param {"pending" | null} etat
+ */
+function setBadges(etat) {
+  for (const id of BADGE_IDS) {
+    const badge = document.getElementById(`badge-${id}`);
+    badge.classList.remove("pending", "ok", "error");
+    if (etat) badge.classList.add(etat);
+  }
+}
+
 async function start() {
   if (!checkBrowserSupport()) return;
+  await ensureSingleSandbox();
 
   logLine("Enregistrement du Service Worker proxy…");
   await navigator.serviceWorker.register(new URL("sw-proxy.js", document.baseURI), {
@@ -118,9 +153,80 @@ async function start() {
   }
 }
 
+// Une seule VM active par navigateur. La promesse rendue ne se résout que
+// lorsque CET onglet a la main : dans un onglet secondaire, elle attend le clic
+// du visiteur sur « reprendre ici », et rien ne démarre entre-temps — ni
+// Service Worker, ni téléchargement d'artefacts, ni VM.
+//
+// Articulation avec la veille d'arrière-plan (shared/veille.js) : un onglet
+// secondaire n'a pas de VM, donc rien à suspendre, et `installBackgroundPause`
+// n'y est jamais appelé puisque `start()` s'arrête ici. Une reprise ne peut
+// venir que d'un clic, donc d'un onglet visible : aucun onglet masqué ne
+// démarre de VM dans le dos du visiteur.
+async function ensureSingleSandbox() {
+  if (!verrousDisponibles(window)) {
+    logLine(
+      "Web Locks indisponible : impossible de garantir une seule VM par navigateur — " +
+        "un autre onglet ouvert sur cette sandbox ferait tourner sa propre VM.",
+    );
+    return;
+  }
+  election = creerElection({
+    verrous: navigator.locks,
+    nom: nomVerrou(SHELL_PATH),
+    onEviction: releaseSandboxToOtherTab,
+  });
+  if ((await election.candidater()) === ROLE_PRINCIPAL) return;
+  logLine("Sandbox déjà active dans un autre onglet — aucune VM démarrée ici.");
+  await waitForVisitorTakeover();
+}
+
+/** Panneau du rôle secondaire, et attente du geste du visiteur. */
+function waitForVisitorTakeover() {
+  setBadges(null);
+  /** @type {Promise<void>} */
+  const reprise = new Promise((resolve) => {
+    showDiagnostic(TITRE_SECONDAIRE, DETAIL_SECONDAIRE, {
+      ton: "info",
+      action: {
+        libelle: LIBELLE_REPRISE,
+        async onClick(bouton) {
+          bouton.disabled = true;
+          if ((await election.reprendre()) !== ROLE_PRINCIPAL) {
+            bouton.disabled = false;
+            return;
+          }
+          hideDiagnostic();
+          setBadges("pending");
+          logLine("Sandbox reprise dans cet onglet ; l'autre onglet libère la sienne.");
+          resolve();
+        },
+      },
+    });
+  });
+  return reprise;
+}
+
+// Un autre onglet vient d'arracher le verrou. On rend le processeur tout de
+// suite, puis on recharge : c'est le seul moyen de rendre AUSSI la mémoire de
+// la VM, et la coquille rechargée se présentera en secondaire, panneau compris.
+// L'onglet qui reprend, lui, ne recharge pas — il tient le verrou de bout en
+// bout, donc les deux onglets ne peuvent pas se le disputer.
+function releaseSandboxToOtherTab() {
+  logLine("Un autre onglet a repris la sandbox : cet onglet libère sa VM.");
+  Promise.resolve(vmInstance?.pause?.()).catch(() => {
+    // La page se recharge : il n'y a rien à rattraper.
+  });
+  location.reload();
+}
+
 // Suspend la VM d'un onglet masqué après un délai de grâce, la reprend au
 // retour (avec recalage d'horloge, fait par resume()). La décision vit dans
 // shared/veille.js, testée sans navigateur.
+//
+// Les deux économies se composent sans se contredire : l'élection supprime les
+// VM en trop (un onglet secondaire n'en a pas, donc rien à suspendre ici), la
+// veille suspend celle qui reste quand personne ne la regarde.
 function installBackgroundPause(vm) {
   if (typeof vm.pause !== "function" || typeof vm.resume !== "function") return;
   const veille = createVeilleController({
@@ -252,27 +358,51 @@ function checkBrowserSupport() {
   const resume = resumerManques(bloquants);
   logLine(`Navigateur non pris en charge :\n${resume}`);
   showDiagnostic("Ce navigateur ne peut pas faire tourner la sandbox", resume);
-  for (const id of ["sw", "coi", "vm", "http"]) setBadge(id, false);
+  for (const id of BADGE_IDS) setBadge(id, false);
   return false;
 }
 
 /**
  * Affiche un diagnostic à la place de l'application. Le journal de boot est
  * long et gris : un visiteur dont le navigateur ne convient pas n'y lira rien.
+ *
+ * Le ton « info » sert aux situations qui ne sont pas des pannes — un onglet
+ * secondaire n'a rien cassé —, et l'action facultative ajoute le bouton qui
+ * lui permet d'en sortir.
+ *
  * @param {string} titre
  * @param {string} detail
+ * @param {{ ton?: "erreur" | "info", action?: { libelle: string, onClick: (bouton: HTMLButtonElement) => void } | null }} [options]
  */
-function showDiagnostic(titre, detail) {
+function showDiagnostic(titre, detail, { ton = "erreur", action = null } = {}) {
   if (!diagnosticElement) return;
   diagnosticElement.replaceChildren();
+  diagnosticElement.classList.toggle("info", ton === "info");
   const titreElement = document.createElement("h2");
   titreElement.textContent = titre;
   const detailElement = document.createElement("p");
   // textContent, jamais innerHTML : ce texte peut citer un message d'erreur.
   detailElement.textContent = detail;
   diagnosticElement.append(titreElement, detailElement);
+  if (action) {
+    const bouton = document.createElement("button");
+    bouton.type = "button";
+    bouton.id = "diagnostic-action";
+    bouton.textContent = action.libelle;
+    bouton.addEventListener("click", () => action.onClick(bouton));
+    diagnosticElement.append(bouton);
+  }
   diagnosticElement.hidden = false;
   frameElement.hidden = true;
+}
+
+/** Rend la place à l'application : le diagnostic n'a plus lieu d'être. */
+function hideDiagnostic() {
+  if (!diagnosticElement) return;
+  diagnosticElement.replaceChildren();
+  diagnosticElement.classList.remove("info");
+  diagnosticElement.hidden = true;
+  frameElement.hidden = false;
 }
 
 /**
@@ -328,7 +458,7 @@ function ensureCrossOriginIsolated() {
 start().catch((error) => {
   logLine(`ERREUR FATALE: ${error.message}`);
   showDiagnostic("Le démarrage a échoué", error.message);
-  for (const id of ["sw", "coi", "vm", "http"]) {
+  for (const id of BADGE_IDS) {
     const badge = document.getElementById(`badge-${id}`);
     if (badge.classList.contains("pending")) setBadge(id, false);
   }

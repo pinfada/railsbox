@@ -127,6 +127,11 @@ coquille l'explique alors au visiteur au lieu d'échouer en silence.
 **Processeur du visiteur** : l'émulation utilise le CPU de l'onglet — c'est le
 « serveur » que chaque visiteur apporte. Un onglet masqué plus de 15 s met la
 VM en veille et rend le processeur ; le retour la reprend, horloge recalée.
+**Une seule sandbox tourne à la fois par navigateur** : un verrou exclusif
+(Web Locks) désigne l'onglet actif, et un second onglet ouvert sur la même
+sandbox ne démarre aucune VM — il affiche « déjà ouverte dans un autre
+onglet » et un bouton pour reprendre la main ici, auquel cas l'autre onglet
+libère la sienne.
 
 **Ce que l'hébergeur doit fournir** — et GitHub Pages le fournit : CORS `*`,
 requêtes `Range`, et rien d'autre. Les en-têtes d'isolation `COOP`/`COEP`, qu'un
@@ -155,9 +160,12 @@ l'application tourner, pas une capture d'écran. Pas de cold start payant, pas
 d'instance gratuite mise en veille, pas de facture qui arrive parce que le lien
 a bien marché.
 
-**Formateurs, bootcamps, auteurs de tutoriels.** Trente onglets, c'est trente
+**Formateurs, bootcamps, auteurs de tutoriels.** Trente apprenants, c'est trente
 environnements isolés : chaque apprenant est root dans SA copie, ses erreurs ne
 polluent celles de personne, et il n'y a rien à installer avant de commencer.
+L'isolation est celle du navigateur, donc elle sépare des **visiteurs**, pas des
+onglets : deux onglets d'un même navigateur partagent la même sandbox, et un
+seul la fait tourner à la fois — le second propose de reprendre la main.
 Un `F5` remet tout à zéro. Ajoutez `?fresh=1` à la fin de
 l'URL pour ignorer l'instantané et repartir d'un boot à froid.
 
@@ -459,7 +467,9 @@ Deux conséquences qui définissent le projet :
 - **L'isolement par visiteur est une qualité, pas une limite.** Chaque personne
   reçoit sa copie ; ses données ne quittent jamais son navigateur. Personne ne
   peut polluer l'essai d'un autre, et le modèle est compatible RGPD par
-  construction.
+  construction. La granularité exacte est le navigateur, pas l'onglet : deux
+  onglets d'un même navigateur partagent une sandbox, dont une seule instance
+  tourne à la fois.
 - **La valeur défendable est la recette, pas le moteur.** v86 est open source,
   réutilisable par quiconque. Ce qui se capitalise, c'est le buildpack — les
   vingt-deux itérations, les pièges i386, l'auto-détection, la bibliothèque
@@ -798,11 +808,12 @@ public/
 │   │                              faire poser de cookie : sans lui, pas de session)
 │   ├── prerequis-demarrage.js     capacités du navigateur, reprise après rechargement
 │   ├── veille.js                  suspension de la VM quand l'onglet est masqué
+│   ├── election-onglet.js         verrou Web Locks : une seule VM par navigateur
 │   ├── env-detector.js            détection des variables manquantes
 │   └── v86-config.js              config v86 : mono-disque ou base + application
 └── vm/
     └── v86-vm.js                  boot v86, instantané, horloge, pont série
-tests/                             370 tests unitaires + intégration (VM réelle) + E2E
+tests/                             379 tests unitaires + intégration (VM réelle) + E2E
 ├── integration/                   protocole série contre une vraie VM v86 (Node)
 ├── e2e/                           boot navigateur complet (Playwright)
 └── live/                          recette de la sandbox PUBLIÉE (réseau, hors CI)
