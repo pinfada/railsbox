@@ -155,10 +155,10 @@ reste inchangé pour tous les mainteneurs existants.
 ### Contexte
 
 `tools/build-v86-image/classifier-echec.mjs` transforme cinq cents lignes de
-journal Docker en catégorie, code, remède et extrait probant. Il couvre douze
+journal Docker en catégorie, code, remède et extrait probant. Il couvre onze
 familles — analyse, dépendance système, image de base, bundle, assets, base de
 données, tâche Rails, volumétrie, instantané, publication, infrastructure — et
-une treizième, `INCONNU: "inexpliqué"`, qui est l'aveu d'échec du dispositif.
+une douzième, `INCONNU: "inexpliqué"`, qui est l'aveu d'échec du dispositif.
 
 Chaque journal réel tombé dans « inexpliqué » est un chantier autonome de
 quelques dizaines de lignes : un motif, un code, un remède à l'impératif, un
