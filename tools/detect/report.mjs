@@ -88,8 +88,8 @@ export const REMEDIES = Object.freeze({
     "Versionnez un package-lock.json (`npm install` puis commit) : l'étage amd64 installe " +
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",
   "unknown-manifest-key":
-    "Retirez la clé de railsbox.yml : seules ruby, database, database_prepare, seed, env, " +
-    "assets et system_packages sont reconnues.",
+    "Retirez la clé de railsbox.yml : seules ruby, database, database_prepare, seed, " +
+    "env, assets, system_packages et exclude sont reconnues.",
   "invalid-asset-output":
     "assets.output n'accepte que des chemins RELATIFS à la racine de l'application " +
     "(« public/dist », « public/vite »), sans « .. », sans chemin absolu et sans espace.",
@@ -109,6 +109,17 @@ export const REMEDIES = Object.freeze({
   "too-many-system-packages":
     "Réduisez system_packages: à ce que l'application utilise réellement — la surcouche est " +
     "copiée sur le disque applicatif, dont la géométrie de 512 Mo est figée (ADR 0002).",
+  "invalid-exclude-path":
+    "exclude: n'accepte que des chemins RELATIFS à la racine de l'application (« doc », " +
+    "« db/fixtures »), sans « .. », sans chemin absolu et sans espace : ces valeurs partent " +
+    "dans un tar --exclude= sur le runner de construction.",
+  "protected-exclude-path":
+    "Ce chemin porte l'application elle-même : l'exclure produirait un disque qui ne démarre " +
+    "pas. Visez un sous-chemin (« vendor/bundle » plutôt que « vendor », « public/uploads » " +
+    "plutôt que « public »).",
+  "too-many-excludes":
+    "Regroupez les exclusions sur des répertoires parents : au-delà de quelques dizaines " +
+    "d'entrées, la liste ne se relit plus et le gain est ailleurs.",
 });
 
 /**

@@ -468,13 +468,21 @@ assets:
   scripts: ["build", "build:css"] # scripts npm de build à déclencher
   output: ["public/dist"] # répertoires produits à remonter dans la sandbox
 system_packages: [libmagickwand-dev] # paquets Debian que vos gems exigent
+exclude: [doc, db/fixtures] # chemins à ne PAS embarquer dans la sandbox
 ```
 
+<<<<<<< HEAD
 Sept clés sont reconnues — `ruby`, `database`, `database_prepare`, `seed`,
 `env`, `assets`, `system_packages` — et toute autre déclenche un diagnostic.
 Dans le bloc `assets:`, deux clés sont lues, `scripts` et `output` : toute
 autre y est ignorée avec un avertissement. `database` accepte `postgresql` ou
 `sqlite3`, `database_prepare` accepte `schema` (défaut) ou `migrate`.
+=======
+Sept clés sont reconnues — `ruby`, `database`, `seed`, `env`, `assets`,
+`system_packages`, `exclude` — et toute autre déclenche un diagnostic. Dans le bloc
+`assets:`, deux clés sont lues, `scripts` et `output` : toute autre y est
+ignorée avec un avertissement. `database` accepte `postgresql` ou `sqlite3`.
+>>>>>>> worktree-agent-aba749b564b4ef112
 Les valeurs `env:` sont traitées comme des **données inertes**, jamais
 évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
 
@@ -485,6 +493,78 @@ des commandes de construction. Tout ce qui échoue à ce contrôle est refusé a
 un diagnostic nommant l'entrée fautive, jamais assaini en silence. La clé
 **complète** l'auto-détection au lieu de la remplacer : `public/assets` et
 `app/assets/builds` restent exportés quoi qu'il arrive.
+
+#### Ce que le disque applicatif n'embarque pas
+
+Le disque applicatif a une **géométrie fixe de 512 Mo** (ADR 0002). Y déverser
+l'arbre du dépôt tel quel est ce qui fait déborder les applications réelles :
+sur la première application tierce construite, l'arbre pesait 261 Mo **avant**
+le `bundle install`, dont 143 Mo de `vendor/bundle` compilé pour un autre Ruby,
+65 Mo de `public/assets` que la construction réémet, et 54 Mo de `.git`.
+
+railsbox fabrique donc un **contexte de construction filtré** — il ne touche
+jamais à votre dépôt — d'où sont écartés :
+
+| Chemin                    | Pourquoi                                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `.git`                    | la VM n'embarque pas git, et aucune requête Rails ne lit l'historique                                                          |
+| `vendor/bundle`           | la construction réinstalle les gems sous `/app/vendor/bundle` **avant** la copie : un bundle versionné ne peut que s'écraser dessus — mort s'il vise un autre Ruby, **cassant** s'il vise le même (binaires x86_64 par-dessus des gems natives i386) |
+| `node_modules`            | réinstallé par l'étage amd64 (`npm ci`) ; le guest i386 n'a aucun Node                                                          |
+| `tmp`, `log`              | déjà effacés par la construction avant la fabrication de l'ext2                                                                |
+| `coverage`                | rapports de couverture, jamais lus à l'exécution                                                                               |
+| `.github`, `.idea`, `.vscode` | intégration continue et réglages d'éditeur                                                                                 |
+| répertoires de sortie d'assets sous `public/` | **seulement** quand la construction les régénère (`public/assets`, `public/vite`, `public/packs`) |
+
+Trois précautions valent d'être explicites, parce que l'inverse casserait des
+applications.
+
+- **`vendor/cache`, `vendor/javascript`, `vendor/assets` sont conservés.** Seul
+  `vendor/bundle` part : c'est la sortie de `BUNDLE_PATH`, pas un mécanisme de
+  fourniture de gems. Une gem introuvable sur rubygems se livre par
+  `bundle package` (`vendor/cache`) ou par un chemin `path:` du Gemfile — deux
+  choses que railsbox ne touche pas.
+- **`app/assets/builds` n'est jamais écarté.** C'est un chemin de recherche du
+  pipeline, donc une **source** : une application peut y versionner un CSS que
+  rien ne reconstruit. Sous `public/`, un répertoire de sortie est un artefact ;
+  sous `app/`, c'est une source.
+- **`public/assets` n'est écarté que si la construction le réémet.** Si aucun
+  pipeline n'est détecté, vos assets versionnés sont les **seuls** que la
+  sandbox servira : ils restent intacts.
+
+Un `.dockerignore` fourni par votre application est **conservé et appliqué**
+par BuildKit, en plus de ce filtrage.
+
+La clé `exclude:` **ajoute** vos propres chemins — un dossier de médias de
+démonstration, un jeu de fixtures lourd. Comme `assets.output`, elle n'accepte
+que des chemins **relatifs** à la racine, sans `..`, sans chemin absolu et sans
+caractère qu'un shell pourrait interpréter : ces valeurs finissent dans une
+commande de construction. Les chemins qui **portent l'application** (`app`,
+`bin`, `config`, `db`, `lib`, `public`, `vendor`, `Gemfile`, `Gemfile.lock`,
+`Rakefile`, `config.ru`) sont refusés avec un diagnostic — visez un sous-chemin
+(`public/uploads` plutôt que `public`).
+
+Le journal de construction dit ce qui a été retiré, avec le poids :
+
+```
+→ Filtrage du contenu applicatif…
+    .git                              54 Mo écartés
+    vendor/bundle                    143 Mo écartés
+    public/assets                     65 Mo écartés
+    (absents du dépôt : node_modules, tmp, coverage, .idea, .vscode)
+  Arbre du dépôt 270 Mo → contexte livré au build 10 Mo (260 Mo écartés)
+```
+
+Et si la géométrie déborde quand même, le refus **nomme les coupables** au lieu
+de se contenter d'un total :
+
+```
+✗ Le contenu applicatif (612 Mo) dépasse la géométrie fixe (512 Mo).
+
+  Les plus gros répertoires du contenu livré :
+       331 Mo  vendor/bundle/ruby
+        94 Mo  opt/systeme/usr
+        62 Mo  var/pg
+```
 
 #### `ruby:` ne choisit PAS la version de Ruby
 

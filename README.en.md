@@ -453,13 +453,23 @@ env:
 assets:
   scripts: ["build", "build:css"] # npm build scripts to trigger
   output: ["public/dist"] # produced directories to ship into the sandbox
+system_packages: [libmagickwand-dev] # Debian packages your gems require
+exclude: [doc, db/fixtures] # paths NOT to ship into the sandbox
 ```
 
+<<<<<<< HEAD
 Six keys are recognised — `ruby`, `database`, `database_prepare`, `seed`, `env`,
 `assets` — and inside the `assets:` block two keys are read, `scripts` and
 `output` (anything else there is ignored with a warning); anything else raises a
 diagnostic. `database` accepts `postgresql` or `sqlite3`, `database_prepare`
 accepts `schema` (default) or `migrate`. `env:` values are treated as
+=======
+Seven keys are recognised — `ruby`, `database`, `seed`, `env`, `assets`,
+`system_packages`, `exclude` — and
+inside the `assets:` block two keys are read, `scripts` and `output` (anything
+else there is ignored with a warning); anything else raises a diagnostic.
+`database` accepts `postgresql` or `sqlite3`. `env:` values are treated as
+>>>>>>> worktree-agent-aba749b564b4ef112
 **inert data**, never evaluated at build time (see [`SECURITY.md`](SECURITY.md)).
 
 `assets.output` accepts only paths **relative** to the application root, with no
@@ -468,6 +478,76 @@ come from a third-party repository and end up in build commands. Anything that
 fails that check is rejected with a diagnostic naming the offending entry, never
 silently sanitised. The key **completes** auto-detection rather than replacing
 it: `public/assets` and `app/assets/builds` stay exported no matter what.
+
+#### What the application disk does not ship
+
+The application disk has a **fixed 512 MB geometry** (ADR 0002). Dumping the
+repository tree into it as-is is what makes real applications overflow: on the
+first third-party application built, the tree weighed 261 MB **before**
+`bundle install` — 143 MB of `vendor/bundle` compiled for another Ruby, 65 MB of
+`public/assets` the build re-emits, and 54 MB of `.git`.
+
+railsbox therefore builds a **filtered build context** — it never touches your
+repository — from which the following are dropped:
+
+| Path                          | Why                                                                                                                                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.git`                        | the VM has no git, and no Rails request reads the history                                                                                                                                    |
+| `vendor/bundle`               | the build reinstalls gems under `/app/vendor/bundle` **before** the copy: a vendored bundle can only land on top of it — dead if it targets another Ruby, **breaking** if it targets the same one (x86_64 binaries over native i386 gems) |
+| `node_modules`                | reinstalled by the amd64 stage (`npm ci`); the i386 guest has no Node                                                                                                                        |
+| `tmp`, `log`                  | already wiped by the build before the ext2 is made                                                                                                                                           |
+| `coverage`                    | coverage reports, never read at runtime                                                                                                                                                      |
+| `.github`, `.idea`, `.vscode` | continuous integration and editor settings                                                                                                                                                   |
+| asset output directories under `public/` | **only** when the build regenerates them (`public/assets`, `public/vite`, `public/packs`)                                                                          |
+
+Three precautions are worth spelling out, because the opposite would break
+applications.
+
+- **`vendor/cache`, `vendor/javascript` and `vendor/assets` are kept.** Only
+  `vendor/bundle` goes: it is `BUNDLE_PATH` output, not a gem delivery
+  mechanism. A gem missing from rubygems ships via `bundle package`
+  (`vendor/cache`) or a Gemfile `path:` — neither of which railsbox touches.
+- **`app/assets/builds` is never dropped.** It is a pipeline load path, hence a
+  **source**: an application may version a CSS file there that nothing rebuilds.
+  Under `public/` an output directory is an artefact; under `app/` it is a
+  source.
+- **`public/assets` is dropped only if the build re-emits it.** If no pipeline is
+  detected, your versioned assets are the **only** ones the sandbox will serve:
+  they stay untouched.
+
+A `.dockerignore` supplied by your application is **kept and applied** by
+BuildKit, on top of this filtering.
+
+The `exclude:` key **adds** your own paths — a demo media folder, a heavy
+fixture set. Like `assets.output`, it accepts only paths **relative** to the
+root, with no `..`, no absolute path and no character a shell could interpret:
+these values end up in a build command. Paths that **carry the application**
+(`app`, `bin`, `config`, `db`, `lib`, `public`, `vendor`, `Gemfile`,
+`Gemfile.lock`, `Rakefile`, `config.ru`) are refused with a diagnostic — aim at
+a sub-path (`public/uploads` rather than `public`).
+
+The build log states what was removed, with its weight:
+
+```
+→ Filtrage du contenu applicatif…
+    .git                              54 Mo écartés
+    vendor/bundle                    143 Mo écartés
+    public/assets                     65 Mo écartés
+    (absents du dépôt : node_modules, tmp, coverage, .idea, .vscode)
+  Arbre du dépôt 270 Mo → contexte livré au build 10 Mo (260 Mo écartés)
+```
+
+And should the geometry still overflow, the refusal **names the culprits**
+rather than reporting a bare total:
+
+```
+✗ Le contenu applicatif (612 Mo) dépasse la géométrie fixe (512 Mo).
+
+  Les plus gros répertoires du contenu livré :
+       331 Mo  vendor/bundle/ruby
+        94 Mo  opt/systeme/usr
+        62 Mo  var/pg
+```
 
 #### `ruby:` does NOT pick the Ruby version
 

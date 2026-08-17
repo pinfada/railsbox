@@ -1,6 +1,6 @@
 # Chantiers ouverts
 
-Huit chantiers réellement abordables par quelqu'un qui n'a pas écrit ce dépôt.
+Neuf chantiers réellement abordables par quelqu'un qui n'a pas écrit ce dépôt.
 Chacun porte son **contexte** (pourquoi il existe, et ce qui le rend faisable),
 les **fichiers concernés**, et un **critère de réussite** vérifiable — pas une
 intention, une preuve qu'on peut relire dans une PR.
@@ -339,6 +339,66 @@ et une recommandation argumentée, y compris si elle est « non ». Un « non »
 mesuré est un livrable : il ferme une question qui revient, et il donne au refus
 de `detect.mjs` une raison à citer. Si c'est un « oui », il s'accompagne d'une
 variante de panel et d'un test d'intégration, comme `demo-pg`.
+
+---
+
+## 9. Porter la géométrie du disque applicatif à 1 Go
+
+**Coût** : engageant · **Prérequis** : Docker + WSL2/Linux root, et la
+republication d'une base
+
+### Contexte
+
+Le disque applicatif est figé à **512 Mo** (`APP_DISK_BYTES`,
+`tools/build-v86-image/split-config.mjs`). Ce n'est pas un choix de confort :
+v86 refuse de restaurer un instantané si le `hdb` attaché n'a pas la géométrie
+exacte du disque vide présent à la capture (ADR 0002). La taille est donc
+décidée **par la base**, une fois pour toutes, au moment où son instantané est
+pris.
+
+Le filtrage du contexte de construction a fait rentrer l'application témoin
+(261 Mo d'arbre, 589 Mo de contenu) dans les 512 Mo. Mais le plafond reste
+proche pour une application à gros bundle : `vendor/bundle` seul dépasse 300 Mo
+dès qu'une application traîne `rails_admin`, `nokogiri`, `grpc` ou une pile de
+gems natives.
+
+La question posée est donc : **combien coûterait vraiment une géométrie de
+1 Go ?** Le disque est creux et publié en morceaux zstd de 4 Mio ; l'intuition
+dit que les morceaux vides ne coûtent presque rien. C'est mesuré, et l'intuition
+est bonne :
+
+| Géométrie | Morceaux | Poids publié | Morceau vide |
+| --------- | -------- | ------------ | ------------ |
+| 512 Mo    | 128      | 2 822 417 o  | 146 o        |
+| 1 Go      | 256      | 2 847 471 o  | 146 o        |
+
+Contenu **identique** dans les deux cas (10 Mo). Doubler la géométrie coûte
+**25 054 octets publiés**, soit **+0,9 %** — dont 5,5 ko d'inventaire
+`-parts.json` et 128 morceaux vides à 146 octets. Ce delta est constant : il ne
+dépend pas du contenu, seulement des 512 Mo de vide ajoutés. Le visiteur, lui,
+ne télécharge que les morceaux qu'il lit : un morceau vide n'est jamais lu.
+
+Le coût réel n'est donc pas la bande passante mais la **migration** : la
+géométrie est portée par l'instantané de la base, changer de géométrie impose
+une nouvelle révision de base (`3.4` ou `3.3-r4`), et toute sandbox publiée
+contre l'ancienne base doit être reconstruite pour en profiter — un `hdb` de
+1 Go ne se restaure pas sur un instantané capturé avec un placeholder de 512 Mo.
+
+### Fichiers concernés
+
+- `tools/build-v86-image/split-config.mjs` (`APP_DISK_BYTES`)
+- `tools/build-v86-image/build-app-disk.sh` (`APP_DISK_MB`)
+- `tools/build-v86-image/base/base-build.sh` et `make-base-snapshot.mjs`
+  (placeholder `hdb` de la capture)
+- `docs/decisions/0002-decoupage-base-application.md` (la contrainte à amender)
+- `tests/split-config.test.mjs`
+
+### Critère de réussite
+
+Une base publiée dont l'instantané est capturé avec un `hdb` vide de 1 Go, et un
+disque applicatif de 1 Go qui **restaure** cet instantané dans
+`tests/integration/`. La mesure du poids publié avant/après doit figurer dans la
+PR : la décision se prend sur des octets, pas sur une intuition.
 
 ---
 

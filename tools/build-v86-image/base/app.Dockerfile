@@ -5,7 +5,12 @@
 # (BUNDLE_PATH=/app/vendor/bundle — gems natives i386 vivant avec l'app), ses
 # assets précompilés et sa base pré-seedée.
 #
-# Contexte de build attendu : la racine de l'application Rails.
+# Contexte de build attendu : un arbre FILTRÉ de l'application Rails, fabriqué
+# par build-app-disk.sh (APP_EXCLUDES) — .git, vendor/bundle, node_modules et
+# les répertoires d'assets régénérés n'y figurent plus. Le `COPY . .` plus bas
+# ne peut donc pas les faire entrer dans les 512 Mo du disque applicatif. Un
+# `.dockerignore` fourni par l'application y est conservé, et BuildKit
+# l'applique par-dessus.
 #   docker build --platform linux/386 -f app.Dockerfile \
 #     --build-arg BASE_IMAGE=railsbox-base-3.3 --build-arg … -t <tag> <app>
 
