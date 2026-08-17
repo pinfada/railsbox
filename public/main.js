@@ -230,6 +230,12 @@ function waitForVisitorTakeover() {
         async onClick(bouton) {
           bouton.disabled = true;
           if ((await election.reprendre()) !== ROLE_PRINCIPAL) {
+            // Ne devrait pas arriver : la reprise ARRACHE le verrou. Si cela
+            // se produit, le panneau reste affiché et le bouton redevient
+            // cliquable — mais sans cette ligne, rien ne le dirait, et le
+            // symptôme (« le panneau ne cède pas ») n'aurait aucune cause
+            // visible dans le journal.
+            logLine("[élection] reprise refusée : le verrou n'a pas été obtenu, réessayez.");
             bouton.disabled = false;
             return;
           }

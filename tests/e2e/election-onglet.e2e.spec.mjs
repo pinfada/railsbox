@@ -100,10 +100,14 @@ test.describe("Une seule sandbox active par navigateur", () => {
 
     await second.locator("#diagnostic button").click();
 
+    // Même délai que les autres attentes de cette suite : le masquage suit
+    // l'obtention du verrou, dont la latence dépend de l'AUTRE onglet — occupé,
+    // sur un runner froid, à enregistrer son Service Worker. Vert en local et
+    // rouge en CI la première fois, faute de ce délai cohérent.
     await expect(
       second.locator("#diagnostic"),
       "le panneau doit céder la place une fois la main reprise",
-    ).toBeHidden();
+    ).toBeHidden({ timeout: DELAI_SERVICE_WORKER_MS });
     await attendreRolePrincipal(second);
 
     await expect(
