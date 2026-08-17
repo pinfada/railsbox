@@ -10,6 +10,7 @@ import {
   defaultPath,
   extractSetCookie,
   mergeBrowserCookies,
+  parseDocumentCookie,
   parseSetCookie,
   pathMatches,
   serializeCookies,
@@ -309,9 +310,75 @@ test("mergeBrowserCookies filtre chemin, injection et en-tête trop long", () =>
   );
 });
 
-test("mergeBrowserCookies sans Cookie Store rend l'en-tête du bocal intact", () => {
-  // Firefox et WebKit n'exposent pas cookieStore au worker : on doit y
-  // retomber exactement sur le comportement d'avant.
+test("mergeBrowserCookies sans rapport du document rend l'en-tête du bocal intact", () => {
+  // Coquille muette (page figée, délai dépassé) : on doit retomber exactement
+  // sur le comportement du bocal seul, jamais échouer.
   assert.equal(mergeBrowserCookies("a=1", [], "/app/"), "a=1");
   assert.equal(mergeBrowserCookies(null, undefined, "/app/"), null);
+});
+
+test("mergeBrowserCookies refuse ce que le pont série ne sait pas encoder", () => {
+  // Le guest passe les en-têtes à http.client, qui les encode en latin-1 :
+  // au-delà de U+00FF il lève, l'exception devient un 502 — et comme le
+  // cookie, lui, reste dans le navigateur, le 502 revient à CHAQUE requête.
+  // « é » (U+00E9) passe, « € » (U+20AC) non.
+  assert.equal(
+    mergeBrowserCookies(null, [{ name: "devise", value: "€", path: "/" }], "/app/"),
+    null,
+    "un codepoint hors latin-1 ne doit pas atteindre le pont",
+  );
+  assert.equal(
+    mergeBrowserCookies(null, [{ name: "prenom", value: "rené", path: "/" }], "/app/"),
+    "prenom=rené",
+  );
+});
+
+// --- Rapport de `document.cookie` par le document coquille -----------------
+//
+// Un Service Worker n'a pas de DOM : il ne peut PAS lire document.cookie, et
+// le navigateur ne lui montre pas davantage l'en-tête Cookie des requêtes
+// qu'il intercepte. Le seul chemin qui existe sur les trois moteurs est de le
+// demander à un client. Le Cookie Store API, lui, manque à WebKit.
+
+test("parseDocumentCookie lit la chaîne que le navigateur montre au document", () => {
+  assert.deepEqual(parseDocumentCookie("timezone=Europe/Paris; locale=fr"), [
+    { name: "timezone", value: "Europe/Paris", path: "/" },
+    { name: "locale", value: "fr", path: "/" },
+  ]);
+  // Une valeur peut contenir des « = » (base64 rembourré, jeton signé) :
+  // seule la PREMIÈRE occurrence sépare le nom de la valeur.
+  assert.deepEqual(parseDocumentCookie("jeton=YWJj=="), [
+    { name: "jeton", value: "YWJj==", path: "/" },
+  ]);
+});
+
+test("parseDocumentCookie ignore ce qui n'a pas de nom", () => {
+  // Un cookie à nom vide est rendu par le navigateur comme sa seule valeur :
+  // sans nom, rien à réémettre — et surtout rien à confondre avec un nom.
+  assert.deepEqual(parseDocumentCookie("valeur-orpheline"), []);
+  assert.deepEqual(parseDocumentCookie("=vide; bon=1"), [{ name: "bon", value: "1", path: "/" }]);
+});
+
+test("parseDocumentCookie ne fabrique rien à partir de rien", () => {
+  assert.deepEqual(parseDocumentCookie(""), []);
+  assert.deepEqual(parseDocumentCookie(null), []);
+  assert.deepEqual(parseDocumentCookie(undefined), []);
+  assert.deepEqual(parseDocumentCookie(42), []);
+});
+
+test("le rapport du document ne franchit que les validations d'ingestion", () => {
+  // Le rapport vient d'un client : il passe par le MÊME filtre que les
+  // Set-Cookie de la VM et que la relecture d'IndexedDB. Le chemin prêté est
+  // « / », parce que le navigateur ne montre à la coquille que des cookies
+  // qui apparient déjà « <base>/app/… ».
+  const rapporte = parseDocumentCookie("timezone=Europe/Paris; consentement=oui");
+  assert.equal(
+    mergeBrowserCookies("_session=graine-csrf", rapporte, "/app/posts"),
+    "_session=graine-csrf; timezone=Europe/Paris; consentement=oui",
+  );
+  assert.equal(
+    sanitizeCookieHeader(mergeBrowserCookies(null, rapporte, "/app/posts")),
+    "timezone=Europe/Paris; consentement=oui",
+    "et la frontière du guest l'accepte tel quel",
+  );
 });
