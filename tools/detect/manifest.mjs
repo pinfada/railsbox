@@ -4,6 +4,7 @@
 // petit pour que l'analyseur reste plus court qu'une bibliothèque.
 import { sanitizeOutputDirs } from "./asset-output.mjs";
 import { sanitizeExcludePaths } from "./exclusions.mjs";
+import { envSecretFindings } from "./env-secrets.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { sqliteDriverFindings } from "./sqlite.mjs";
 import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "./ssl.mjs";
@@ -35,6 +36,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {{redis?: boolean, sidekiq?: boolean}} [services] services d'arrière-plan
  * @property {{command?: string, autoLogin?: string, autoLoginCode?: string}} [seed] amorçage des données
  * @property {Record<string, string>} [env] variables d'environnement déclarées
+ * @property {readonly string[]} [envAssumePublic] clés de `env:` assumées publiques
  * @property {readonly string[]} [systemPackages] paquets Debian de la surcouche applicative
  * @property {readonly string[]} [excludePaths] chemins écartés du contexte de construction
  */
@@ -89,19 +91,23 @@ const SCALAR_TARGETS = Object.freeze({ database_prepare: "databasePrepare" });
  * (ADR 0006) : ceux que l'application veut sans que la base mutualisée ait à
  * les porter pour tout le monde.
  */
-const LIST_KEYS = Object.freeze(["system_packages", "exclude"]);
+const LIST_KEYS = Object.freeze(["system_packages", "exclude", "env_assume_public"]);
 
 /** Correspondance clé YAML → clé du manifeste, pour les listes. */
 const LIST_TARGETS = Object.freeze({
   system_packages: "systemPackages",
   exclude: "excludePaths",
+  env_assume_public: "envAssumePublic",
 });
 
 /**
  * Validation propre à chaque clé de liste. La validation a lieu ICI, au plus
  * près de la lecture du fichier tiers : ces valeurs finissent en arguments de
  * commandes exécutées sur le runner de CI du mainteneur — `apt-get install`
- * pour `system_packages`, `tar --exclude=` pour `exclude`.
+ * pour `system_packages`, `tar --exclude=` pour `exclude`. `env_assume_public`
+ * n'atteint aucune commande, mais il DÉSARME un contrôle de sécurité : sa
+ * grammaire est vérifiée avec la même rigueur, faute de quoi une entrée
+ * approximative couvrirait autre chose que ce que le mainteneur croit nommer.
  */
 const LIST_VALIDATORS = Object.freeze({
   system_packages: (liste, source) => {
@@ -112,12 +118,14 @@ const LIST_VALIDATORS = Object.freeze({
     const { paths, findings } = sanitizeExcludePaths(liste, source);
     return { values: paths, findings };
   },
+  env_assume_public: (liste, source) => validateEnvAssumePublic(liste, source),
 });
 
 /** Exemple de valeur attendue, cité quand une clé de liste est mal formée. */
 const LIST_EXAMPLES = Object.freeze({
   system_packages: "[libmagic-dev, libsodium-dev]",
   exclude: "[doc, db/fixtures]",
+  env_assume_public: "[DEMO_TOKEN, FAKE_API_KEY]",
 });
 
 /** Nom de variable d'environnement conforme à POSIX, longueur bornée. */
@@ -432,6 +440,42 @@ function applyEnvEntry(state, key, value, lineNumber) {
 }
 
 /**
+ * Valide la liste `env_assume_public:` — les clés du bloc `env:` que le
+ * mainteneur assume publier en clair sur le disque applicatif.
+ *
+ * Chaque entrée doit être un NOM DE VARIABLE, exactement comme dans `env:` :
+ * ni joker, ni « all », ni motif. Une dérogation qui ne nomme pas sa clé
+ * couvrirait celles qu'on ajoutera demain sans les relire — c'est-à-dire
+ * exactement le contrôle qu'on cherche à garder. Une entrée malformée est
+ * REFUSÉE et disparaît de la liste : la variable qu'elle visait reste couverte.
+ * @param {readonly string[]} liste noms déclarés
+ * @param {string} source origine, citée dans les diagnostics
+ * @returns {{values: readonly string[], findings: readonly Finding[]}} noms retenus
+ */
+function validateEnvAssumePublic(liste, source) {
+  /** @type {Finding[]} */
+  const findings = [];
+  /** @type {Set<string>} */
+  const retenus = new Set();
+  for (const candidat of liste) {
+    const nom = typeof candidat === "string" ? candidat.trim() : "";
+    if (nom !== "" && ENV_NAME.test(nom)) {
+      retenus.add(nom);
+      continue;
+    }
+    findings.push(
+      createFinding(
+        SEVERITY.WARNING,
+        "invalid-env-assume-public",
+        `${source} : « ${nom} » n'est pas un nom de variable d'environnement, dérogation ignorée.`,
+        { key: nom, source },
+      ),
+    );
+  }
+  return { values: Object.freeze([...retenus]), findings: Object.freeze(findings) };
+}
+
+/**
  * Fusionne le manifeste déclaré dans le manifeste détecté (le déclaré gagne).
  * @param {Manifest} detected manifeste issu de l'auto-détection
  * @param {Manifest} declared manifeste issu de `railsbox.yml`
@@ -497,6 +541,14 @@ export function mergeManifest(detected, declared) {
       ),
     );
   }
+  // Le bloc `env:` finit VERBATIM sur le disque applicatif, qui est public :
+  // un secret déclaré là est publié, pas configuré. Le contrôle a lieu ICI,
+  // sur l'env FUSIONNÉ, pour juger ce que la construction posera réellement,
+  // et pas seulement ce que railsbox.yml en montre.
+  if (Array.isArray(declared.envAssumePublic)) {
+    merged.envAssumePublic = [...declared.envAssumePublic];
+  }
+  findings.push(...envSecretFindings({ env: merged.env, assumePublic: merged.envAssumePublic }));
   // Les paquets système s'AJOUTENT au lieu de remplacer : la détection les
   // déduit des gems natives, la déclaration couvre ce qu'aucune gem ne trahit
   // (un exécutable appelé en `system()`, par exemple). Écraser l'un par l'autre

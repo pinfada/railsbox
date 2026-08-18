@@ -464,6 +464,7 @@ seed:
   auto_login: "demo@example.com" # le visiteur arrive connecté
 env:
   APP_HOST: "http://localhost:8080" # variables exigées par vos initializers
+env_assume_public: [DEMO_TOKEN] # clés de env: assumées publiques — voir plus bas
 assets:
   scripts: ["build", "build:css"] # scripts npm de build à déclencher
   output: ["public/dist"] # répertoires produits à remonter dans la sandbox
@@ -485,6 +486,21 @@ ignorée avec un avertissement. `database` accepte `postgresql` ou `sqlite3`.
 >>>>>>> worktree-agent-aba749b564b4ef112
 Les valeurs `env:` sont traitées comme des **données inertes**, jamais
 évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
+
+Elles sont aussi **publiées**. Le bloc `env:` est écrit tel quel dans
+`/app/.railsbox/app-env.sh`, à l'intérieur du disque applicatif — celui que le
+navigateur de chaque visiteur télécharge et qu'un curieux monte hors ligne. Y
+déclarer un `RAILS_MASTER_KEY`, un jeton d'API ou un mot de passe réel, ce
+n'est pas le configurer, c'est le publier : le `chmod 600` du fichier n'y
+change rien, le visiteur est root dans sa propre VM. La détection refuse donc
+la construction (`[env-secret-published]`, bloquant) dès qu'un nom annonce un
+secret (`…MASTER_KEY…`, `…SECRET…`, `…PASSWORD…`, `…TOKEN…`, `…API_KEY…`,
+`…PRIVATE_KEY…`, `…CREDENTIALS…`, `…ACCESS_KEY…`) ou qu'une valeur porte le
+préfixe d'un jeton connu (`ghp_`, `sk_live_`, `AKIA…`, `xoxb-`…). **Mettez une
+valeur factice** : une sandbox sert à faire essayer, pas à opérer un service.
+Si la valeur est déjà factice — une démonstration porte légitimement un faux
+`DEMO_TOKEN` — nommez la clé dans `env_assume_public:`, une entrée par clé.
+Il n'y a pas de dérogation globale : ce qu'on assume publier, on le nomme.
 
 `assets.output` n'accepte que des chemins **relatifs** à la racine de
 l'application, sans `..`, sans chemin absolu et sans caractère qu'un shell
