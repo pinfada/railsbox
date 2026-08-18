@@ -10,6 +10,7 @@ import {
   artifactSignature,
   artifactUrlOfPart,
   cacheNameFor,
+  estArtefactCacheable,
   fnv1a,
   immutableArtifacts,
   isCacheableArtifactUrl,
@@ -97,6 +98,45 @@ test("isCacheableRequestShape exige un GET sans Range", () => {
   assert.equal(isCacheableRequestShape({ method: "GET", rangeHeader: "bytes=0-4095" }), false);
   assert.equal(isCacheableRequestShape({ method: "POST", rangeHeader: null }), false);
   assert.equal(isCacheableRequestShape({ method: "HEAD", rangeHeader: null }), false);
+});
+
+// --- Décision d'ÉCRIRE la réponse obtenue ----------------------------------
+
+test("estArtefactCacheable n'accepte qu'un 200 lisible obtenu SANS redirection", () => {
+  assert.equal(estArtefactCacheable({ status: 200, type: "basic", redirected: false }), true);
+  assert.equal(estArtefactCacheable({ status: 200, type: "cors", redirected: false }), true);
+});
+
+test("estArtefactCacheable refuse une réponse qui n'est pas un 200", () => {
+  // Une erreur n'a rien à faire dans un cache d'immuables, et un 206 partiel
+  // est de toute façon refusé par Cache Storage.
+  assert.equal(estArtefactCacheable({ status: 401, type: "basic", redirected: false }), false);
+  assert.equal(estArtefactCacheable({ status: 206, type: "basic", redirected: false }), false);
+  assert.equal(estArtefactCacheable({ status: 404, type: "basic", redirected: false }), false);
+});
+
+test("estArtefactCacheable refuse une réponse opaque, illisible", () => {
+  assert.equal(estArtefactCacheable({ status: 0, type: "opaque", redirected: false }), false);
+  // Une opaque annonce toujours status 0 ; le cas ci-dessous n'existe pas dans
+  // un navigateur, il vérifie seulement qu'aucune des deux conditions ne
+  // rattrape l'autre.
+  assert.equal(estArtefactCacheable({ status: 200, type: "opaque", redirected: false }), false);
+});
+
+test("estArtefactCacheable refuse un 200 obtenu APRÈS une redirection suivie", () => {
+  // C'est le cas qui empoisonnait le cache : un portail captif, une page
+  // d'erreur d'hébergeur ou une bascule de domaine répond 302 vers du HTML que
+  // `fetch` suit tout seul. La réponse rendue est un 200 lisible — mais son
+  // corps est cette page, et l'écrire sous l'URL du morceau de disque fige la
+  // sandbox jusqu'à changement de configuration.
+  assert.equal(estArtefactCacheable({ status: 200, type: "basic", redirected: true }), false);
+  assert.equal(estArtefactCacheable({ status: 200, type: "cors", redirected: true }), false);
+});
+
+test("estArtefactCacheable tolère un « redirected » absent", () => {
+  // Certains contextes de test (et de vieux moteurs) ne posent pas le champ :
+  // son absence ne doit pas valoir redirection, sinon plus rien n'est caché.
+  assert.equal(estArtefactCacheable({ status: 200, type: "basic" }), true);
 });
 
 // --- Inventaire des artefacts d'une configuration --------------------------

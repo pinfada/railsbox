@@ -113,6 +113,32 @@ export function isCacheableRequestShape({ method, rangeHeader }) {
 }
 
 /**
+ * Une réponse mérite-t-elle d'être ÉCRITE dans le cache d'artefacts ?
+ *
+ * Trois refus, pour trois raisons distinctes :
+ *
+ *  - `status !== 200` : un 206 partiel est de toute façon refusé par Cache
+ *    Storage, et une erreur n'a rien à faire dans un cache d'immuables.
+ *  - `type === "opaque"` : le corps en est illisible, donc invérifiable.
+ *  - `redirected` : LA réponse empoisonnée. `fetch` suit les redirections par
+ *    défaut ; un portail captif, une page d'erreur d'hébergeur servie en 200
+ *    ou une bascule de domaine rend alors un 200 lisible dont le corps est du
+ *    HTML. L'écrire sous l'URL du morceau de disque, dans un cache « d'abord »
+ *    sans revalidation, casse la sandbox jusqu'à ce que la CONFIGURATION
+ *    change — le nom du cache dérivant d'elle, aucun rechargement de page ni
+ *    `?fresh=1` ne la sauve. Un artefact immuable se sert à son URL exacte :
+ *    tout détour est le signe qu'on ne parle plus au bon interlocuteur.
+ *
+ * Le champ `redirected` peut manquer (contextes de test, moteurs anciens) :
+ * son absence ne vaut pas redirection, sans quoi plus rien ne serait caché.
+ * @param {{ status?: number, type?: string, redirected?: boolean }} response
+ * @returns {boolean}
+ */
+export function estArtefactCacheable({ status, type, redirected }) {
+  return status === 200 && type !== "opaque" && redirected !== true;
+}
+
+/**
  * Inventaire des artefacts immuables décrits par une configuration v86,
  * en URL absolues résolues contre la racine de publication.
  *
