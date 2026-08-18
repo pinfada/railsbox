@@ -457,19 +457,12 @@ system_packages: [libmagickwand-dev] # Debian packages your gems require
 exclude: [doc, db/fixtures] # paths NOT to ship into the sandbox
 ```
 
-<<<<<<< HEAD
-Six keys are recognised — `ruby`, `database`, `database_prepare`, `seed`, `env`,
-`assets` — and inside the `assets:` block two keys are read, `scripts` and
-`output` (anything else there is ignored with a warning); anything else raises a
-diagnostic. `database` accepts `postgresql` or `sqlite3`, `database_prepare`
-accepts `schema` (default) or `migrate`. `env:` values are treated as
-=======
-Seven keys are recognised — `ruby`, `database`, `seed`, `env`, `assets`,
-`system_packages`, `exclude` — and
-inside the `assets:` block two keys are read, `scripts` and `output` (anything
-else there is ignored with a warning); anything else raises a diagnostic.
-`database` accepts `postgresql` or `sqlite3`. `env:` values are treated as
->>>>>>> worktree-agent-aba749b564b4ef112
+Nine keys are recognised — `ruby`, `database`, `database_prepare`, `seed`,
+`env`, `assets`, `system_packages`, `exclude`, `env_assume_public` — and inside
+the `assets:` block two keys are read, `scripts` and `output` (anything else
+there is ignored with a warning); anything else raises a diagnostic. `database`
+accepts `postgresql` or `sqlite3`, `database_prepare` accepts `schema` (default)
+or `migrate`. `env:` values are treated as
 **inert data**, never evaluated at build time (see [`SECURITY.md`](SECURITY.md)).
 
 `assets.output` accepts only paths **relative** to the application root, with no

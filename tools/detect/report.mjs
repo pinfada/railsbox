@@ -49,6 +49,18 @@ export const REMEDIES = Object.freeze({
     "RAILSBOX_KEEP_FORCE_SSL neutralise la parade de railsbox : l'application redirigera " +
     "en 301 vers https et ses cookies seront « secure ». Retirez la variable du bloc env: " +
     "de railsbox.yml si la démonstration ne répond plus.",
+  "env-secret-published":
+    "Remplacez la valeur par une valeur FACTICE : une sandbox est faite pour être essayée, " +
+    "pas pour opérer un service (SECURITY.md). Le bloc env: est écrit tel quel dans " +
+    "/app/.railsbox/app-env.sh, sur un disque que chaque visiteur télécharge et peut monter — " +
+    "le chmod 600 n'y change rien, il est root dans sa propre VM. Si la valeur est DÉJÀ " +
+    "factice, nommez la clé : env_assume_public: [MA_CLE] dans railsbox.yml, une entrée par " +
+    "clé. Si un vrai secret a déjà été publié par une construction antérieure, faites-le " +
+    "tourner : le retirer d'ici ne le retire pas des artefacts déjà en ligne.",
+  "invalid-env-assume-public":
+    "Chaque entrée de env_assume_public: doit être un nom de variable, écrit comme dans le " +
+    "bloc env: (lettres, chiffres et « _ », ne commençant pas par un chiffre). Il n'y a ni " +
+    "joker ni dérogation globale : une clé assumée publique se nomme.",
   "data-bearing-migration":
     "Déplacez l'amorçage de ces données dans db/seeds.rb : c'est ce que Rails prévoit pour " +
     "les données de référence, et une migration ne les fournit qu'aux bases construites " +
@@ -89,7 +101,7 @@ export const REMEDIES = Object.freeze({
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",
   "unknown-manifest-key":
     "Retirez la clé de railsbox.yml : seules ruby, database, database_prepare, seed, " +
-    "env, assets, system_packages et exclude sont reconnues.",
+    "env, assets, system_packages, exclude et env_assume_public sont reconnues.",
   "invalid-asset-output":
     "assets.output n'accepte que des chemins RELATIFS à la racine de l'application " +
     "(« public/dist », « public/vite »), sans « .. », sans chemin absolu et sans espace.",

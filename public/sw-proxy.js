@@ -38,6 +38,7 @@ import {
 } from "./shared/proxy-logic.js";
 import {
   cacheNameFor,
+  estArtefactCacheable,
   immutableArtifacts,
   isCacheableArtifactUrl,
   isCacheableRequestShape,
@@ -341,9 +342,9 @@ async function serveArtifact(event) {
     if (hit) return hit;
   }
   const response = await fetch(request);
-  // 200 seulement : un 206 est refusé par Cache Storage, un opaque serait
-  // illisible, et une erreur n'a rien à faire dans un cache d'immuables.
-  if (bucket && response.status === 200 && response.type !== "opaque") {
+  // Le verdict d'écriture (200 lisible, obtenu sans redirection suivie) est
+  // rendu par shared/artifact-cache.js : ici, rien que le câblage.
+  if (bucket && estArtefactCacheable(response)) {
     event.waitUntil(storeArtifact(bucket.cache, request.url, response.clone()));
   }
   return response;
