@@ -50,7 +50,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Installer Chromium
-        run: npx playwright install --with-deps chromium
+      # `--with-deps` mêle deux téléchargements fragiles dans une seule étape :
+      # apt (dépendances système) et le CDN Playwright (binaire). Le pipelining
+      # HTTP d'apt sur les runners provoque des blocages silencieux — une
+      # exécution est restée 50 minutes sur cette étape sans une ligne de
+      # journal. Les séparer, pipelining coupé, rend chaque échec visible et
+      # attribuable.
+      - name: Installer les dépendances système de Chromium
+        run: |
+          sudo apt-get update -o Acquire::http::Pipeline-Depth=0
+          npx playwright install-deps chromium
+      - name: Télécharger le binaire Chromium
+        run: npx playwright install chromium
       - name: Tests E2E (page hôte — les specs VM s'ignorent sans artefacts)
         run: npm run test:e2e
