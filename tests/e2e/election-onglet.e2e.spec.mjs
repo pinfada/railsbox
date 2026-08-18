@@ -102,12 +102,20 @@ test.describe("Une seule sandbox active par navigateur", () => {
 
     // Même délai que les autres attentes de cette suite : le masquage suit
     // l'obtention du verrou, dont la latence dépend de l'AUTRE onglet — occupé,
-    // sur un runner froid, à enregistrer son Service Worker. Vert en local et
-    // rouge en CI la première fois, faute de ce délai cohérent.
+    // sur un runner froid, à enregistrer son Service Worker.
+    //
+    // On n'exige PAS que le panneau soit caché : sans artefacts (le cas de la
+    // CI), le boot qui suit la reprise échoue aussitôt sur v86-config.json et
+    // RÉAFFICHE le panneau, en erreur, quelques millisecondes après son
+    // masquage — l'assertion ne tenait alors qu'à ce qu'un sondage tombe dans
+    // cette fenêtre, loterie perdue ou gagnée selon la charge du runner. Ce que
+    // la reprise garantit, dans les deux mondes, c'est que le panneau
+    // D'ÉLECTION a cédé : son texte a disparu (panneau caché avec artefacts,
+    // remplacé par l'erreur de boot sans).
     await expect(
       second.locator("#diagnostic"),
-      "le panneau doit céder la place une fois la main reprise",
-    ).toBeHidden({ timeout: DELAI_SERVICE_WORKER_MS });
+      "le panneau d'élection doit céder la place une fois la main reprise",
+    ).not.toContainText("déjà ouverte", { timeout: DELAI_SERVICE_WORKER_MS });
     await attendreRolePrincipal(second);
 
     await expect(
