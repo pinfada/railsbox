@@ -52,6 +52,7 @@ import {
   mergeBrowserCookies,
   parseDocumentCookie,
 } from "./shared/cookie-jar.js";
+import { RESTAUREE, creerRetentionSession, estRefusDeSession } from "./shared/session-privee.js";
 
 // lib.webworker type `self` en WorkerGlobalScope générique : ce fichier est
 // un Service Worker, on le déclare une fois pour bénéficier des types
@@ -148,6 +149,12 @@ const state = {
 
 const cookieJar = createCookieJar();
 
+// Rétention des requêtes d'artefacts sur session expirée (shared/session-privee.js).
+// Le worker peut être tué pendant une rétention : la promesse meurt avec lui,
+// v86 voit un échec réseau et réessaie — le chemin se rattrape de lui-même,
+// et c'est pourquoi rien de tout ceci n'est persisté.
+const retentionSession = creerRetentionSession();
+
 sw.addEventListener("install", () => sw.skipWaiting());
 sw.addEventListener("activate", (event) =>
   event.waitUntil(Promise.all([sw.clients.claim(), dropStaleFormatCaches()])),
@@ -163,7 +170,16 @@ sw.addEventListener("activate", (event) =>
 // client applicatif ne peut donc pas non plus dicter au proxy des cookies que
 // le navigateur ne lui montre pas.
 // La décision est pure et testée : shared/proxy-logic.js.
-const MESSAGES_COQUILLE = new Set(["artifact-config", "bridge-port", "cookies-document"]);
+// `session-restauree` rejoint la liste par CONSTRUCTION protégée : le filtre
+// s'applique à tout ce qui y figure, donc l'iframe applicative ne peut pas
+// libérer elle-même des requêtes retenues — un XSS de l'application relancerait
+// sinon des lectures de disque sous une session qu'il n'a pas.
+const MESSAGES_COQUILLE = new Set([
+  "artifact-config",
+  "bridge-port",
+  "cookies-document",
+  "session-restauree",
+]);
 
 sw.addEventListener("message", (event) => {
   if (!MESSAGES_COQUILLE.has(event.data?.type)) return;
@@ -180,6 +196,11 @@ sw.addEventListener("message", (event) => {
   }
   if (event.data.type === "cookies-document") {
     deliverDocumentCookies(event.data);
+    return;
+  }
+  if (event.data.type === "session-restauree") {
+    const liberees = retentionSession.restaurer();
+    if (liberees > 0) console.info(`[sw] session rétablie — ${liberees} lecture(s) rejouée(s)`);
     return;
   }
   if (!event.ports[0]) return;
@@ -341,13 +362,68 @@ async function serveArtifact(event) {
     const hit = await bucket.cache.match(request.url, { ignoreVary: true }).catch(() => null);
     if (hit) return hit;
   }
-  const response = await fetch(request);
+  const premiere = await fetch(request);
+  // « Suspendre, pas échouer » : rendre un 401 à v86 gèlerait la lecture pour
+  // toujours et en silence (libv86.js:10-11 ne réessaie que sur 5xx et ne
+  // rappelle `done()` que sur 200/206). On retient donc la promesse — une
+  // réponse jamais rendue n'est pas une erreur, c'est une lecture lente — le
+  // temps que la coquille suspende la VM et rétablisse la session.
+  const response = estRefusDeSession(premiere.status, premiere.headers)
+    ? await rejouerApresSession(request, premiere)
+    : premiere;
   // Le verdict d'écriture (200 lisible, obtenu sans redirection suivie) est
   // rendu par shared/artifact-cache.js : ici, rien que le câblage.
   if (bucket && estArtefactCacheable(response)) {
     event.waitUntil(storeArtifact(bucket.cache, request.url, response.clone()));
   }
   return response;
+}
+
+/**
+ * Retient une lecture d'artefact refusée pour session expirée, puis la rejoue.
+ *
+ * Le refus lui-même n'est JAMAIS rendu tant qu'il reste un espoir : v86 n'en
+ * ferait rien. Il n'est rendu qu'au bout du plafond de rétention, quand la
+ * coquille a déjà affiché son écran terminal — à ce stade, geler ou échouer
+ * revient au même, et le visiteur, lui, sait pourquoi.
+ *
+ * Le refus n'est pas mis en cache : le test de mise en cache ci-dessus ne
+ * retient que les 200, et le bord pose de surcroît `Cache-Control: no-store`.
+ * @param {Request} request
+ * @param {Response} refus réponse 401 du bord, corps non lu
+ * @returns {Promise<Response>}
+ */
+async function rejouerApresSession(request, refus) {
+  const { notifier, attendre } = retentionSession.retenir();
+  // Étranglement : v86 demande ses morceaux par rafales, et une notification
+  // par morceau vaudrait une pause de VM et un panneau par morceau.
+  if (notifier) {
+    warnOnce(
+      "session",
+      "session expirée pendant une lecture de disque — lecture RETENUE, " +
+        "la coquille est prévenue (la VM ne perd rien)",
+    );
+    notifierCoquilles({ type: "session-expiree" });
+  }
+  const issue = await attendre;
+  if (issue !== RESTAUREE) return refus;
+  await discardBody(refus);
+  return fetch(request);
+}
+
+/**
+ * Prévient les documents coquille, et EUX SEULS : l'iframe applicative est un
+ * client same-origin comme un autre, et rien ne justifie de lui apprendre
+ * l'état de la session du visiteur.
+ * @param {Record<string, unknown>} message
+ */
+async function notifierCoquilles(message) {
+  const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of clientList) {
+    if (isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH })) {
+      client.postMessage(message);
+    }
+  }
 }
 
 /**

@@ -19,6 +19,7 @@ import {
 } from "./shared/prerequis-demarrage.js";
 import { creerIndicateurDemarrage } from "./shared/progression-demarrage.js";
 import { createVeilleController } from "./shared/veille.js";
+import { PLAFOND_RETENTION_MS } from "./shared/session-privee.js";
 
 // Tout est relatif à la page : la coquille est publiée à la racine en
 // développement, mais sous « /<depot>/ » sur le Pages de projet de chaque
@@ -50,6 +51,34 @@ const DETAIL_SECONDAIRE =
   "L'autre onglet garde la main tant que vous ne la reprenez pas ici ; si vous la reprenez, " +
   "il libère sa VM et affiche ce même message.";
 const LIBELLE_REPRISE = "Reprendre la sandbox dans cet onglet";
+
+// --- Session expirée en plein boot (distribution privée) -------------------
+//
+// Le Service Worker a RETENU une lecture de disque refusée pour session
+// expirée : rien n'est perdu, rien n'est cassé, mais la VM ne doit surtout pas
+// continuer de tourner pendant ce temps. Son délai ATA (30 s par défaut sous
+// libata) réinitialiserait le lien puis remonterait « / » en lecture seule —
+// destruction irréversible de la sandbox. Arrêter le CPU arrête ses compteurs.
+const URL_ETAT_SESSION = new URL("auth/etat", document.baseURI).href;
+// Sonde de rétablissement. Trois secondes : assez court pour que la reprise
+// suive le retour du visiteur, assez long pour ne pas marteler le bord pendant
+// qu'il est parti relire sa boîte mail.
+const SONDE_SESSION_MS = 3_000;
+const TITRE_SESSION = "Votre session a expiré — la sandbox est en pause";
+const DETAIL_SESSION =
+  "La lecture du disque a été suspendue avant qu'elle ne puisse échouer : la machine " +
+  "virtuelle est arrêtée, sa mémoire est intacte, et tout ce que vous avez saisi est " +
+  "toujours là. Reconnectez-vous dans un autre onglet ; cette page le détecte seule et " +
+  "reprend exactement où elle en était.";
+const LIBELLE_SESSION = "J'ai rouvert ma session — vérifier maintenant";
+const TITRE_SESSION_PERDUE = "La session n'a pas été rétablie à temps";
+const DETAIL_SESSION_PERDUE =
+  "La lecture du disque ne peut pas être retenue indéfiniment. Reconnectez-vous, puis " +
+  "rechargez cette page : le boot repartira, et les morceaux déjà téléchargés seront " +
+  "resservis depuis le cache.";
+// Épisode en cours, ou null. Retenu au niveau du module comme `vmInstance` :
+// le Service Worker peut redémarrer et re-notifier hors de toute pile d'appel.
+let sessionSuspendue = null;
 
 const logElement = document.getElementById("boot-log");
 const frameElement = /** @type {HTMLIFrameElement} */ (document.getElementById("app-frame"));
@@ -369,6 +398,110 @@ function onWorkerMessage(event) {
   if (event.data?.type === "bridge-port-request" && vmInstance) sendBridgePort(vmInstance);
   if (event.data?.type === "artifact-config-request") declareArtifacts(artifactConfig);
   if (event.data?.type === "cookies-document-request") sendDocumentCookies(event.data.id);
+  if (event.data?.type === "session-expiree") traiterSessionExpiree();
+}
+
+/**
+ * Le worker retient une lecture de disque : suspendre, expliquer, sonder,
+ * reprendre.
+ *
+ * L'INTERFACE DE RECONNEXION VIT DANS CE DOCUMENT, jamais dans une iframe ni
+ * une popup same-origin. Un tel document passerait `isShellClient` — il
+ * n'exclut que ce qui est sous /app — et serait donc habilité à poster
+ * `bridge-port` au worker, c'est-à-dire à détourner le pont et à recevoir
+ * chaque descripteur de requête avec l'en-tête `cookie:` en clair. Le panneau
+ * ci-dessous n'est qu'un `showDiagnostic` de plus.
+ *
+ * INTERDIT : `location.reload()`. `releaseSandboxToOtherTab` le fait
+ * sciemment pour RENDRE la mémoire de la VM ; ici il la détruirait, avec tout
+ * ce que le visiteur a saisi — exactement ce que cette manœuvre existe pour
+ * éviter.
+ */
+async function traiterSessionExpiree() {
+  // Le worker étrangle déjà ses notifications, mais il peut être tué et
+  // redémarré : la garde vit donc des deux côtés.
+  if (sessionSuspendue) return;
+  sessionSuspendue = { depuis: Date.now() };
+  logLine("Session expirée : lecture de disque retenue, VM suspendue — rien n'est perdu.");
+  try {
+    await vmInstance?.pause?.();
+  } catch (error) {
+    // La pause a échoué : le panneau reste dû au visiteur, et la reprise
+    // ci-dessous n'en sera que plus prudente.
+    logLine(`[session] pause impossible : ${error.message}`);
+  }
+  showDiagnostic(TITRE_SESSION, DETAIL_SESSION, {
+    ton: "info",
+    action: {
+      libelle: LIBELLE_SESSION,
+      onClick: (bouton) => {
+        bouton.disabled = true;
+        sonderSession().finally(() => {
+          if (sessionSuspendue) bouton.disabled = false;
+        });
+      },
+    },
+  });
+  await attendreRetablissement();
+}
+
+/**
+ * Sonde jusqu'au rétablissement, ou jusqu'au plafond de rétention du worker.
+ * Passé ce plafond, le worker aura rendu son 401 à v86 : la lecture est
+ * perdue, et le dire est la seule chose honnête qui reste à faire.
+ */
+async function attendreRetablissement() {
+  while (sessionSuspendue) {
+    if (Date.now() - sessionSuspendue.depuis > PLAFOND_RETENTION_MS) {
+      sessionSuspendue = null;
+      logLine("Session non rétablie dans le délai : la lecture retenue a été abandonnée.");
+      showDiagnostic(TITRE_SESSION_PERDUE, DETAIL_SESSION_PERDUE);
+      return;
+    }
+    await new Promise((resoudre) => setTimeout(resoudre, SONDE_SESSION_MS));
+    await sonderSession();
+  }
+}
+
+/**
+ * Un aller-retour sur /auth/etat. `no-store` : une sonde resservie depuis le
+ * cache HTTP dirait « toujours expirée » longtemps après la reconnexion.
+ * `credentials: "same-origin"` est le défaut, mais l'écrire ici évite qu'un
+ * durcissement ultérieur ne prive la sonde du cookie qu'elle vient vérifier.
+ * @returns {Promise<void>}
+ */
+async function sonderSession() {
+  if (!sessionSuspendue) return;
+  try {
+    const reponse = await fetch(URL_ETAT_SESSION, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!reponse.ok) return;
+  } catch {
+    // Bord injoignable : la sonde suivante retentera. Ce n'est pas un échec
+    // de session, et l'annoncer comme tel serait un message mensonger.
+    return;
+  }
+  reprendreApresSession();
+}
+
+/** Session rétablie : reprendre la VM, PUIS libérer les lectures retenues. */
+function reprendreApresSession() {
+  if (!sessionSuspendue) return;
+  sessionSuspendue = null;
+  hideDiagnostic();
+  // L'ordre compte. `resume()` recale l'horloge invitée, qui a pris le retard
+  // exact de la pause — sans quoi cookies de session et jetons CSRF de
+  // l'application expireraient. Rejouer les lectures avant que l'invité ne
+  // tourne à nouveau lui ferait recevoir des octets qu'il n'attend plus.
+  try {
+    vmInstance?.resume?.();
+  } catch (error) {
+    logLine(`[session] reprise de la VM impossible : ${error.message}`);
+  }
+  navigator.serviceWorker.controller?.postMessage({ type: "session-restauree" });
+  logLine("Session rétablie : VM reprise, horloge recalée, lectures rejouées.");
 }
 
 /**
