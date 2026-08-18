@@ -472,18 +472,12 @@ system_packages: [libmagickwand-dev] # paquets Debian que vos gems exigent
 exclude: [doc, db/fixtures] # chemins à ne PAS embarquer dans la sandbox
 ```
 
-<<<<<<< HEAD
-Sept clés sont reconnues — `ruby`, `database`, `database_prepare`, `seed`,
-`env`, `assets`, `system_packages` — et toute autre déclenche un diagnostic.
-Dans le bloc `assets:`, deux clés sont lues, `scripts` et `output` : toute
-autre y est ignorée avec un avertissement. `database` accepte `postgresql` ou
-`sqlite3`, `database_prepare` accepte `schema` (défaut) ou `migrate`.
-=======
-Sept clés sont reconnues — `ruby`, `database`, `seed`, `env`, `assets`,
-`system_packages`, `exclude` — et toute autre déclenche un diagnostic. Dans le bloc
-`assets:`, deux clés sont lues, `scripts` et `output` : toute autre y est
-ignorée avec un avertissement. `database` accepte `postgresql` ou `sqlite3`.
->>>>>>> worktree-agent-aba749b564b4ef112
+Neuf clés sont reconnues — `ruby`, `database`, `database_prepare`, `seed`,
+`env`, `assets`, `system_packages`, `exclude`, `env_assume_public` — et toute
+autre déclenche un diagnostic. Dans le bloc `assets:`, deux clés sont lues,
+`scripts` et `output` : toute autre y est ignorée avec un avertissement.
+`database` accepte `postgresql` ou `sqlite3`, `database_prepare` accepte
+`schema` (défaut) ou `migrate`.
 Les valeurs `env:` sont traitées comme des **données inertes**, jamais
 évaluées au build (voir [`SECURITY.md`](SECURITY.md)).
 

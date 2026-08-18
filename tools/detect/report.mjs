@@ -101,7 +101,7 @@ export const REMEDIES = Object.freeze({
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",
   "unknown-manifest-key":
     "Retirez la clé de railsbox.yml : seules ruby, database, database_prepare, seed, " +
-    "env, assets, system_packages et exclude sont reconnues.",
+    "env, assets, system_packages, exclude et env_assume_public sont reconnues.",
   "invalid-asset-output":
     "assets.output n'accepte que des chemins RELATIFS à la racine de l'application " +
     "(« public/dist », « public/vite »), sans « .. », sans chemin absolu et sans espace.",
