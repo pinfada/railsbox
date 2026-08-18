@@ -44,6 +44,12 @@ export const ENV_SECRET_NAME_HINTS = Object.freeze([
   "PRIVATE_KEY",
   "CREDENTIALS",
   "ACCESS_KEY",
+  // Trouvés en mangeant notre propre nourriture : la première application
+  // privée passée au détecteur portait MEDICAL_DATA_ENCRYPTION_KEY, et aucun
+  // motif ne la voyait. Une clé de chiffrement ou de signature est un secret
+  // par définition ; « KEY » seul serait trop large (PUBLIC_KEY, KEYBOARD).
+  "ENCRYPTION_KEY",
+  "SIGNING_KEY",
 ]);
 
 /**

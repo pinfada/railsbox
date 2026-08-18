@@ -187,3 +187,17 @@ test("la liste des fragments de noms est exportée, pour que doc et tests s'y r�
   assert.ok(ENV_SECRET_NAME_HINTS.includes("MASTER_KEY"));
   assert.ok(ENV_SECRET_NAME_HINTS.includes("ACCESS_KEY"));
 });
+
+test("une clé de chiffrement est reconnue comme secret par son nom", () => {
+  // Trou trouvé en mangeant notre propre nourriture : la premiere application
+  // privée passée au détecteur portait MEDICAL_DATA_ENCRYPTION_KEY — une clé
+  // de chiffrement de données médicales — et aucun motif ne la voyait.
+  const constats = envSecretFindings({ env: { MEDICAL_DATA_ENCRYPTION_KEY: "0123456789abcdef" } });
+  assert.equal(constats.length, 1, "ENCRYPTION_KEY doit déclencher le refus");
+  assert.equal(constats[0].details.key, "MEDICAL_DATA_ENCRYPTION_KEY");
+});
+
+test("une clé de signature est reconnue comme secret par son nom", () => {
+  const constats = envSecretFindings({ env: { JWT_SIGNING_KEY: "0123456789abcdef" } });
+  assert.equal(constats.length, 1, "SIGNING_KEY doit déclencher le refus");
+});
