@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { detectOutputDirs } from "./asset-output.mjs";
 import { NPM_LOCKFILES, planAssets } from "./assets.mjs";
 import { DEFAULT_BASE, resolveBase } from "./bases.mjs";
+import { absolutePathFindings, scanAbsolutePaths } from "./chemins-absolus-js.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
@@ -120,6 +121,69 @@ async function readMigrations(appDir) {
       text: (await readOptionalFile(join(dir, name))) ?? "",
     })),
   );
+}
+
+/** Répertoires où vit le JavaScript écrit par l'application. */
+const JS_ROOTS = Object.freeze([
+  ["app", "javascript"],
+  ["app", "assets", "javascripts"],
+]);
+
+/** Extensions traitées comme du JavaScript applicatif. */
+const JS_EXTENSIONS = Object.freeze([".js", ".mjs", ".jsx"]);
+
+/**
+ * Répertoires JAMAIS parcourus : ils portent des dépendances tierces, dont les
+ * chemins absolus ne regardent pas l'auteur de l'application — et un seul
+ * `node_modules` égaré suffirait à faire durer l'analyse des minutes.
+ */
+const JS_SKIPPED_DIRS = Object.freeze(["node_modules", "vendor", ".git"]);
+
+/** Bornes du parcours : un dépôt mal rangé ne doit pas faire exploser l'analyse. */
+const JS_MAX_DEPTH = 6;
+const JS_MAX_FILES = 400;
+
+/**
+ * Lit le JavaScript de l'application, en tolérant l'absence des dossiers.
+ * @param {string} appDir racine de l'application
+ * @returns {Promise<{name: string, text: string}[]>} sources, chemins relatifs à la racine
+ * @throws {Error} pour toute erreur autre qu'une absence (droits, E/S)
+ */
+async function readJavaScriptFiles(appDir) {
+  /** @type {{name: string, text: string}[]} */
+  const files = [];
+  /**
+   * @param {string} dir répertoire à parcourir
+   * @param {string} relative même répertoire, vu depuis la racine de l'application
+   * @param {number} depth profondeur courante, 0 à la racine du parcours
+   * @returns {Promise<void>}
+   */
+  async function walk(dir, relative, depth) {
+    if (depth > JS_MAX_DEPTH || files.length >= JS_MAX_FILES) return;
+    /** @type {import("node:fs").Dirent[]} */
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error && ABSENT_CODES.includes(error.code)) return;
+      throw error;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (files.length >= JS_MAX_FILES) return;
+      const chemin = join(dir, entry.name);
+      const affiche = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (JS_SKIPPED_DIRS.includes(entry.name)) continue;
+        await walk(chemin, affiche, depth + 1);
+        continue;
+      }
+      if (!JS_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) continue;
+      // Un fichier disparu entre le readdir et la lecture n'est pas un incident.
+      files.push({ name: affiche, text: (await readOptionalFile(chemin)) ?? "" });
+    }
+  }
+  for (const parts of JS_ROOTS) await walk(join(appDir, ...parts), parts.join("/"), 0);
+  return files;
 }
 
 /**
@@ -435,6 +499,7 @@ export async function detectApp(appDir, options = {}) {
     shakapackerYml,
     webpackerYml,
     migrations,
+    javascriptFiles,
   ] = await Promise.all([
     readOptionalFile(join(appDir, ".ruby-version")),
     readOptionalFile(join(appDir, "Gemfile")),
@@ -453,6 +518,10 @@ export async function detectApp(appDir, options = {}) {
     // des données, car `db:prepare` sur une base vierge charge db/schema.rb et
     // n'en joue aucune (voir migrations.mjs).
     readMigrations(appDir),
+    // Le JavaScript de l'application : railsbox doit savoir si des appels
+    // réseau visent la racine du DOMAINE, ce qu'aucun test GET ne révèle —
+    // la page s'affiche, et c'est le premier clic qui casse (chemins-absolus-js).
+    readJavaScriptFiles(appDir),
   ]);
 
   /** @type {Finding[]} */
@@ -500,6 +569,7 @@ export async function detectApp(appDir, options = {}) {
   const sqlite = sqliteDriverState(gemfile, specs, lock !== null);
   findings.push(...sqliteDriverFindings({ state: sqlite, database: database.database, adapters }));
   findings.push(...externalServiceFindings(specs.keys()));
+  findings.push(...absolutePathFindings(scanAbsolutePaths(javascriptFiles)));
   const dataMigrations = scanDataMigrations(migrations);
   findings.push(...dataMigrationFindings(dataMigrations));
   const ssl = detectSsl(productionRb);

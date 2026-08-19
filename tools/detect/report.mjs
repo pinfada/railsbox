@@ -108,6 +108,15 @@ export const REMEDIES = Object.freeze({
     '"amazon").to_sym) et déclarez la valeur de repli dans le bloc env: de railsbox.yml. ' +
     "Le gain dépasse la sandbox : une review app et une base de CI n'ont pas plus de réseau " +
     "vers votre bucket. Si la gem n'est pas sollicitée au démarrage, il n'y a rien à faire.",
+  "chemin-absolu-javascript":
+    "Faites dire le préfixe par Rails, lisez-le une fois en JavaScript, préfixez les appels — " +
+    "et rien ne change hors de la sandbox, où le préfixe est vide. Dans le layout : " +
+    '<%= tag.meta(name: "app-base", content: ' +
+    'Rails.application.config.relative_url_root.to_s.chomp("/")) %>. Puis, à UN SEUL endroit : ' +
+    'export const BASE = document.querySelector(\'meta[name="app-base"]\')?.content ?? ""; ' +
+    'export const chemin = (suite) => `${BASE}${suite}`. Enfin fetch(chemin("/api/likes")) au ' +
+    'lieu de fetch("/api/likes"), et axios.create({ baseURL: chemin("/api/v1") }). Voir « Votre ' +
+    "application embarque un SPA ? » dans le README, même recette pour le routeur.",
   "invalid-asset-output":
     "assets.output n'accepte que des chemins RELATIFS à la racine de l'application " +
     "(« public/dist », « public/vite »), sans « .. », sans chemin absolu et sans espace.",
