@@ -103,23 +103,40 @@ function lireLongueurMarshal(marshal, position) {
   return { valeur: tete - 5, suivant: position + 1 };
 }
 
-test("lit la paire réelle écrite par rails credentials:edit", () => {
+// La paire de la démonstration est écrite par un vrai `rails credentials:edit`,
+// mais sa `master.key` est gitignorée — comme dans toute application Rails, et
+// c'est bien le comportement que ce module existe pour rattraper. Elle n'est
+// donc présente que sur une machine où la démonstration a été préparée : ces
+// deux tests confrontent le module à du Rails RÉEL quand c'est possible, et
+// s'abstiennent sinon plutôt que de tomber. Ce qu'ils vérifient en plus du
+// reste de la suite, c'est l'identité du fichier entier ; la partie
+// véritablement risquée du format — l'en-tête Marshal — est figée en octets
+// littéraux plus bas, dans un test qui tourne partout.
+const PAIRE_REELLE = (() => {
+  try {
+    return {
+      cle: readFileSync(join(DEMO_CONFIG, "master.key"), "utf8").trim(),
+      fichier: readFileSync(join(DEMO_CONFIG, "credentials.yml.enc"), "utf8").trim(),
+    };
+  } catch {
+    return null;
+  }
+})();
+
+test("lit la paire réelle écrite par rails credentials:edit", { skip: !PAIRE_REELLE }, () => {
   // Ancre du format : cette paire n'a pas été produite par ce module, mais par
   // Rails. Si notre lecture s'en écarte, notre écriture s'en écarte aussi.
-  const cle = readFileSync(join(DEMO_CONFIG, "master.key"), "utf8").trim();
-  const fichier = readFileSync(join(DEMO_CONFIG, "credentials.yml.enc"), "utf8").trim();
-  const clair = dechiffrerCommeRails(fichier, cle);
+  const clair = dechiffrerCommeRails(PAIRE_REELLE.fichier, PAIRE_REELLE.cle);
   assert.match(clair, /^secret_key_base: [0-9a-f]{128}$/m);
 });
 
-test("réencode à l'identique ce que Rails a écrit", () => {
+test("réencode à l'identique ce que Rails a écrit", { skip: !PAIRE_REELLE }, () => {
   // Même clé, même IV, même sceau attendu : la seule variable est notre
   // sérialisation. Un octet d'écart sur l'en-tête Marshal casserait l'égalité.
-  const cle = readFileSync(join(DEMO_CONFIG, "master.key"), "utf8").trim();
-  const fichier = readFileSync(join(DEMO_CONFIG, "credentials.yml.enc"), "utf8").trim();
-  const [, iv] = fichier.split("--");
-  const clair = dechiffrerCommeRails(fichier, cle);
-  assert.equal(chiffrerCredentials(clair, cle, Buffer.from(iv, "base64")), fichier);
+  const [, iv] = PAIRE_REELLE.fichier.split("--");
+  const clair = dechiffrerCommeRails(PAIRE_REELLE.fichier, PAIRE_REELLE.cle);
+  const refait = chiffrerCredentials(clair, PAIRE_REELLE.cle, Buffer.from(iv, "base64"));
+  assert.equal(refait, PAIRE_REELLE.fichier);
 });
 
 test("la paire générée se relit par le chemin de Rails", () => {
@@ -132,10 +149,25 @@ test("la paire générée se relit par le chemin de Rails", () => {
   assert.match(clair, /^\s+key_derivation_salt: [0-9a-f]{32}$/m);
 });
 
-test("enveloppe Marshal : forme longue au-delà de 122 octets", () => {
-  assert.deepEqual([...marshalChaineBinaire(Buffer.alloc(3))], [0x04, 0x08, 0x22, 8, 0, 0, 0]);
-  const long = marshalChaineBinaire(Buffer.alloc(372));
-  assert.deepEqual([...long.subarray(0, 6)], [0x04, 0x08, 0x22, 0x02, 0x74, 0x01]);
+test("enveloppe Marshal : les octets attendus par Ruby, aux bornes", () => {
+  // Vecteurs figés — c'est l'ancre de format qui tourne PARTOUT, y compris là où
+  // la paire de la démonstration est absente. L'entier Marshal change de forme
+  // deux fois (zéro, courte à +5 jusqu'à 122, longue préfixée du nombre
+  // d'octets) : ce sont ces bascules qui produiraient un fichier que Rails
+  // rejette, et elles ne se voient pas dans un aller-retour avec nous-mêmes.
+  const entete = (taille) => [...marshalChaineBinaire(Buffer.alloc(taille)).subarray(0, 7)];
+  assert.deepEqual(entete(0).slice(0, 4), [0x04, 0x08, 0x22, 0x00]);
+  assert.deepEqual(entete(1).slice(0, 4), [0x04, 0x08, 0x22, 0x06]);
+  assert.deepEqual(entete(122).slice(0, 4), [0x04, 0x08, 0x22, 0x7f]);
+  assert.deepEqual(entete(123).slice(0, 5), [0x04, 0x08, 0x22, 0x01, 0x7b]);
+  assert.deepEqual(entete(255).slice(0, 5), [0x04, 0x08, 0x22, 0x01, 0xff]);
+  assert.deepEqual(entete(256).slice(0, 6), [0x04, 0x08, 0x22, 0x02, 0x00, 0x01]);
+  // 372 octets : la longueur EXACTE du clair de la paire écrite par Rails dans
+  // l'application de démonstration, et l'en-tête relevé sur ce fichier.
+  assert.deepEqual(entete(372).slice(0, 6), [0x04, 0x08, 0x22, 0x02, 0x74, 0x01]);
+  // La charge utile suit immédiatement l'en-tête, sans marqueur d'encodage :
+  // Rails chiffre une chaîne BINAIRE, pas une chaîne utf8 (qui vaudrait `I"…`).
+  assert.deepEqual([...marshalChaineBinaire(Buffer.from("ab"))], [0x04, 0x08, 0x22, 0x07, 97, 98]);
 });
 
 test("deux constructions ne partagent aucun secret", () => {
