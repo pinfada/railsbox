@@ -1,0 +1,110 @@
+# Capture hebdomadaire de l'adoption, écrite dans le dépôt.
+#
+# POURQUOI UNE CAPTURE. L'API de trafic de GitHub n'expose que QUATORZE JOURS.
+# Chaque semaine non capturée est définitivement perdue : il n'existe aucun
+# moyen de la reconstituer après coup. En committant la mesure, l'historique
+# git devient la série temporelle — sans base de données, sans service, et
+# publiable puisque le dépôt est public.
+#
+# CE QU'ELLE NE MESURERA JAMAIS. Un dépôt PRIVÉ qui utilise railsbox est
+# invisible : aucune recherche ne le voit, aucun compteur ne le distingue. Ce
+# n'est pas un manque d'outillage, c'est le modèle — pas de serveur, pas de
+# compte, pas de télémétrie. La page générée l'écrit noir sur blanc plutôt que
+# de laisser croire à un recensement.
+#
+# AUCUN VISITEUR N'EST MESURÉ ICI. On lit le trafic de NOTRE dépôt et le
+# compteur de NOTRE image de base. Personne n'est pisté, et la sandbox d'un
+# tiers ne rapporte rien à personne — le badge est servi par sa propre
+# publication, jamais par nous.
+name: Mesurer l'adoption
+
+on:
+  schedule:
+    # Lundi 07:00 UTC, après la vérification de la sandbox publiée : deux
+    # relevés hebdomadaires groupés au même moment se relisent ensemble.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  mesurer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collecte
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Jeton personnel FACULTATIF, avec la portée de recherche de code.
+          # Sans lui, la recherche est sautée : le jeton d'Actions ne porte pas
+          # la recherche de code sur l'ensemble de GitHub. Le reste est mesuré
+          # quand même — une collecte partielle vaut mieux qu'un échec.
+          GH_RECHERCHE: ${{ secrets.ADOPTION_SEARCH_TOKEN }}
+        run: |
+          set -eu
+
+          jq_nombre() { jq -r "$1 // empty" 2>/dev/null || true; }
+
+          vues="$(gh api repos/${GITHUB_REPOSITORY}/traffic/views 2>/dev/null | jq_nombre '.count')"
+          vues_u="$(gh api repos/${GITHUB_REPOSITORY}/traffic/views 2>/dev/null | jq_nombre '.uniques')"
+          clones="$(gh api repos/${GITHUB_REPOSITORY}/traffic/clones 2>/dev/null | jq_nombre '.count')"
+          clones_u="$(gh api repos/${GITHUB_REPOSITORY}/traffic/clones 2>/dev/null | jq_nombre '.uniques')"
+
+          # Le seul compteur qui voit AUSSI les constructions privées : toute
+          # construction tire cette image, quelle que soit la visibilité du
+          # dépôt appelant. Il compte des constructions, pas des utilisateurs.
+          proprietaire="${GITHUB_REPOSITORY%%/*}"
+          tirages="$(gh api "users/${proprietaire}/packages/container/railsbox-base" 2>/dev/null \
+            | jq_nombre '.version_count')"
+
+          # Recherche de code : facultative, et jamais bloquante.
+          depots='[]'
+          if [ -n "${GH_RECHERCHE:-}" ]; then
+            depots="$(GH_TOKEN="$GH_RECHERCHE" gh search code \
+              "pinfada/railsbox/.github/workflows/construire-sandbox.yml" \
+              --limit 100 --json repository \
+              --jq '[.[].repository.nameWithOwner] | unique' 2>/dev/null || echo '[]')"
+          fi
+
+          # Chaque construction de sandbox clone ce dépôt : sans ce chiffre, on
+          # lirait une adoption là où on mesure sa propre intégration continue.
+          interne="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" 2>/dev/null \
+            | jq_nombre '[.workflow_runs[]] | length')"
+
+          nombre_ou_null() { [ -n "${1:-}" ] && printf '%s' "$1" || printf 'null'; }
+
+          jq -n \
+            --argjson vues "$(nombre_ou_null "$vues")" \
+            --argjson vues_u "$(nombre_ou_null "$vues_u")" \
+            --argjson clones "$(nombre_ou_null "$clones")" \
+            --argjson clones_u "$(nombre_ou_null "$clones_u")" \
+            --argjson tirages "$(nombre_ou_null "$tirages")" \
+            --argjson depots "$depots" \
+            --argjson interne "$(nombre_ou_null "$interne")" \
+            --arg date "$(date -u '+%d/%m/%Y')" \
+            '{date: $date, trafic: {vues: $vues, vuesUniques: $vues_u, clones: $clones, clonesUniques: $clones_u},
+              tiragesBase: $tirages, depotsPublics: $depots, constructionsInternes: $interne}' \
+            > mesures.json
+
+          mkdir -p docs
+          node tools/mesurer-adoption.mjs < mesures.json > docs/adoption.md
+          rm -f mesures.json
+          cat docs/adoption.md
+
+      - name: Consigner la mesure
+        run: |
+          set -eu
+          git config user.email "actions@github.com"
+          git config user.name "railsbox"
+          git add docs/adoption.md
+          # Rien de neuf : pas de commit vide. Une semaine identique à la
+          # précédente est une information, mais pas un commit.
+          if git diff --cached --quiet; then
+            echo "Aucun changement mesuré cette semaine."
+            exit 0
+          fi
+          git commit -m "chore: mesure d'adoption du $(date -u '+%d/%m/%Y')"
+          git push

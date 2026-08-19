@@ -275,6 +275,26 @@ real secrets or real data. What is defended, what is not, and why:
 
 ---
 
+## Who uses it
+
+**They use it, and said so** — this list is hand-kept, through pull requests.
+It is the **only** way to appear here from a private repository: no automatic
+detection will ever see one.
+
+<!-- Add yourself: one line, alphabetical order. -->
+<!-- - [Name](https://example.org) — what you showcase · [the demo](https://…) -->
+
+_Nobody yet. If railsbox is useful to you, open a pull request: it is the only
+feedback this project gets._
+
+**Public** sandboxes are detected automatically and listed in
+[docs/adoption.md](docs/adoption.md), regenerated weekly alongside traffic
+figures *(French)*. That page also states, explicitly, what it cannot measure:
+a private repository using railsbox is invisible — no server, no account, no
+telemetry. That is the model, not a tooling gap.
+
+---
+
 ## Going further
 
 The rest of the documentation is split by topic — each page reads on its own.
