@@ -123,9 +123,13 @@ fichier à modifier : cette page-ci est régénérée chaque semaine.
 
 ${liste}
 
-Détection automatique, par recherche du workflow réutilisable dans le code
-public. Cette liste est une observation, pas une liste de références : un dépôt
-y figure parce qu'il déclare publiquement utiliser railsbox.
+Détection automatique, par recherche du workflow réutilisable. **Seules des
+sandboxes publiques y figurent** : quand la source est privée, c'est sa vitrine
+publique qui est nommée — jamais le dépôt privé, que cette page ne divulguera
+pas. Un dépôt dont la visibilité ou le workflow est illisible n'y figure pas du
+tout : le silence vaut mieux qu'une fuite.
+
+Cette liste est une observation, pas une liste de références.
 
 ## À lire avec les chiffres
 

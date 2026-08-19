@@ -31,18 +31,22 @@ fichier à modifier : cette page-ci est régénérée chaque semaine.
 
 ## Sandboxes publiques détectées
 
-- [`pinfada/GenealogyApp`](https://github.com/pinfada/GenealogyApp)
-- [`pinfada/fractal`](https://github.com/pinfada/fractal)
+- [`pinfada/fractal-demo`](https://github.com/pinfada/fractal-demo)
+- [`pinfada/genealogyapp-demo`](https://github.com/pinfada/genealogyapp-demo)
 - [`pinfada/sharemybag`](https://github.com/pinfada/sharemybag)
 - [`pinfada/tchopmygrinds`](https://github.com/pinfada/tchopmygrinds)
 
-Détection automatique, par recherche du workflow réutilisable dans le code
-public. Cette liste est une observation, pas une liste de références : un dépôt
-y figure parce qu'il déclare publiquement utiliser railsbox.
+Détection automatique, par recherche du workflow réutilisable. **Seules des
+sandboxes publiques y figurent** : quand la source est privée, c'est sa vitrine
+publique qui est nommée — jamais le dépôt privé, que cette page ne divulguera
+pas. Un dépôt dont la visibilité ou le workflow est illisible n'y figure pas du
+tout : le silence vaut mieux qu'une fuite.
+
+Cette liste est une observation, pas une liste de références.
 
 ## À lire avec les chiffres
 
-- **Les clones ne mesurent pas l'adoption.** Chaque construction de sandbox clone ce dépôt (`actions/checkout`) : 90 construction(s) sur la période y contribuent, sans compter la CI de railsbox elle-même. Les « uniques » sont des runners éphémères, pas des personnes.
+- **Les clones ne mesurent pas l'adoption.** Chaque construction de sandbox clone ce dépôt (`actions/checkout`) : 91 construction(s) sur la période y contribuent, sans compter la CI de railsbox elle-même. Les « uniques » sont des runners éphémères, pas des personnes.
 - **Les dépôts privés sont invisibles.** Aucune recherche ne les voit, aucun compteur ne les distingue. C'est le modèle — pas de serveur, pas de compte, pas de télémétrie — et non un défaut d'outillage.
 - **La recherche de code dépend du jeton employé** : elle voit les dépôts publics, plus les dépôts privés auxquels ce jeton a accès. La liste ci-dessus peut donc contenir des dépôts privés du mainteneur.
 

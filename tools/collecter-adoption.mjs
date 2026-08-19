@@ -36,6 +36,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { pageAdoption } from "./mesurer-adoption.mjs";
+import { nommable } from "./sandbox-publiee.mjs";
 
 const executer = promisify(execFile);
 
@@ -71,6 +72,38 @@ async function entier(chemin, extraire) {
   }
 }
 
+/**
+ * La sandbox publique d'un dépôt trouvé, ou null. La décision vit dans
+ * sandbox-publiee.mjs (pure, testée) ; ici, rien que les appels réseau.
+ * @param {string} depot
+ * @returns {Promise<string | null>}
+ */
+async function sandboxPubliee(depot) {
+  const brutDepot = await gh(["api", `repos/${depot}`]);
+  let visibilite = null;
+  try {
+    visibilite = JSON.parse(brutDepot ?? "{}").visibility ?? null;
+  } catch {
+    /* dépôt illisible : on n'en dira rien */
+  }
+
+  const encode = await gh([
+    "api",
+    `repos/${depot}/contents/.github/workflows/sandbox.yml`,
+    "--jq",
+    ".content",
+  ]);
+  let workflow = null;
+  if (encode !== null) {
+    try {
+      workflow = Buffer.from(encode.trim(), "base64").toString("utf8");
+    } catch {
+      /* contenu illisible : la visibilité tranchera */
+    }
+  }
+  return nommable({ visibilite, workflow }, depot);
+}
+
 async function main() {
   const depot = process.env.GITHUB_REPOSITORY ?? "pinfada/railsbox";
   const proprietaire = depot.split("/")[0];
@@ -104,15 +137,26 @@ async function main() {
     "--json",
     "repository",
   ]);
-  let depotsPublics = [];
+  let trouves = [];
   try {
-    depotsPublics = [
-      ...new Set(JSON.parse(recherche ?? "[]").map((r) => r.repository.nameWithOwner)),
-    ];
+    trouves = [...new Set(JSON.parse(recherche ?? "[]").map((r) => r.repository.nameWithOwner))];
   } catch {
     process.stderr.write("  recherche indisponible avec ce jeton\n");
   }
-  process.stderr.write(`  ${depotsPublics.length} dépôt(s) détecté(s)\n`);
+
+  // NE JAMAIS NOMMER UN DÉPÔT PRIVÉ. La recherche voit les dépôts privés
+  // auxquels le jeton a accès : publier leurs noms dans ce dépôt PUBLIC les
+  // divulguerait — exactement ce que l'offre « dépôt privé » promet d'éviter.
+  // Ce qui est publiable, c'est la SANDBOX : elle est publique par
+  // construction, y compris quand sa source ne l'est pas.
+  const depotsPublics = [];
+  for (const trouve of trouves) {
+    const sandbox = await sandboxPubliee(trouve);
+    if (sandbox !== null && !depotsPublics.includes(sandbox)) depotsPublics.push(sandbox);
+  }
+  process.stderr.write(
+    `  ${trouves.length} dépôt(s) trouvé(s) → ${depotsPublics.length} sandbox(es) publique(s)\n`,
+  );
 
   // Chaque construction de sandbox clone ce dépôt : sans ce chiffre, on lirait
   // une adoption là où on mesure sa propre intégration continue.
