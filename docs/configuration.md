@@ -377,6 +377,33 @@ Secret `publish-key` : clé de déploiement en écriture, **obligatoire** dès q
 `target-repo` est renseigné — le jeton du workflow ne vaut que pour le dépôt
 courant.
 
+#### Amorcer une vitrine en une commande
+
+Le workflow **ne crée rien** : il pousse. Son jeton n'a de droits que sur le
+dépôt courant, il ne peut donc ni créer le dépôt vitrine, ni y poser une clé,
+ni s'écrire un secret. Ces gestes vous reviennent — et deux d'entre eux
+échouent **en silence** :
+
+- un dépôt vitrine créé **avec** un README garde `main` comme branche par
+  défaut, et la page du dépôt restera vide aux yeux des visiteurs : c'est le
+  README de la branche par défaut qu'elle affiche, jamais celui de `gh-pages` ;
+- GitHub Pages configuré sur `main` (vide) sert un **404 sans aucun message**,
+  ni dans Actions, ni dans les réglages.
+
+Un script les enchaîne, depuis votre machine, avec votre authentification
+`gh` — aucun jeton supplémentaire à créer, et la clé privée générée est
+effacée en fin d'exécution :
+
+```sh
+sh tools/amorcer-vitrine.sh <proprietaire/depot-source> <proprietaire/depot-vitrine>
+```
+
+Il crée la vitrine vide, génère une paire de clés dédiée, pose la publique en
+clé de déploiement écriture, la privée en secret `PUBLISH_KEY`, puis imprime le
+workflow à coller. Il **refuse plutôt que de deviner** : dépôt source
+inaccessible, `gh` non authentifié, vitrine déjà peuplée — il le dit et
+s'arrête.
+
 Les artefacts publiés par la construction — disque applicatif et instantané —
 portent l'**empreinte de leur contenu** dans leur nom
 (`disks/mon-app-a1b2c3d4e5f6.ext2.zst`,
