@@ -8,10 +8,10 @@ les quatorze derniers jours.*
 
 | Indicateur | Valeur | Fenêtre |
 | --- | --- | --- |
-| Vues du dépôt | 81 (1 unique) | 14 jours |
-| Clones | 193 (28 uniques) | 14 jours |
-| Tirages de l'image de base | — | cumulé |
-| Dépôts publics détectés | 4 | instantané |
+| Vues du dépôt | — (— uniques) | 14 jours |
+| Clones | — (— uniques) | 14 jours |
+| Tirages de l'image de base | 5 | cumulé |
+| Dépôts publics détectés | 2 | instantané |
 | Dépôts privés | **non mesurable** | — |
 
 Le **tirage de l'image de base** (`ghcr.io/pinfada/railsbox-base`) est le seul
@@ -21,8 +21,6 @@ utilisateurs — une re-exécution de CI en ajoute une.
 
 ## Sandboxes publiques détectées
 
-- [`pinfada/GenealogyApp`](https://github.com/pinfada/GenealogyApp)
-- [`pinfada/fractal`](https://github.com/pinfada/fractal)
 - [`pinfada/sharemybag`](https://github.com/pinfada/sharemybag)
 - [`pinfada/tchopmygrinds`](https://github.com/pinfada/tchopmygrinds)
 
@@ -32,7 +30,7 @@ y figure parce qu'il déclare publiquement utiliser railsbox.
 
 ## À lire avec les chiffres
 
-- **Les clones ne mesurent pas l'adoption.** Chaque construction de sandbox clone ce dépôt (`actions/checkout`) : 87 construction(s) sur la période y contribuent, sans compter la CI de railsbox elle-même. Les « uniques » sont des runners éphémères, pas des personnes.
+- **Les clones ne mesurent pas l'adoption.** Chaque construction de sandbox clone ce dépôt (`actions/checkout`) : 89 construction(s) sur la période y contribuent, sans compter la CI de railsbox elle-même. Les « uniques » sont des runners éphémères, pas des personnes.
 - **Les dépôts privés sont invisibles.** Aucune recherche ne les voit, aucun compteur ne les distingue. C'est le modèle — pas de serveur, pas de compte, pas de télémétrie — et non un défaut d'outillage.
 - **La recherche de code dépend du jeton employé** : elle voit les dépôts publics, plus les dépôts privés auxquels ce jeton a accès. La liste ci-dessus peut donc contenir des dépôts privés du mainteneur.
 
