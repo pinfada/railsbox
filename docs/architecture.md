@@ -44,8 +44,18 @@ dans [`SECURITY.md`](../SECURITY.md)).
    faire tourner la sandbox se le voit dire tout de suite, plutôt que d'échouer
    trois étages plus loin sur un `navigator.serviceWorker is undefined`.
 2. Enregistrement de `sw-proxy.js`, puis `ensureControlled()` : au tout premier
-   passage la page n'est pas encore contrôlée par le worker, et un unique
-   rechargement règle ça. Ce rechargement fait partie du démarrage normal.
+   passage la page n'est pas encore contrôlée par le worker. Prendre le
+   contrôle est une **course** — `serviceWorker.ready` se résout dès qu'un
+   worker est actif, alors que le `clients.claim()` qui donne son `controller`
+   à la page se propage juste après. La coquille laisse donc 2 s à
+   `controllerchange`, puis recharge une fois ; ce rechargement fait partie du
+   démarrage normal. S'il n'a pas suffi, elle **ne parle pas de panne** : le
+   panneau passe au ton informatif et offre un bouton « Recharger la page », le
+   remède connu. Deux rechargements au total (`MAX_REPRISES_CONTROLE`) — un
+   automatique, un demandé au visiteur — après quoi seulement le message
+   devient terminal et nomme ce qu'il reste à essayer (navigation privée,
+   extension de blocage, navigateur non supporté). Toute la décision vit dans
+   `shared/prerequis-demarrage.js` (`repriseControle`), testée sans navigateur.
 3. `ensureCrossOriginIsolated()` : le worker réinjecte COOP/COEP sur les
    navigations qu'il intercepte, mais celle qui l'a installé est déjà partie
    sans. Second rechargement sur un hébergeur statique ; en local, `serve.mjs`

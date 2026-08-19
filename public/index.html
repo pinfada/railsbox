@@ -161,6 +161,14 @@
         cursor: progress;
         opacity: 0.6;
       }
+      /* Lien de secours des impasses : discret à côté du bouton d'action, mais
+         c'est la seule sortie quand plus aucun geste dans la page n'aide. */
+      #diagnostic a {
+        display: inline-block;
+        margin-top: 1.4rem;
+        font-size: 0.8rem;
+        color: var(--accent);
+      }
       /* État du démarrage : quelle étape, depuis combien de temps. Mesuré sous
          bridage processeur réel (`npm run test:bridage`) — de 25 s sans bridage
          à 54 s sur un processeur bridé 8×, pendant lesquelles la coquille

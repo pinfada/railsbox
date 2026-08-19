@@ -15,6 +15,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { URL_PREREQUIS } from "../public/shared/prerequis-demarrage.js";
+
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 
 /** Ressources servies au navigateur, hors artefacts et code tiers vendorisé. */
@@ -78,11 +80,33 @@ test("la coquille ne dépend d'aucune origine externe", () => {
   // silencieusement repris la main sur une sandbox publiée. Il est retiré ;
   // cette garde empêche toute réintroduction d'une origine externe.
   for (const resource of collectResources()) {
-    const contents = readFileSync(join(PUBLIC_DIR, resource), "utf8");
+    // Seule exception, et elle est d'une autre nature : l'adresse des
+    // prérequis navigateur, offerte en LIEN au visiteur quand plus rien dans
+    // la page ne peut l'aider. Un `<a>` ne charge rien, ne s'exécute pas, et
+    // n'introduit donc aucune dépendance d'origine tierce — c'est justement ce
+    // que cette garde protège. Le test suivant vérifie qu'elle reste un lien.
+    const contents = readFileSync(join(PUBLIC_DIR, resource), "utf8").replaceAll(URL_PREREQUIS, "");
     assert.doesNotMatch(
       contents,
       /https?:\/\/(?!localhost|127\.0\.0\.1)[a-z0-9-]+\.[a-z]/i,
       `${resource} référence une origine externe`,
     );
   }
+});
+
+test("l'adresse des prérequis reste un lien : aucun code de la coquille ne la charge", () => {
+  const porteurs = collectResources().filter((resource) =>
+    readFileSync(join(PUBLIC_DIR, resource), "utf8").includes(URL_PREREQUIS),
+  );
+  assert.deepEqual(
+    porteurs,
+    ["shared/prerequis-demarrage.js"],
+    "l'adresse ne doit être écrite qu'une fois, là où elle est déclarée",
+  );
+  const declaration = readFileSync(join(PUBLIC_DIR, porteurs[0]), "utf8");
+  assert.doesNotMatch(
+    declaration,
+    /(?:fetch|import|importScripts|new Worker)\s*\(\s*URL_PREREQUIS/,
+    "URL_PREREQUIS ne doit jamais être chargée, seulement affichée",
+  );
 });
