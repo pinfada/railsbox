@@ -7,6 +7,7 @@ import { detectOutputDirs } from "./asset-output.mjs";
 import { NPM_LOCKFILES, planAssets } from "./assets.mjs";
 import { DEFAULT_BASE, resolveBase } from "./bases.mjs";
 import { absolutePathFindings, scanAbsolutePaths } from "./chemins-absolus-js.mjs";
+import { etatFichierSeeds } from "./donnees-demo.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
@@ -500,6 +501,7 @@ export async function detectApp(appDir, options = {}) {
     webpackerYml,
     migrations,
     javascriptFiles,
+    seedsRb,
   ] = await Promise.all([
     readOptionalFile(join(appDir, ".ruby-version")),
     readOptionalFile(join(appDir, "Gemfile")),
@@ -522,6 +524,9 @@ export async function detectApp(appDir, options = {}) {
     // réseau visent la racine du DOMAINE, ce qu'aucun test GET ne révèle —
     // la page s'affiche, et c'est le premier clic qui casse (chemins-absolus-js).
     readJavaScriptFiles(appDir),
+    // Le jeu de démonstration : lu ici, jugé après la fusion de railsbox.yml —
+    // une commande de seed déclarée l'emporte sur ce fichier (donnees-demo.mjs).
+    readOptionalFile(join(appDir, "db", "seeds.rb")),
   ]);
 
   /** @type {Finding[]} */
@@ -633,6 +638,9 @@ export async function detectApp(appDir, options = {}) {
     // Noms des migrations qui écrivent des lignes : ce sont eux qui décident,
     // en mode « auto », de préparer la base en jouant les migrations.
     dataMigrations: Object.freeze(dataMigrations.map((entry) => entry.file)),
+    // État du db/seeds.rb (absent, vide, utile). Aucun diagnostic ici : le
+    // verdict dépend aussi de `seed.command`, qui n'arrive qu'à la fusion.
+    seedsFile: etatFichierSeeds(seedsRb),
     sqliteDriver: sqlite,
     ssl: ssl.ssl,
     bundler,
