@@ -86,7 +86,7 @@ export function serviceDistant(gem) {
  * facilement cinq, et cinq lignes identiques noieraient le reste du rapport
  * sans rien apprendre de plus.
  * @param {Set<string> | Iterable<string>} specs noms de gems du Gemfile.lock
- * @returns {Finding[]} zéro ou un diagnostic, gelé
+ * @returns {readonly Finding[]} zéro ou un diagnostic, gelé
  */
 export function externalServiceFindings(specs) {
   const trouvees = [];
