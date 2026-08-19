@@ -364,6 +364,51 @@ The `publish-key` secret — a write deploy key — is **required** as soon as
 `target-repo` is set: the workflow token is only valid for the current
 repository.
 
+#### Bootstrapping a showcase repository in one command
+
+The workflow **creates nothing**: it pushes. Its token only has rights on the
+current repository, so it can neither create the showcase repository, nor add a
+key to it, nor write itself a secret. Those steps are yours — and two of them
+fail **silently**:
+
+- a showcase repository created **with** a README keeps `main` as its default
+  branch, and the repository page will stay blank to visitors: what it renders
+  is the README of the default branch, never the one on `gh-pages`;
+- GitHub Pages pointed at `main` (empty) serves a **404 with no message at
+  all**, neither in Actions nor in the settings.
+
+A script chains them, from your machine, with your `gh` authentication — no
+extra token to create, and the private key it generates is wiped when it exits.
+It does not require a railsbox clone:
+
+```sh
+curl -fsSL -o amorcer-vitrine.sh https://raw.githubusercontent.com/pinfada/railsbox/main/tools/amorcer-vitrine.sh
+sh amorcer-vitrine.sh <owner/source-repo> <owner/showcase-repo>
+```
+
+(From a clone of the repository, `sh tools/amorcer-vitrine.sh …` does exactly
+the same thing.) No `curl … | sh` though: the script reads a confirmation on
+standard input, which the pipe has already taken — and running a remote script
+sight unseen is not a reflex worth installing here.
+
+It creates the showcase empty, generates a dedicated key pair, installs the
+public one as a write deploy key and the private one as the `PUBLISH_KEY`
+secret, pushes a placeholder `gh-pages` branch and **turns GitHub Pages on for
+it** — so there is nothing to enable after the first build — then prints the
+workflow to paste. It **refuses rather than guesses**, and it refuses **before**
+creating anything: unauthenticated `gh`, a source repository that is unreachable
+or that you do not administer, a showcase aimed at someone else's personal
+account, an organisation that forbids public repositories, an existing showcase
+you do not administer or that is not public. An **already-bootstrapped**
+showcase does not stop it: it resumes where it left off, and leaves an existing
+`gh-pages` branch untouched — pushing the placeholder there would wipe a live
+demo.
+
+An existing bootstrap can be checked without changing anything, with the
+`--verifier <source-repo> <showcase-repo>` mode: it reads back the deploy key,
+the secret, the default branch and the state of Pages, and reports what is
+missing.
+
 The artifacts the build publishes — application disk and memory snapshot — carry
 the **fingerprint of their content** in their name
 (`disks/my-app-a1b2c3d4e5f6.ext2.zst`,

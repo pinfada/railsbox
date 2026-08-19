@@ -434,17 +434,34 @@ ni s'écrire un secret. Ces gestes vous reviennent — et deux d'entre eux
 
 Un script les enchaîne, depuis votre machine, avec votre authentification
 `gh` — aucun jeton supplémentaire à créer, et la clé privée générée est
-effacée en fin d'exécution :
+effacée en fin d'exécution. Il n'exige pas d'avoir cloné railsbox :
 
 ```sh
-sh tools/amorcer-vitrine.sh <proprietaire/depot-source> <proprietaire/depot-vitrine>
+curl -fsSL -o amorcer-vitrine.sh https://raw.githubusercontent.com/pinfada/railsbox/main/tools/amorcer-vitrine.sh
+sh amorcer-vitrine.sh <proprietaire/depot-source> <proprietaire/depot-vitrine>
 ```
 
+(Depuis un clone du dépôt, `sh tools/amorcer-vitrine.sh …` fait exactement la
+même chose.) Pas de `curl … | sh` en revanche : le script lit une confirmation
+sur l'entrée standard, que le tube occupe déjà — et exécuter un script distant
+sans l'avoir sous les yeux serait un mauvais réflexe à installer ici.
+
 Il crée la vitrine vide, génère une paire de clés dédiée, pose la publique en
-clé de déploiement écriture, la privée en secret `PUBLISH_KEY`, puis imprime le
-workflow à coller. Il **refuse plutôt que de deviner** : dépôt source
-inaccessible, `gh` non authentifié, vitrine déjà peuplée — il le dit et
-s'arrête.
+clé de déploiement écriture, la privée en secret `PUBLISH_KEY`, pousse une
+branche `gh-pages` d'attente et **active GitHub Pages dessus** — il n'y a donc
+rien à activer après la première construction — puis imprime le workflow à
+coller. Il **refuse plutôt que de deviner**, et il refuse **avant** de créer
+quoi que ce soit : `gh` non authentifié, dépôt source inaccessible ou dont vous
+n'êtes pas administrateur, vitrine visée chez un autre compte personnel,
+organisation qui interdit les dépôts publics, vitrine existante que vous
+n'administrez pas ou qui n'est pas publique. Une vitrine **déjà amorcée**, elle,
+ne l'arrête pas : il reprend là où il faut, et laisse intacte une branche
+`gh-pages` existante — y pousser la page d'attente effacerait une démonstration
+en ligne.
+
+Un amorçage déjà fait se contrôle sans rien modifier, avec le mode
+`--verifier <depot-source> <depot-vitrine>` : il relit la clé de déploiement, le
+secret, la branche par défaut et l'état de Pages, et signale ce qui manque.
 
 Les artefacts publiés par la construction — disque applicatif et instantané —
 portent l'**empreinte de leur contenu** dans leur nom

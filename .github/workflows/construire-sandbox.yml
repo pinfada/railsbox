@@ -107,6 +107,75 @@ jobs:
       IN_SEED: ${{ inputs.seed }}
       IN_TARGET_REPO: ${{ inputs.target-repo }}
     steps:
+      # ------------------------------------------------------------------
+      # Dépôt privé publiant sur lui-même : le mode de panne le plus cher du
+      # projet, parce que RIEN n'échoue. La construction va au bout, gh-pages
+      # est poussée, le récapitulatif donne une adresse — et cette adresse
+      # répond 404, GitHub Pages n'étant pas ouvert aux dépôts privés d'un
+      # plan gratuit. Le mainteneur croit avoir fini. C'est arrivé le
+      # 19/08/2026, après neuf minutes de runner FACTURÉES : un dépôt privé
+      # ne consomme pas les minutes gratuites.
+      #
+      # On avertit, on ne refuse pas. Sur un plan Pro, Team ou Enterprise,
+      # Pages fonctionne depuis un dépôt privé — le site publié devient
+      # simplement public. Un refus sec casserait ces mainteneurs-là pour
+      # protéger les autres. Et l'avertissement tombe AVANT la première étape
+      # coûteuse : sa raison d'être est d'épargner les neuf minutes, pas de
+      # les commenter après coup.
+      # ------------------------------------------------------------------
+      - name: Destination de la publication
+        if: ${{ inputs.publish && inputs.target-repo == '' }}
+        env:
+          # Renseigné par tout déclencheur dont la charge utile webhook porte
+          # le dépôt — `push` et `workflow_dispatch`, les deux chemins que la
+          # documentation propose, mais aussi pull_request ou release. La
+          # valeur arrive ici en TEXTE : « true », « false », ou vide quand la
+          # charge utile ne porte pas de dépôt. Et le vide n'est pas « public » :
+          # le prendre pour tel rendrait la garde silencieuse là où elle est le
+          # plus utile, d'où le repli ci-dessous qui demande au dépôt lui-même.
+          PRIVE_EVENEMENT: ${{ github.event.repository.private }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          prive="${PRIVE_EVENEMENT:-}"
+          # Repli sur l'API du dépôt. Il fonctionne malgré le bloc
+          # `permissions:` réduit à `contents: write` : « metadata » est le
+          # seul scope que GitHub accorde toujours, quoi que le job déclare —
+          # contrairement à « pages », dont le récapitulatif fait les frais.
+          # Muet s'il échoue : une visibilité inconnue ne doit produire AUCUN
+          # message, ni rassurant ni alarmant.
+          if [ -z "$prive" ]; then
+            prive="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.private' 2>/dev/null || true)"
+          fi
+          [ "$prive" = "true" ] || exit 0
+
+          echo "::warning title=Dépôt privé publiant sur lui-même::Sur un plan gratuit, GitHub Pages n'est pas disponible pour un dépôt privé : la branche gh-pages sera poussée, puis l'adresse répondra 404, sans message nulle part. Le chemin prévu est une vitrine publique (entrée target-repo + secret publish-key). Voir le récapitulatif de cette exécution."
+          {
+            echo "### Ce dépôt est privé, et publie sur lui-même"
+            echo ""
+            echo "La construction continue — elle est légitime sur un plan payant."
+            echo "Mais sur un plan **gratuit**, GitHub Pages n'est pas disponible pour"
+            echo "un dépôt privé : la branche \`gh-pages\` sera bien poussée, et"
+            echo "l'adresse répondra **404**. Sans message d'erreur, nulle part."
+            echo ""
+            echo "| Votre plan | Ce qui se passe |"
+            echo "|---|---|"
+            echo "| Pro, Team, Enterprise | Pages fonctionne. Le site publié est public, le code reste privé. Rien à changer. |"
+            echo "| Gratuit | L'adresse restera morte. Publiez sur une vitrine publique. |"
+            echo ""
+            echo "Une vitrine, c'est un second dépôt — public, vide — qui n'héberge que"
+            echo "la sandbox. Elle s'amorce depuis votre machine, sans cloner railsbox :"
+            echo ""
+            echo '```sh'
+            echo "curl -fsSL -o amorcer-vitrine.sh https://raw.githubusercontent.com/pinfada/railsbox/main/tools/amorcer-vitrine.sh"
+            echo "sh amorcer-vitrine.sh ${GITHUB_REPOSITORY} ${GITHUB_REPOSITORY}-demo"
+            echo '```'
+            echo ""
+            echo "Le script crée le dépôt, y active Pages sur \`gh-pages\`, pose la clé de"
+            echo "déploiement et écrit le secret. Il reste ensuite à renseigner"
+            echo "\`target-repo\` (et \`publish-key\`) dans l'appel de ce workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Récupération de l'application
         uses: actions/checkout@v4
         with:
@@ -455,14 +524,151 @@ jobs:
             echo "CIBLE=$cible" >> "$GITHUB_ENV"
           } 2>&1 | tee "$SB_JOURNAL"
 
+      # Ce que cette étape a le droit d'affirmer. Elle a vu un push réussir :
+      # c'est un fait. Elle n'a vu AUCUN site répondre — un Pages non activé
+      # rend un 404 muet, indiscernable d'ici. Elle titrait pourtant « Sandbox
+      # publiée » et donnait l'adresse comme un résultat : le mainteneur d'un
+      # dépôt privé repartait avec un lien mort en croyant avoir fini. Le fait
+      # et l'hypothèse sont désormais séparés, et la vérification qui pourrait
+      # les réunir est tentée — sans jamais faire échouer l'étape, ni se
+      # présenter comme concluante quand elle ne l'est pas.
       - name: Récapitulatif
         if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          adresse="https://${CIBLE%%/*}.github.io/${CIBLE##*/}/"
+          set -eu
+          cible="${CIBLE:-}"
+          [ -n "$cible" ] || cible="$GITHUB_REPOSITORY"
+          adresse="https://${cible%%/*}.github.io/${cible##*/}/"
+          activation="gh api -X POST repos/${cible}/pages -f 'source[branch]=gh-pages' -f 'source[path]=/'"
           {
-            echo "## Sandbox publiée"
+            echo "## Branche \`gh-pages\` poussée sur \`${cible}\`"
+            echo ""
+            echo "C'est le fait établi : les fichiers de la sandbox sont dans la branche."
+            echo "L'adresse ci-dessous, elle, ne répondra que si GitHub Pages sert"
+            echo "\`gh-pages\` sur ce dépôt."
             echo ""
             echo "[$adresse]($adresse)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$IN_TARGET_REPO" ]; then
+            # Le jeton d'Actions ne vaut que pour le dépôt courant : la vitrine
+            # a été atteinte par une clé de déploiement, qui ne donne aucun
+            # accès à l'API. Tenter l'appel produirait un 403 qu'on présenterait
+            # ensuite comme une information — autant dire tout de suite qu'on
+            # ne sait pas, et donner le geste qui tranche.
+            {
+              echo "### État de GitHub Pages sur la vitrine : non vérifié"
+              echo ""
+              echo "Le jeton de ce workflow ne vaut que pour \`${GITHUB_REPOSITORY}\`."
+              echo "railsbox n'a aucun droit de lecture sur \`${cible}\` et ne peut donc"
+              echo "rien affirmer de son état. Une seule fois, depuis votre machine :"
+              echo ""
+              echo '```sh'
+              echo "$activation"
+              echo '```'
+              echo ""
+              echo "(\`tools/amorcer-vitrine.sh\` l'a déjà fait si vous avez amorcé la"
+              echo "vitrine avec lui.)"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Vérification OPPORTUNISTE, et il faut insister sur le mot : dès
+            # qu'un job déclare un bloc `permissions:`, tout scope non listé
+            # tombe à `none`. Le workflow documenté ne demande que
+            # `contents: write` — « pages » y vaut donc `none`, et cet appel
+            # répond 403 chez TOUS les mainteneurs déjà installés. Un 403 ne
+            # dit rien de l'état de Pages : il ne doit ni passer pour un
+            # succès, ni faire échouer l'étape. D'où les quatre issues
+            # distinctes ci-dessous, dont deux avouent l'ignorance.
+            etat=0
+            reponse="$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq '.source.branch' 2>&1)" || etat=$?
+            if [ "$etat" -eq 0 ]; then
+              branche="$reponse"
+              if [ -z "$branche" ] || [ "$branche" = "null" ]; then
+                branche="(non indiquée par l'API)"
+              fi
+              {
+                echo "### GitHub Pages est actif sur ce dépôt"
+                echo ""
+                echo "Branche servie : \`${branche}\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              if [ "$branche" != "gh-pages" ]; then
+                # Pages actif mais braqué ailleurs : le pire des cas pour qui
+                # lit vite. Le site répond — avec un tout autre contenu que la
+                # sandbox qu'on vient de pousser.
+                echo "::warning title=GitHub Pages ne sert pas gh-pages::Pages est actif sur ${GITHUB_REPOSITORY} mais sert « ${branche} » : l'adresse répondra, sans montrer la sandbox. Rebasculez la source sur la branche gh-pages."
+                {
+                  echo ""
+                  echo "**La sandbox vient d'être poussée sur \`gh-pages\`, pas sur cette"
+                  echo "branche-là.** L'adresse répondra donc, mais montrera autre chose."
+                  echo "Pour rebasculer la source :"
+                  echo ""
+                  echo '```sh'
+                  echo "gh api -X PUT repos/${cible}/pages -f 'source[branch]=gh-pages' -f 'source[path]=/'"
+                  echo '```'
+                } >> "$GITHUB_STEP_SUMMARY"
+              fi
+            elif printf '%s' "$reponse" | grep -q 'HTTP 404'; then
+              {
+                echo "### Aucun site GitHub Pages sur ce dépôt"
+                echo ""
+                echo "L'adresse ci-dessus répond **404** tant que Pages n'est pas activé."
+                echo "Depuis votre machine :"
+                echo ""
+                echo '```sh'
+                echo "$activation"
+                echo '```'
+                echo ""
+                echo "Ou : Settings → Pages → Source « Deploy from a branch » →"
+                echo "branche \`gh-pages\`, dossier \`/ (root)\`."
+                echo ""
+                echo "Sur un dépôt **privé** d'un plan gratuit, l'activation elle-même"
+                echo "sera refusée : passez par une vitrine publique — voir la section"
+                echo "« Dépôt privé » du README de railsbox."
+              } >> "$GITHUB_STEP_SUMMARY"
+            elif printf '%s' "$reponse" | grep -qE 'HTTP (401|403)'; then
+              {
+                echo "### État de GitHub Pages : non vérifié"
+                echo ""
+                echo "railsbox n'a pas pu lire l'état de Pages — **ceci n'est pas un"
+                echo "succès** : le site peut aussi bien être actif qu'inexistant."
+                echo ""
+                echo "La cause est mécanique : dès qu'un job déclare un bloc"
+                echo "\`permissions:\`, tout scope absent de la liste vaut \`none\`."
+                echo "Ajoutez \`pages: read\` à l'appel pour que railsbox puisse vous"
+                echo "le dire à la prochaine construction :"
+                echo ""
+                echo '```yaml'
+                echo "permissions:"
+                echo "  contents: write"
+                echo "  pages: read"
+                echo '```'
+                echo ""
+                echo "En attendant, la vérification manuelle :"
+                echo ""
+                echo '```sh'
+                echo "gh api repos/${cible}/pages"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              # Réseau, API en panne, `gh` absent d'une image de runner
+              # exotique : on ne sait pas pourquoi, et on ne le déduit pas.
+              {
+                echo "### État de GitHub Pages : non vérifié"
+                echo ""
+                echo "L'appel à l'API a échoué pour une raison inattendue — **ceci n'est"
+                echo "pas un succès**. La vérification manuelle :"
+                echo ""
+                echo '```sh'
+                echo "gh api repos/${cible}/pages"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          {
             echo ""
             echo "### Le badge à coller dans votre README"
             echo ""
@@ -473,7 +679,6 @@ jobs:
             echo "Le badge est servi par votre propre sandbox : aucune dépendance"
             echo "à un service de badges, et rien à maintenir."
             echo ""
-            echo "Activez GitHub Pages sur la branche \`gh-pages\` si ce n'est pas déjà fait."
             echo "Le rootfs mutualisé est servi par \`${SB_ASSETS}\` :"
             echo "le dépôt n'héberge que l'application."
           } >> "$GITHUB_STEP_SUMMARY"
