@@ -316,6 +316,9 @@ RUN <<'RIB_DB'
 set -eu
 if [ "${WITH_REDIS}" = 1 ]; then
   redis-server --daemonize yes --port 6379 --save '' --appendonly no
+  # Même raison qu'au boot du guest : les seeds enfilent souvent des jobs, et
+  # une application repliée sur :inline échoue sur un job planifié.
+  export REDIS_URL=redis://127.0.0.1:6379/0
 fi
 mkdir -p tmp/pids tmp/cache log storage
 if [ "${WITH_POSTGRES}" = 1 ]; then
@@ -394,6 +397,16 @@ mkdir -p /app/.railsbox
   echo "export RAILSBOX_SANDBOX=1"
   echo "export RAILS_RELATIVE_URL_ROOT=${MOUNT_PREFIX}/app"
   echo "export RAILSBOX_DATABASE=${DATABASE}"
+  # railsbox DÉMARRE Redis (guest-init.sh) : encore faut-il le dire à
+  # l'application. Sans REDIS_URL, une application qui teste la présence de
+  # Redis conclut à son absence et se rabat sur un adaptateur dégradé —
+  # ActiveJob :inline, qui ne sait pas planifier (`set(wait_until:)` lève
+  # NotImplementedError). Fournir un service sans l'annoncer revient à ne pas
+  # le fournir. Le bloc env: du railsbox.yml, écrit plus bas, garde le dernier
+  # mot pour une application qui veut une autre base ou un autre hôte.
+  if [ "${WITH_REDIS}" = 1 ]; then
+    echo "export REDIS_URL=redis://127.0.0.1:6379/0"
+  fi
   if [ "${WITH_POSTGRES}" = 1 ]; then
     echo "export PGDATA=${PG_DATA_DIR}"
     echo "export DATABASE_URL='${PG_DATABASE_URL}'"
