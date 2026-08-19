@@ -356,6 +356,24 @@ jobs:
               publication/index.html \
               --base-url "$SB_RACINE" \
               --site-origin "https://${proprietaire}.github.io"
+            # README de la branche publiée. Sur une vitrine séparée — le cas
+            # de tout dépôt privé — ce dépôt est la SEULE surface publique :
+            # le README du dépôt source n'est visible de personne. Sans ce
+            # fichier, le visiteur trouve un dépôt sans titre, sans lien et
+            # sans explication, alors que c'est la page que le mainteneur
+            # partage. « .nojekyll » étant posé, Pages n'en fait pas une page :
+            # index.html reste ce que sert la racine du site.
+            if [ -n "$IN_TARGET_REPO" ]; then
+              propre_a_la_source=""
+            else
+              propre_a_la_source="--source-publiee"
+            fi
+            node tools/build-v86-image/ecrire-readme-vitrine.mjs \
+              publication/README.md \
+              --nom "$SB_NOM" \
+              --adresse "https://${proprietaire}.github.io/${cible##*/}/" \
+              --depot-source "$GITHUB_REPOSITORY" \
+              $propre_a_la_source
             du -sh publication
             # Garde-fou POSITIF : les trois gros artefacts sont découpés, et
             # chacun laisse son inventaire. Un inventaire manquant signale une
