@@ -19,17 +19,37 @@
 //                          que le zstd n'y est arrivé que sur un seul. Les
 //                          disques, eux, sont décompressés par v86 : ils
 //                          gardent zstd, qui compresse mieux.
+//   --fingerprint          versionne les noms publiés par EMPREINTE DE CONTENU
+//                          (ADR 0007) : `demo-app.ext2` devient
+//                          `demo-app-<empreinte>.ext2`, et v86 en dérive des
+//                          morceaux tout aussi versionnés. Un nom stable au
+//                          contenu changeant laissait tout cache — HTTP, CDN,
+//                          Cache Storage — resservir légitimement le morceau
+//                          d'une AUTRE construction.
+//   --config <fichier>     accorde une configuration v86 aux noms réellement
+//                          publiés : le champ qui nomme cet artefact y est
+//                          réécrit. Exige --fingerprint, et échoue si aucun
+//                          champ ne le nomme.
 //   --out <dossier>        dossier de sortie (défaut : à côté de la source)
 //
 // Écrit aussi `<nom>-parts.json` : inventaire consommé par la publication, par
 // la coquille (qui y lit taille totale et taille de morceau) et par les tests,
 // qui n'ont ainsi pas à redériver la convention de nommage.
-import { mkdir, open, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gzip, zstdCompress } from "node:zlib";
 
-import { DEFAULT_CHUNK_BYTES, MAX_PART_BYTES, partName, planParts } from "./artifact-parts.mjs";
+import {
+  DEFAULT_CHUNK_BYTES,
+  DIGEST_HEX_LENGTH,
+  MAX_PART_BYTES,
+  partName,
+  planParts,
+  versionedArtifactName,
+} from "./artifact-parts.mjs";
+import { replacePublishedArtifact } from "./split-config.mjs";
 
 const compressZstd = promisify(zstdCompress);
 const compressGzip = promisify(gzip);
@@ -58,7 +78,8 @@ function log(message) {
 /**
  * @param {string[]} argv
  * @returns {{ source: string|undefined, chunkBytes: number,
- *   compression: "zstd"|"gzip"|null, out: string|null }}
+ *   compression: "zstd"|"gzip"|null, out: string|null,
+ *   fingerprint: boolean, config: string|null }}
  */
 export function parseArgs(argv) {
   const options = {
@@ -66,23 +87,59 @@ export function parseArgs(argv) {
     chunkBytes: DEFAULT_CHUNK_BYTES,
     /** @type {"zstd"|"gzip"|null} */ compression: null,
     /** @type {string|null} */ out: null,
+    fingerprint: false,
+    /** @type {string|null} */ config: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--chunk-size") options.chunkBytes = Number(argv[++i]);
     else if (argv[i] === "--zstd") options.compression = "zstd";
     else if (argv[i] === "--gzip") options.compression = "gzip";
+    else if (argv[i] === "--fingerprint") options.fingerprint = true;
+    else if (argv[i] === "--config") options.config = argv[++i];
     else if (argv[i] === "--out") options.out = argv[++i];
     else if (!argv[i].startsWith("--")) options.source = argv[i];
   }
   return options;
 }
 
+/**
+ * Accorde une configuration v86 au nom réellement publié.
+ *
+ * Le découpeur est le SEUL à connaître l'empreinte — il vient de lire les
+ * octets — et la configuration, elle, a été écrite avant lui. Cette
+ * réconciliation est donc faite ici plutôt que de faire relire l'artefact à qui
+ * que ce soit. La forme de la configuration, elle, reste la propriété de
+ * split-config.mjs.
+ * @param {string} path chemin de la configuration à réécrire
+ * @param {string} oldName nom publié jusque-là
+ * @param {string} newName nom réellement publié
+ * @throws {Error} si la configuration ne nomme pas cet artefact
+ */
+async function reconcileConfig(path, oldName, newName) {
+  const original = JSON.parse(await readFile(path, "utf8"));
+  const { config, fields } = replacePublishedArtifact(original, oldName, newName);
+  if (fields.length === 0) {
+    throw new Error(
+      `Aucun champ de ${basename(path)} ne nomme ${oldName} : la configuration publiée ` +
+        "désignerait des morceaux qui n'existent pas.",
+    );
+  }
+  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`);
+  log(`${basename(path)} : ${fields.join(", ")} → ${newName}`);
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options.source) {
     process.stderr.write(
-      "Usage : node split-artifact.mjs <artefact> [--chunk-size <octets>] [--zstd|--gzip] [--out <dossier>]\n",
+      "Usage : node split-artifact.mjs <artefact> [--chunk-size <octets>] [--zstd|--gzip] " +
+        "[--fingerprint [--config <config v86>]] [--out <dossier>]\n",
     );
+    return 2;
+  }
+
+  if (options.config && !options.fingerprint) {
+    process.stderr.write("--config n'a de sens qu'avec --fingerprint (ADR 0007).\n");
     return 2;
   }
 
@@ -96,14 +153,25 @@ async function main() {
   // le consommateur (v86 pour un disque, la coquille pour l'instantané), et
   // c'est d'elle qu'il dérive les noms de morceaux.
   const suffix = options.compression ? COMPRESSION_SUFFIXES[options.compression] : "";
-  const artifactName = basename(sourcePath) + suffix;
+  const plainName = basename(sourcePath) + suffix;
   log(
     `${basename(sourcePath)} — ${Math.round(size / 1048576)} Mo en ${parts.length} morceau(x) ` +
       `de ${Math.round(options.chunkBytes / 1048576)} Mio` +
-      `${options.compression ? `, ${options.compression}` : ""}`,
+      `${options.compression ? `, ${options.compression}` : ""}` +
+      `${options.fingerprint ? ", noms versionnés" : ""}`,
   );
 
+  // L'empreinte se calcule PENDANT la lecture qui découpe : l'artefact est lu
+  // une seule fois, et le versionnement ne coûte donc rien de plus qu'un
+  // SHA-256 sur des octets déjà en mémoire. Mais elle n'est complète qu'à la
+  // fin, alors que le nom des morceaux en dépend : les morceaux sont donc
+  // écrits sous un nom provisoire, puis renommés. Un renommage dans le même
+  // dossier est atomique et gratuit, là où une seconde lecture coûterait
+  // 512 Mo.
+  const hash = createHash("sha256");
   const handle = await open(sourcePath, "r");
+  /** @type {{ start: number, path: string }[]} */
+  const written = [];
   let writtenBytes = 0;
   try {
     for (const part of parts) {
@@ -112,22 +180,37 @@ async function main() {
       // toujours un morceau entier.
       const buffer = Buffer.alloc(options.chunkBytes);
       await handle.read(buffer, 0, part.end - part.start, part.start);
+      // L'empreinte porte sur le CONTENU RÉEL, pas sur le bourrage de zéros du
+      // dernier morceau ni sur les octets compressés : deux constructions au
+      // même contenu doivent s'accorder, quels que soient le compresseur et sa
+      // version.
+      hash.update(buffer.subarray(0, part.end - part.start));
       const payload = await compressPart(buffer, options.compression);
       if (payload.length > MAX_PART_BYTES) {
         throw new Error(
           `Morceau ${part.index} de ${payload.length} octets au-delà de la limite Pages.`,
         );
       }
-      const target = join(outDir, basename(partName(artifactName, part.start, options.chunkBytes)));
+      const target = join(outDir, `${plainName}.${part.index}.partiel`);
       await writeFile(target, payload);
+      written.push({ start: part.start, path: target });
       writtenBytes += payload.length;
     }
   } finally {
     await handle.close();
   }
 
+  const digest = hash.digest("hex").slice(0, DIGEST_HEX_LENGTH);
+  const artifactName = options.fingerprint
+    ? versionedArtifactName(basename(sourcePath), digest) + suffix
+    : plainName;
+  for (const { start, path } of written) {
+    await rename(path, join(outDir, basename(partName(artifactName, start, options.chunkBytes))));
+  }
+
   const manifest = {
     artifact: artifactName,
+    ...(options.fingerprint ? { digest } : {}),
     totalBytes: size,
     chunkBytes: options.chunkBytes,
     compression: options.compression,
@@ -135,8 +218,16 @@ async function main() {
     publishedBytes: writtenBytes,
     parts: parts.map((part) => basename(partName(artifactName, part.start, options.chunkBytes))),
   };
-  const manifestPath = join(outDir, `${basename(sourcePath)}-parts.json`);
+  // L'inventaire est nommé d'après l'artefact NON compressé : c'est la règle
+  // que redérivent la coquille (`manifestUrlFor`) et le réassembleur, sans se
+  // concerter. Le versionnement la suit donc de lui-même.
+  const manifestPath = join(
+    outDir,
+    `${artifactName.slice(0, artifactName.length - suffix.length)}-parts.json`,
+  );
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  if (options.config) await reconcileConfig(options.config, plainName, artifactName);
 
   const ratio = size === 0 ? 0 : Math.round((writtenBytes / size) * 100);
   log(`publié ${Math.round(writtenBytes / 1048576)} Mo (${ratio} % de l'original)`);

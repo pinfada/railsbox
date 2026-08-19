@@ -748,6 +748,15 @@ The `publish-key` secret — a write deploy key — is **required** as soon as
 `target-repo` is set: the workflow token is only valid for the current
 repository.
 
+The artifacts the build publishes — application disk and memory snapshot — carry
+the **fingerprint of their content** in their name
+(`disks/my-app-a1b2c3d4e5f6.ext2.zst`,
+[ADR 0007](docs/decisions/0007-versionnement-des-artefacts-par-empreinte.md)).
+A URL therefore never designates two different contents, and no cache — browser,
+CDN, Service Worker — can serve back a chunk from another build. The base rootfs
+keeps its revision-based name: it is shared across every sandbox, and a
+fingerprint would break that sharing.
+
 Three guardrails refuse outright rather than publish a demo that would fail to
 load: a missing **chunk inventory** (`-parts.json`) for the application disk or
 the snapshot, which means a splitting step was skipped; a file beyond GitHub
@@ -1174,7 +1183,7 @@ cache in Cache Storage**, cache-first:
 | --- | --- |
 | What is cached | the part-files of the split disks **and of the snapshot**, the kernel, the initrd — **and nothing beyond what the v86 configuration names** |
 | What is not | a snapshot published as a single file (a sandbox built before the split), which the page caches in IndexedDB anyway; a disk read via `Range` requests, whose 206 responses Cache Storage rejects; any request carrying a `Range` header |
-| Cache name | derived from the whole configuration, `builtAt` included. Since the application disk URL is stable across builds, a cache keyed by URL alone would blend chunks from two images after a rebuild — that is, corrupt the filesystem. A configuration change switches to a fresh cache and deletes the old one. |
+| Cache name | derived from the whole configuration, `builtAt` included. A configuration change switches to a fresh cache and deletes the old one. The rule came from application disk URLs being **stable across builds**; since [ADR 0007](docs/decisions/0007-versionnement-des-artefacts-par-empreinte.md) they carry a content fingerprint, but it still protects sandboxes published before it. |
 | Headers | **none are added.** Requests to Pages must stay "simple" in the CORS sense, otherwise they trigger a preflight the host cannot honour ([ADR 0001](docs/decisions/0001-distribution-artefacts.md)). The request is replayed as is, the response returned as is. |
 | Quota | `StorageManager.estimate` before writing, with a 10% margin; a write failure is logged once and has no effect — **the request always completes**, cache or no cache. |
 

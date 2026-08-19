@@ -20,13 +20,23 @@
 //     d'heuristique sur l'URL seule : le disque, le disque applicatif,
 //     l'instantané, le noyau et l'initrd de la configuration courante, et rien
 //     d'autre.
-//  2. LE NOM DU CACHE PORTE L'IDENTITÉ DE LA CONSTRUCTION. L'URL du disque
-//     applicatif (`disks/<app>-app.ext2.zst`) est stable d'une construction à
-//     l'autre : un cache indexé par la seule URL servirait des morceaux
-//     périmés après une reconstruction — un système de fichiers panaché,
-//     c'est-à-dire corrompu. Le nom du cache dérive donc de la configuration
-//     entière (dont `builtAt`), et tout changement bascule sur un cache neuf
-//     en abandonnant l'ancien.
+//  2. LE NOM DU CACHE PORTE L'IDENTITÉ DE LA CONSTRUCTION. Il dérive de la
+//     configuration entière (dont `builtAt`), et tout changement bascule sur
+//     un cache neuf en abandonnant l'ancien.
+//
+//     Cette règle est née d'une URL de disque applicatif STABLE d'une
+//     construction à l'autre, qu'un cache indexé par la seule URL aurait
+//     panachée. Ce n'est plus le cas : depuis l'ADR 0007, le disque applicatif
+//     et l'instantané portent l'empreinte de leur contenu, et une URL ne
+//     désigne plus jamais deux contenus. La règle est conservée quand même —
+//     elle est la seule à protéger les sandboxes publiées AVANT le
+//     versionnement, dont les artefacts gardent des noms stables. Son coût
+//     assumé : `builtAt` changeant à chaque construction, une reconstruction
+//     à contenu identique repart d'un cache applicatif vierge — alors que les
+//     URL, elles, n'ont pas bougé et restent servies par les caches HTTP. La
+//     retirer de l'identité est désormais envisageable ; c'est une décision
+//     distincte, à prendre quand plus aucune sandbox d'avant l'ADR 0007 ne
+//     sera en ligne.
 
 /** Préfixe commun à tous les caches d'artefacts gérés par ce module. */
 export const CACHE_PREFIX = "railsbox-artefacts";

@@ -816,6 +816,15 @@ Secret `publish-key` : clé de déploiement en écriture, **obligatoire** dès q
 `target-repo` est renseigné — le jeton du workflow ne vaut que pour le dépôt
 courant.
 
+Les artefacts publiés par la construction — disque applicatif et instantané —
+portent l'**empreinte de leur contenu** dans leur nom
+(`disks/mon-app-a1b2c3d4e5f6.ext2.zst`,
+[ADR 0007](docs/decisions/0007-versionnement-des-artefacts-par-empreinte.md)).
+Une URL ne désigne donc jamais deux contenus, et aucun cache — navigateur, CDN,
+Service Worker — ne peut resservir le morceau d'une autre construction. Le
+rootfs de base, lui, reste nommé par sa révision : il est mutualisé entre toutes
+les sandboxes, et l'empreinte casserait ce partage.
+
 Trois garde-fous refusent explicitement plutôt que de publier une démonstration
 qui échouerait au chargement : l'absence d'un **inventaire de morceaux**
 (`-parts.json`) pour le disque applicatif ou l'instantané, signe qu'une étape de
@@ -1268,7 +1277,7 @@ Storage**, en stratégie « cache d'abord » :
 | --- | --- |
 | Ce qui est mis en cache | les fichiers-parties des disques découpés **et de l'instantané**, le noyau, l'initrd — **et rien d'autre que ce qui est nommé dans la configuration v86** |
 | Ce qui ne l'est pas | un instantané publié d'un seul tenant (sandbox d'avant le découpage), qui est de toute façon mis en cache par la page dans IndexedDB ; un disque lu par requêtes `Range`, dont les réponses 206 sont refusées par Cache Storage ; toute requête portant un en-tête `Range` |
-| Nom du cache | dérivé de la configuration entière, `builtAt` compris. L'URL du disque applicatif étant stable d'une construction à l'autre, un cache indexé par la seule URL panacherait les morceaux de deux images après une reconstruction — c'est-à-dire corromprait le système de fichiers. Un changement de configuration bascule sur un cache neuf et supprime l'ancien. |
+| Nom du cache | dérivé de la configuration entière, `builtAt` compris. Un changement de configuration bascule sur un cache neuf et supprime l'ancien. La règle est née d'URL de disque applicatif **stables d'une construction à l'autre** ; depuis l'[ADR 0007](docs/decisions/0007-versionnement-des-artefacts-par-empreinte.md) elles portent l'empreinte du contenu, mais elle protège encore les sandboxes publiées avant. |
 | En-têtes | **aucun n'est ajouté.** Les requêtes vers Pages doivent rester « simples » au sens CORS, sous peine d'un préflight que l'hébergeur ne sait pas honorer ([ADR 0001](docs/decisions/0001-distribution-artefacts.md)). La requête est réémise telle quelle, la réponse rendue telle quelle. |
 | Quota | `StorageManager.estimate` avant écriture, marge de 10 % ; un échec d'écriture est journalisé une fois et sans effet — **la requête aboutit toujours**, avec ou sans cache. |
 
