@@ -8,19 +8,24 @@ les quatorze derniers jours.*
 
 | Indicateur | Valeur | Fenêtre |
 | --- | --- | --- |
-| Vues du dépôt | — (— uniques) | 14 jours |
-| Clones | — (— uniques) | 14 jours |
-| Tirages de l'image de base | 5 | cumulé |
-| Dépôts publics détectés | 2 | instantané |
+| Vues du dépôt | 81 (1 unique) | 14 jours |
+| Clones | 193 (28 uniques) | 14 jours |
+| Versions publiées de l'image de base | 5 | cumulé |
+| Dépôts publics détectés | 4 | instantané |
 | Dépôts privés | **non mesurable** | — |
 
-Le **tirage de l'image de base** (`ghcr.io/pinfada/railsbox-base`) est le seul
-signal qui compte aussi les constructions privées : toute construction la tire,
-quelle que soit la visibilité du dépôt. Il compte des constructions, pas des
-utilisateurs — une re-exécution de CI en ajoute une.
+**Aucune ligne de ce tableau ne mesure l'usage privé, et il n'en existe pas.**
+On a pu croire que le compteur de l'image de base y suppléerait — toute
+construction la tire, quelle que soit la visibilité du dépôt. Vérification
+faite, l'API de GitHub n'expose **aucun compteur de téléchargements** pour une
+image de conteneur : seulement le nombre de versions que *nous* avons publiées,
+c'est-à-dire notre propre activité. Le chiffre reste ici pour dater les
+révisions de base, jamais comme signal d'adoption.
 
 ## Sandboxes publiques détectées
 
+- [`pinfada/GenealogyApp`](https://github.com/pinfada/GenealogyApp)
+- [`pinfada/fractal`](https://github.com/pinfada/fractal)
 - [`pinfada/sharemybag`](https://github.com/pinfada/sharemybag)
 - [`pinfada/tchopmygrinds`](https://github.com/pinfada/tchopmygrinds)
 

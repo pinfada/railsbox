@@ -13,8 +13,11 @@
 // CE QUE CHAQUE JETON PEUT VOIR — la différence est structurelle :
 //
 //   · trafic (vues, clones) ......... les deux
-//   · tirages de l'image de base .... si la portée read:packages est présente
-//                                     (`gh auth refresh -s read:packages`)
+//   · versions de l'image de base ... si la portée read:packages est présente.
+//                                     ATTENTION : c'est le nombre de versions que
+//                                     NOUS publions, pas un compteur de
+//                                     téléchargements — GitHub n'en expose aucun
+//                                     pour une image de conteneur.
 //   · recherche de code ............. le jeton d'Actions NE la porte pas sur
 //                                     l'ensemble de GitHub ; celui d'un poste,
 //                                     oui. C'est pourquoi la vision complète
@@ -83,11 +86,11 @@ async function main() {
   // Le seul compteur qui voit AUSSI les constructions privées : toute
   // construction tire cette image, quelle que soit la visibilité du dépôt.
   process.stderr.write("→ Image de base sur ghcr…\n");
-  const tiragesBase = await entier(
+  const versionsBase = await entier(
     `users/${proprietaire}/packages/container/railsbox-base`,
     (d) => d.version_count,
   );
-  if (tiragesBase === null) {
+  if (versionsBase === null) {
     process.stderr.write("  indisponible — portée manquante : gh auth refresh -s read:packages\n");
   }
 
@@ -126,7 +129,7 @@ async function main() {
     pageAdoption({
       date,
       trafic: { vues, vuesUniques, clones, clonesUniques },
-      tiragesBase,
+      versionsBase,
       depotsPublics,
       constructionsInternes,
     }),

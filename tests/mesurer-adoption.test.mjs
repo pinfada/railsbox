@@ -9,7 +9,7 @@ import { pageAdoption } from "../tools/mesurer-adoption.mjs";
 const MESURES = {
   date: "19 août 2026",
   trafic: { vues: 81, vuesUniques: 1, clones: 193, clonesUniques: 28 },
-  tiragesBase: 412,
+  versionsBase: 5,
   depotsPublics: ["pinfada/tchopmygrinds", "acme/boutique"],
   constructionsInternes: 31,
 };
@@ -65,4 +65,16 @@ test("la limite de la recherche de code est écrite", () => {
   // Elle voit les privés du jeton employé : sans le dire, la liste passerait
   // pour un recensement public exhaustif.
   assert.match(pageAdoption(MESURES), /dépend du jeton employé/);
+});
+
+test("le compteur ghcr n'est jamais présenté comme un signal d'usage", () => {
+  // Erreur commise le 19/08/2026, corrigée après vérification de l'API : elle
+  // n'expose AUCUN nombre de téléchargements pour une image de conteneur, et
+  // le laisser croire ferait lire une adoption dans notre propre activité de
+  // publication.
+  const md = pageAdoption(MESURES);
+  assert.match(md, /Versions publiées de l'image de base/);
+  assert.doesNotMatch(md, /Tirages/);
+  assert.match(md, /aucun compteur de téléchargements/);
+  assert.match(md, /Aucune ligne de ce tableau ne mesure l'usage privé/);
 });

@@ -44,7 +44,7 @@ function uniques(valeur) {
  * @param {{
  *   date: string,
  *   trafic?: Trafic,
- *   tiragesBase?: number | null,
+ *   versionsBase?: number | null,
  *   depotsPublics?: string[],
  *   depotsPrives?: number | null,
  *   constructionsInternes?: number | null,
@@ -54,7 +54,7 @@ function uniques(valeur) {
 export function pageAdoption({
   date,
   trafic = {},
-  tiragesBase = null,
+  versionsBase = null,
   depotsPublics = [],
   depotsPrives = null,
   constructionsInternes = null,
@@ -88,14 +88,17 @@ les quatorze derniers jours.*
 | --- | --- | --- |
 | Vues du dépôt | ${nombre(trafic.vues)} (${uniques(trafic.vuesUniques)}) | 14 jours |
 | Clones | ${nombre(trafic.clones)} (${uniques(trafic.clonesUniques)}) | 14 jours |
-| Tirages de l'image de base | ${nombre(tiragesBase)} | cumulé |
+| Versions publiées de l'image de base | ${nombre(versionsBase)} | cumulé |
 | Dépôts publics détectés | ${publics.length} | instantané |
 | Dépôts privés | ${depotsPrives === null ? "**non mesurable**" : nombre(depotsPrives)} | — |
 
-Le **tirage de l'image de base** (\`ghcr.io/pinfada/railsbox-base\`) est le seul
-signal qui compte aussi les constructions privées : toute construction la tire,
-quelle que soit la visibilité du dépôt. Il compte des constructions, pas des
-utilisateurs — une re-exécution de CI en ajoute une.
+**Aucune ligne de ce tableau ne mesure l'usage privé, et il n'en existe pas.**
+On a pu croire que le compteur de l'image de base y suppléerait — toute
+construction la tire, quelle que soit la visibilité du dépôt. Vérification
+faite, l'API de GitHub n'expose **aucun compteur de téléchargements** pour une
+image de conteneur : seulement le nombre de versions que *nous* avons publiées,
+c'est-à-dire notre propre activité. Le chiffre reste ici pour dater les
+révisions de base, jamais comme signal d'adoption.
 
 ## Sandboxes publiques détectées
 
