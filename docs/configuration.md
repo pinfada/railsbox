@@ -184,6 +184,48 @@ env:
   RAILSBOX_KEEP_FORCE_SSL: "1"
 ```
 
+#### Vos credentials sont remplacés par une paire **jetable**
+
+Votre dépôt versionne `config/credentials.yml.enc` et **pas**
+`config/master.key` — c'est ce que fait tout `rails new`, et c'est la bonne
+pratique. railsbox ne reçoit donc que la moitié chiffrée d'une paire. Tant que
+rien ne lit les credentials, l'absence de clé passe inaperçue ; avec
+`config.require_master_key = true` dans votre `production.rb`, elle est fatale :
+Rails refuse de démarrer et `assets:precompile` meurt sur *« Missing encryption
+key to decrypt file with »*, au milieu du build.
+
+railsbox substitue donc, **dans le contexte de construction seulement et jamais
+dans votre dépôt**, une paire NEUVE tirée au hasard : une clé jetable et le
+`credentials.yml.enc` qu'elle déchiffre, portant un `secret_key_base` et des
+clés `active_record_encryption` inventées pour cette construction.
+**Vous n'avez rien à modifier**, et vous ne devez surtout **pas** nous confier
+votre vraie clé : le disque applicatif est public (voir
+[`SECURITY.md`](../SECURITY.md)), la détection refuse d'ailleurs tout
+`…MASTER_KEY…` dans le bloc `env:`.
+
+La contrepartie est explicite : un credential **métier**
+(`Rails.application.credentials.stripe.secret`) vaudra `nil` dans la sandbox.
+C'est déjà le cas aujourd'hui — le fichier y est indéchiffrable — et c'est le
+modèle : une sandbox sert à faire essayer, pas à opérer un service. Une valeur
+factice se déclare dans le bloc `env:`.
+
+Deux cas où railsbox ne touche à rien : votre dépôt versionne sa clé (celle-ci
+est alors conservée telle quelle, comme pour l'application de démonstration de
+railsbox), ou vous avez déclaré `RAILS_MASTER_KEY` dans `env:` — donc nommé dans
+`env_assume_public:`, donc assumé de le publier. Pour observer le comportement
+d'origine, désarmez la substitution :
+
+```yaml
+env:
+  RAILSBOX_KEEP_CREDENTIALS: "1"
+```
+
+> **Si votre `.dockerignore` exclut la clé, conservez cette ligne.** Rails en
+> génère une depuis 7.1 (`/config/master.key`), railsbox conserve le
+> `.dockerignore` de votre application, et la paire jetable qu'il écrit y serait
+> écartée : les négations nécessaires sont donc ajoutées à la **copie** du
+> fichier, jamais à la vôtre.
+
 #### `database: sqlite3` pose une vraie `DATABASE_URL`
 
 La construction tourne en `RAILS_ENV=production`. Sans `DATABASE_URL`, une

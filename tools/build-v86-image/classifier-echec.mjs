@@ -109,6 +109,16 @@ export const REMEDES = Object.freeze({
   "assets-precompile-echec":
     "Reproduisez `RAILS_ENV=production bin/rails assets:precompile` dans l'application : " +
     "railsbox exécute la commande standard, sans adaptation.",
+  "credentials-cle-absente":
+    "railsbox substitue normalement une paire de credentials JETABLE quand la clé n'est pas " +
+    "versionnée : si ce refus tombe quand même, ou bien la substitution a été désarmée " +
+    "(RAILSBOX_KEEP_CREDENTIALS=1), ou bien votre application VERSIONNE sa clé mais son " +
+    ".dockerignore l'écarte — retirez-y la ligne, ou cessez de versionner la clé et laissez " +
+    "railsbox en fabriquer une (le disque applicatif est public, n'y mettez pas la vraie).",
+  "credentials-cle-invalide":
+    "La clé versionnée par l'application ne déchiffre pas son propre fichier de credentials " +
+    "(clé tournée sans réécrire le .enc, ou paire d'environnement dépareillée). Rejouez " +
+    "`RAILS_ENV=production bin/rails credentials:show` hors railsbox : l'erreur y est identique.",
   "db-connexion":
     "Vérifiez la base déclarée (clé database: de railsbox.yml) et que la base railsbox utilisée " +
     "fournit PostgreSQL (3.3-r2 au minimum) : le cluster est initialisé pendant la construction.",
@@ -465,6 +475,25 @@ const REGLES = Object.freeze([
       m[1]
         ? `L'installation de la gem « ${m[1]} » a échoué.`
         : "bundle install s'est interrompu sans que la gem fautive soit nommée.",
+  },
+  // Avant les règles d'assets, et à rang 1 : la panne éclate presque toujours
+  // pendant assets:precompile, dont la ligne d'échec BuildKit contient le mot
+  // « assets:precompile ». Sans ces deux règles, le constat générique gagnait et
+  // annonçait un problème d'assets là où la cause est une clé de chiffrement.
+  {
+    code: "credentials-cle-absente",
+    categorie: CATEGORIES.RAILS,
+    rang: 1,
+    motif: /Missing encryption key to decrypt file with|EncryptedFile::MissingKeyError/,
+    message: () =>
+      "L'application exige sa clé de credentials (config.require_master_key) et ne l'a pas trouvée.",
+  },
+  {
+    code: "credentials-cle-invalide",
+    categorie: CATEGORIES.RAILS,
+    rang: 1,
+    motif: /MessageEncryptor::InvalidMessage|ActiveSupport::MessageVerifier::InvalidSignature/,
+    message: () => "Les credentials de l'application n'ont pas pu être déchiffrés avec sa clé.",
   },
   {
     code: "assets-vides",

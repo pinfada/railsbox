@@ -283,6 +283,16 @@ APRES_MB="$(du -sm "$BUILD_CONTEXT" | cut -f1)"
 echo "  Arbre du dépôt ${AVANT_MB} Mo → contexte livré au build ${APRES_MB} Mo" \
   "($((AVANT_MB - APRES_MB)) Mo écartés)"
 
+# Credentials : un dépôt tiers livre `config/credentials.yml.enc` SANS sa clé
+# (master.key est gitignoré, c'est la règle). Une application qui exige la clé
+# — `config.require_master_key = true` — refuse alors de démarrer, et
+# assets:precompile meurt sur « Missing encryption key to decrypt file with ».
+# Une paire JETABLE est substituée dans le contexte, jamais dans le dépôt, et
+# jamais quand l'application fournit sa propre clé : voir credentials-jetables.mjs.
+echo "→ Credentials de la sandbox…"
+APP_ENV_MANIFEST="${APP_ENV_MANIFEST:-}" \
+  node "$SCRIPT_DIR/credentials-jetables.mjs" "$BUILD_CONTEXT"
+
 ########################################################################
 # Étage amd64 de précompilation des assets (critère C8)
 ########################################################################

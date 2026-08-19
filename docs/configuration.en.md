@@ -159,6 +159,47 @@ env:
   RAILSBOX_KEEP_FORCE_SSL: "1"
 ```
 
+#### Your credentials are replaced by a **throwaway** pair
+
+Your repository versions `config/credentials.yml.enc` and **not**
+`config/master.key` — that is what every `rails new` does, and it is the right
+practice. railsbox therefore only ever receives the encrypted half of a pair. As
+long as nothing reads the credentials, the missing key goes unnoticed; with
+`config.require_master_key = true` in your `production.rb` it is fatal: Rails
+refuses to boot and `assets:precompile` dies on *"Missing encryption key to
+decrypt file with"*, in the middle of the build.
+
+railsbox therefore substitutes — **in the build context only, never in your
+repository** — a BRAND-NEW pair drawn at random: a throwaway key and the
+`credentials.yml.enc` it decrypts, carrying a `secret_key_base` and
+`active_record_encryption` keys invented for this build. **You have nothing to
+change**, and you must certainly **not** hand us your real key: the application
+disk is public (see [`SECURITY.md`](../SECURITY.md)), and detection refuses any
+`…MASTER_KEY…` in the `env:` block anyway.
+
+The trade-off is explicit: a **business** credential
+(`Rails.application.credentials.stripe.secret`) will be `nil` inside the
+sandbox. That is already the case today — the file is undecryptable there — and
+it is the model: a sandbox is for trying out, not for operating a service.
+Declare a dummy value in the `env:` block instead.
+
+Two cases where railsbox touches nothing: your repository versions its key (it
+is then kept as is, as for railsbox's own demo application), or you declared
+`RAILS_MASTER_KEY` in `env:` — hence named it in `env_assume_public:`, hence
+accepted publishing it. To observe the original behaviour, disarm the
+substitution:
+
+```yaml
+env:
+  RAILSBOX_KEEP_CREDENTIALS: "1"
+```
+
+> **If your `.dockerignore` excludes the key, keep that line.** Rails has
+> generated one since 7.1 (`/config/master.key`), railsbox keeps your
+> application's `.dockerignore`, and the throwaway pair it writes would be
+> filtered out by it: the required negations are therefore appended to the
+> **copy** of the file, never to yours.
+
 #### `database: sqlite3` sets a real `DATABASE_URL`
 
 The build runs with `RAILS_ENV=production`. Without `DATABASE_URL`, an

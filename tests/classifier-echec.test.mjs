@@ -188,6 +188,34 @@ test("un échec de bundle sans cause reconnue nomme au moins la gem", () => {
   assert.match(diagnostic.message, /« bcrypt »/);
 });
 
+// --- Credentials -----------------------------------------------------------
+
+test("une clé de credentials absente n'est pas mise sur le dos des assets", () => {
+  // Journal RÉEL d'une application tierce : Rails n'imprime que le message, et
+  // la seule autre ligne utile — celle de l'échec BuildKit — contient
+  // « assets:precompile ». Le constat générique gagnait, et envoyait le
+  // mainteneur déboguer une chaîne d'assets qui n'a rien fait de mal.
+  const diagnostic = classer(
+    [
+      "#16 2.004 Missing encryption key to decrypt file with. Ask your team for your master key" +
+        " and write it to /app/config/master.key or put it in the ENV['RAILS_MASTER_KEY'].",
+      '#16 ERROR: process "/bin/sh -c bundle exec rails assets:precompile" did not complete' +
+        " successfully: exit code: 1",
+    ].join("\n"),
+  );
+  assert.equal(diagnostic.code, "credentials-cle-absente");
+  assert.equal(diagnostic.categorie, CATEGORIES.RAILS);
+  assert.match(diagnostic.remede, /JETABLE/);
+});
+
+test("une clé qui ne déchiffre pas ses propres credentials est distinguée d'une clé absente", () => {
+  const diagnostic = classer(
+    "#16 1.9 ActiveSupport::MessageEncryptor::InvalidMessage (ActiveSupport::MessageEncryptor::InvalidMessage)",
+  );
+  assert.equal(diagnostic.code, "credentials-cle-invalide");
+  assert.match(diagnostic.remede, /credentials:show/);
+});
+
 // --- Précompilation des assets --------------------------------------------
 
 test("un étage amd64 muet est un échec explicite", () => {
