@@ -376,7 +376,16 @@ async function bootSelectedEngine() {
   logLine(
     "Premier boot à froid : plusieurs minutes. Boots suivants : restaurés depuis l'instantané.",
   );
-  const configResponse = await fetch(V86_CONFIG_URL);
+  // `cache: "reload"` — SANS LUI, REPUBLIER CASSE LA SANDBOX. Cette
+  // configuration nomme le cache d'artefacts (son `builtAt` entre dans la
+  // signature, artifact-cache.js) et désigne l'instantané. Servie périmée par
+  // le cache HTTP de l'hébergeur — GitHub Pages annonce un max-age de plusieurs
+  // minutes — elle fait restaurer l'instantané mémoire d'une construction sur
+  // le disque d'une autre : Puma ne répond jamais, et rien ne le dit. Mesuré le
+  // 19/08/2026 : builtAt 06:47 servi depuis le cache alors que la publication
+  // portait 08:09. Ce n'est pas un en-tête ajouté (pas de préflight, ADR 0001),
+  // c'est un mode de cache : le contrat des requêtes simples est préservé.
+  const configResponse = await fetch(V86_CONFIG_URL, { cache: "reload" });
   if (!configResponse.ok) {
     throw new Error("v86-config.json introuvable — construisez d'abord la sandbox");
   }
