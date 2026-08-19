@@ -102,6 +102,12 @@ export const REMEDIES = Object.freeze({
   "unknown-manifest-key":
     "Retirez la clé de railsbox.yml : seules ruby, database, database_prepare, seed, " +
     "env, assets, system_packages, exclude et env_assume_public sont reconnues.",
+  "service-externe-au-demarrage":
+    "Rendez le service configurable pour pouvoir le neutraliser dans la sandbox : lisez-le dans " +
+    'une variable (config.active_storage.service = ENV.fetch("ACTIVE_STORAGE_SERVICE", ' +
+    '"amazon").to_sym) et déclarez la valeur de repli dans le bloc env: de railsbox.yml. ' +
+    "Le gain dépasse la sandbox : une review app et une base de CI n'ont pas plus de réseau " +
+    "vers votre bucket. Si la gem n'est pas sollicitée au démarrage, il n'y a rien à faire.",
   "invalid-asset-output":
     "assets.output n'accepte que des chemins RELATIFS à la racine de l'application " +
     "(« public/dist », « public/vite »), sans « .. », sans chemin absolu et sans espace.",

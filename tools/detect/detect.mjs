@@ -10,6 +10,7 @@ import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
 import { dataMigrationFindings, scanDataMigrations } from "./migrations.mjs";
+import { externalServiceFindings } from "./services-externes.mjs";
 import { sqliteDriverFindings, sqliteDriverState } from "./sqlite.mjs";
 import {
   normalizeRubyVersion,
@@ -498,6 +499,7 @@ export async function detectApp(appDir, options = {}) {
   const adapters = parseDatabaseAdapters(databaseYml ?? "");
   const sqlite = sqliteDriverState(gemfile, specs, lock !== null);
   findings.push(...sqliteDriverFindings({ state: sqlite, database: database.database, adapters }));
+  findings.push(...externalServiceFindings(specs.keys()));
   const dataMigrations = scanDataMigrations(migrations);
   findings.push(...dataMigrationFindings(dataMigrations));
   const ssl = detectSsl(productionRb);
