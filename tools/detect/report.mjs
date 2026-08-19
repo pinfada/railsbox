@@ -72,6 +72,15 @@ export const REMEDIES = Object.freeze({
     "Rien à faire si le dépannage vous suffit. Mais la correction durable reste de déplacer " +
     "ces données dans db/seeds.rb : railsbox rejouera alors l'historique pour rien, et " +
     "l'application fonctionnera aussi hors de la sandbox.",
+  "sandbox-sans-donnees":
+    "Déclarez un jeu de démonstration dans railsbox.yml : un bloc seed: avec une clé " +
+    "command:, exécutée à la CONSTRUCTION, avant la capture de l'instantané. Écrire ce jeu " +
+    "dans un fichier séparé évite de polluer le db/seeds.rb de l'application — le bloc " +
+    'devient « seed: » puis, indenté de 2 espaces, « command: "bin/rails runner ' +
+    "db/seeds/demo.rb\" ». N'y mettez AUCUNE donnée " +
+    "réelle — ni client, ni adresse, ni contenu privé : le disque applicatif est public et " +
+    "téléchargeable par chaque visiteur (SECURITY.md). Si l'application n'a réellement rien " +
+    "à montrer (vitrine, documentation), il n'y a rien à faire.",
   "missing-sqlite3-gem":
     'Ajoutez `gem "sqlite3"` au Gemfile puis relancez `bundle install`, ou déclarez ' +
     "database: postgresql dans railsbox.yml si l'application parle à PostgreSQL.",

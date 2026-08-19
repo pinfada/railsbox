@@ -35,6 +35,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {readonly NativeGem[]} [nativeGems] gems à extension native
  * @property {{redis?: boolean, sidekiq?: boolean}} [services] services d'arrière-plan
  * @property {{command?: string, autoLogin?: string, autoLoginCode?: string}} [seed] amorçage des données
+ * @property {string} [seedsFile] état du db/seeds.rb détecté (absent, vide, utile)
  * @property {Record<string, string>} [env] variables d'environnement déclarées
  * @property {readonly string[]} [envAssumePublic] clés de `env:` assumées publiques
  * @property {readonly string[]} [systemPackages] paquets Debian de la surcouche applicative

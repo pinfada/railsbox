@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ASSET_STAGE, binaryAssetGems, planAssets } from "../detect/assets.mjs";
 import { detectApp, readOptionalFile } from "../detect/detect.mjs";
+import { sandboxSansDonneesFindings } from "../detect/donnees-demo.mjs";
 import { planExclusions } from "../detect/exclusions.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
 import { parseLockSpecs } from "../detect/gems.mjs";
@@ -479,6 +480,16 @@ export async function analyzeApp(appDir, appName, options = {}) {
     readOptionalFile(join(appDir, "db", "seeds.rb")),
   ]);
   const specs = parseLockSpecs(lock);
+
+  // Une sandbox sans données démarre parfaitement et ne montre rien : le
+  // contrôle a lieu après la fusion, une commande de seed déclarée le faisant
+  // taire (voir detect/donnees-demo.mjs).
+  findings.push(
+    ...sandboxSansDonneesFindings({
+      seedsFile: manifest.seedsFile,
+      seedCommand: manifest.seed?.command,
+    }),
+  );
 
   // Une série de Ruby irrésoluble est un diagnostic BLOQUANT, pas une
   // exception : ainsi le rapport structuré (avec son remède) est présenté à

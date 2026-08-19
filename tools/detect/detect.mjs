@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { detectOutputDirs } from "./asset-output.mjs";
 import { NPM_LOCKFILES, planAssets } from "./assets.mjs";
 import { DEFAULT_BASE, resolveBase } from "./bases.mjs";
+import { etatFichierSeeds } from "./donnees-demo.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
@@ -435,6 +436,7 @@ export async function detectApp(appDir, options = {}) {
     shakapackerYml,
     webpackerYml,
     migrations,
+    seedsRb,
   ] = await Promise.all([
     readOptionalFile(join(appDir, ".ruby-version")),
     readOptionalFile(join(appDir, "Gemfile")),
@@ -453,6 +455,9 @@ export async function detectApp(appDir, options = {}) {
     // des données, car `db:prepare` sur une base vierge charge db/schema.rb et
     // n'en joue aucune (voir migrations.mjs).
     readMigrations(appDir),
+    // Le jeu de démonstration : lu ici, jugé après la fusion de railsbox.yml —
+    // une commande de seed déclarée l'emporte sur ce fichier (donnees-demo.mjs).
+    readOptionalFile(join(appDir, "db", "seeds.rb")),
   ]);
 
   /** @type {Finding[]} */
@@ -563,6 +568,9 @@ export async function detectApp(appDir, options = {}) {
     // Noms des migrations qui écrivent des lignes : ce sont eux qui décident,
     // en mode « auto », de préparer la base en jouant les migrations.
     dataMigrations: Object.freeze(dataMigrations.map((entry) => entry.file)),
+    // État du db/seeds.rb (absent, vide, utile). Aucun diagnostic ici : le
+    // verdict dépend aussi de `seed.command`, qui n'arrive qu'à la fusion.
+    seedsFile: etatFichierSeeds(seedsRb),
     sqliteDriver: sqlite,
     ssl: ssl.ssl,
     bundler,

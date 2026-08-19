@@ -6,6 +6,7 @@
 // Sort en 1 si un diagnostic bloquant existe, 2 en cas d'échec de l'analyse.
 import { join } from "node:path";
 import { detectApp, readOptionalFile } from "./detect.mjs";
+import { sandboxSansDonneesFindings } from "./donnees-demo.mjs";
 import { mergeManifest, parseRailsboxYml } from "./manifest.mjs";
 import { formatReport, hasBlocking } from "./report.mjs";
 
@@ -36,6 +37,15 @@ async function main() {
     manifest = merged.manifest;
     findings.push(...merged.findings);
   }
+
+  // Après la fusion, et pas avant : une commande de seed déclarée dans
+  // railsbox.yml fait taire ce contrôle.
+  findings.push(
+    ...sandboxSansDonneesFindings({
+      seedsFile: manifest.seedsFile,
+      seedCommand: manifest.seed?.command,
+    }),
+  );
 
   console.log(formatReport({ manifest, findings }));
   return hasBlocking(findings) ? EXIT_BLOCKING : 0;
