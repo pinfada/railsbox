@@ -339,5 +339,5 @@ lancer : une case honnêtement vide vaut mieux qu'une case cochée par principe.
 
 ## Structure du dépôt
 
-Arborescence : section « Arborescence » du [README](README.md).
+Arborescence : section « Arborescence » de [docs/developpement.md](docs/developpement.md).
 Carte de lecture : [`docs/architecture.md`](docs/architecture.md).

@@ -1,7 +1,8 @@
 # Carte du code
 
 Ce document sert une seule question : **par où commencer à lire ?** Le
-[README](../README.md) décrit le produit et son arborescence ; les
+[README](../README.md) décrit le produit ; [developpement.md](developpement.md) porte
+l'arborescence ; les
 [ADR](decisions/) portent les décisions et leurs mesures. Ici, on suit le
 chemin — celui d'une requête HTTP, du clic du visiteur jusqu'à Puma et retour —
 puis on nomme les fichiers qui le portent.

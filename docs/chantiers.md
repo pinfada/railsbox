@@ -97,7 +97,7 @@ Deux pièges à traiter, sans quoi le script ne servira à rien :
   `tools/build-v86-image/autoriser-origine-base.mjs` (réutilisés)
 - `tests/e2e/vm-disks.mjs` (reconnaître les artefacts découpés en plus des noms
   hérités)
-- `CONTRIBUTING.md`, `README.md` (la procédure)
+- `CONTRIBUTING.md`, `docs/developpement.md` (la procédure)
 
 ### Critère de réussite
 
@@ -139,7 +139,7 @@ appliqué.
 - `.github/workflows/construire-sandbox.yml`
 - `.github/workflows/sandbox-demo.yml`
 - `.github/PULL_REQUEST_TEMPLATE.md` (la réserve qui y figure disparaît)
-- `README.md` / `README.en.md` (entrées du workflow)
+- `docs/configuration.md`, `docs/configuration.en.md` (entrées du workflow)
 
 ### Critère de réussite
 
