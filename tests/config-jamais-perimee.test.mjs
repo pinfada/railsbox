@@ -35,10 +35,13 @@ test("l'inventaire des morceaux d'instantané reste un GET nu", () => {
   //
   // Ce qui protège quand même : le nom du cache d'artefacts dérive du
   // `builtAt` de la configuration, désormais lue fraîche. Une configuration à
-  // jour ouvre un cache neuf, et les morceaux y sont retéléchargés. Le risque
-  // résiduel — le cache HTTP resservant un morceau périmé sous la même URL —
-  // n'a jamais été observé et se traiterait en versionnant les noms de
-  // morceaux, pas en préflightant.
+  // jour ouvre un cache neuf, et les morceaux y sont retéléchargés.
+  //
+  // Le risque résiduel — un cache HTTP resservant un morceau périmé sous la
+  // même URL — a depuis été traité à la racine : les morceaux du disque
+  // applicatif et de l'instantané portent l'empreinte de leur contenu
+  // (ADR 0007), donc une URL ne désigne plus jamais deux contenus. Ce n'était
+  // effectivement pas un problème de préflight.
   const source = lire("../public/shared/snapshot-parts.js");
   const appel = source.match(/fetch\(\s*manifestUrlFor\([^)]*\)\s*(,[^)]*)?\)/);
   assert.ok(appel, "l'appel à manifestUrlFor doit exister");
