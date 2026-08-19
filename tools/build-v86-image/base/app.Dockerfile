@@ -256,8 +256,25 @@ COPY --from=railsbox-assets . ./
 # chargé — relancer ici échouerait précisément sur les binaires absents.
 ARG ASSET_PRECOMPILE=1
 ARG HOST_ASSETS=0
+# Le bloc `env:` du railsbox.yml vaut aussi PENDANT la construction. Toute
+# étape qui DÉMARRE l'application — assets:precompile, db:prepare, les seeds —
+# charge ses initialiseurs, et un initialiseur qui exige une variable (clé de
+# chiffrement, hôte autorisé) fait échouer la construction alors que le guest,
+# lui, aurait eu la variable. L'étage amd64 le fait déjà (assets-amd64.Dockerfile) ;
+# les étages i386 le faisaient pas — défaut trouvé par la première application
+# privée passée à la construction.
+#
+# SÉCURITÉ : APP_ENV_MANIFEST vient de railsbox.yml, donc de code TIERS. Ses
+# valeurs sont déjà entre apostrophes (manifest-to-args.mjs) : le `.` les charge
+# sans jamais évaluer un $(commande), qui reste une chaîne littérale.
+ARG APP_ENV_MANIFEST=""
 RUN <<'RIB_ASSETS'
 set -eu
+{ printf '%s' "${APP_ENV_MANIFEST}"; echo; } > /tmp/rib-env.sh
+set -a
+. /tmp/rib-env.sh
+set +a
+rm -f /tmp/rib-env.sh
 if [ "${HOST_ASSETS}" = 1 ]; then
   fichiers="$(find public/assets -type f | wc -l)"
   # Garde-fou : un étage amd64 muet laisserait une application sans CSS, panne
@@ -293,6 +310,8 @@ ARG SQLITE_DATABASE_URL=""
 ARG DB_PREPARE_COMMAND="bundle exec rails db:prepare"
 ARG SEED_COMMAND=""
 ARG SEED_OPTIONAL=0
+# Voir le bloc « env: pendant la construction » de l'étage assets ci-dessus.
+ARG APP_ENV_MANIFEST=""
 RUN <<'RIB_DB'
 set -eu
 if [ "${WITH_REDIS}" = 1 ]; then
@@ -313,6 +332,13 @@ elif [ -n "${SQLITE_DATABASE_URL}" ]; then
   # (même valeur écrite dans app-env.sh plus bas).
   export DATABASE_URL="${SQLITE_DATABASE_URL}"
 fi
+# En dernier, comme dans app-env.sh : le bloc env: a le dernier mot, y compris
+# sur DATABASE_URL — une application peut imposer sa propre chaîne.
+{ printf '%s' "${APP_ENV_MANIFEST}"; echo; } > /tmp/rib-env.sh
+set -a
+. /tmp/rib-env.sh
+set +a
+rm -f /tmp/rib-env.sh
 sh -c "${DB_PREPARE_COMMAND}"
 if [ -n "${SEED_COMMAND}" ]; then
   if [ "${SEED_OPTIONAL}" = 1 ]; then
