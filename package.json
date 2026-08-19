@@ -13,6 +13,7 @@
     "test:bridage": "playwright test --config playwright.bridage.config.mjs",
     "lint": "eslint .",
     "lint:shell": "node tools/lint-shell.mjs",
+    "adoption": "node tools/collecter-adoption.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.sw.json && tsc -p tsconfig.node.json",
