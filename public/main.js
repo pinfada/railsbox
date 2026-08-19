@@ -12,9 +12,11 @@ import {
 import {
   GARDE_CONTROLE,
   GARDE_ISOLATION,
+  compterTentatives,
   decisionReprise,
   diagnostiquer,
   releverCapacites,
+  repriseControle,
   resumerManques,
 } from "./shared/prerequis-demarrage.js";
 import { creerIndicateurDemarrage } from "./shared/progression-demarrage.js";
@@ -578,11 +580,15 @@ function checkBrowserSupport() {
  * secondaire n'a rien cassé —, et l'action facultative ajoute le bouton qui
  * lui permet d'en sortir.
  *
+ * Le lien facultatif, lui, sert aux impasses : quand plus aucun geste dans
+ * cette page ne peut aider, il reste à renvoyer le visiteur vers ce que la
+ * sandbox exige de son navigateur.
+ *
  * @param {string} titre
  * @param {string} detail
- * @param {{ ton?: "erreur" | "info", action?: { libelle: string, onClick: (bouton: HTMLButtonElement) => void } | null }} [options]
+ * @param {{ ton?: "erreur" | "info", action?: { libelle: string, onClick: (bouton: HTMLButtonElement) => void } | null, lien?: { libelle: string, href: string } | null }} [options]
  */
-function showDiagnostic(titre, detail, { ton = "erreur", action = null } = {}) {
+function showDiagnostic(titre, detail, { ton = "erreur", action = null, lien = null } = {}) {
   if (!diagnosticElement) return;
   diagnosticElement.replaceChildren();
   diagnosticElement.classList.toggle("info", ton === "info");
@@ -600,8 +606,32 @@ function showDiagnostic(titre, detail, { ton = "erreur", action = null } = {}) {
     bouton.addEventListener("click", () => action.onClick(bouton));
     diagnosticElement.append(bouton);
   }
+  if (lien) {
+    const ancre = document.createElement("a");
+    ancre.id = "diagnostic-lien";
+    ancre.href = lien.href;
+    ancre.textContent = lien.libelle;
+    // Nouvel onglet : la sandbox reste ouverte derrière, et rien n'est perdu si
+    // le visiteur revient. `noopener` parce que la page ouverte n'a rien à
+    // faire de la nôtre.
+    ancre.target = "_blank";
+    ancre.rel = "noopener noreferrer";
+    diagnosticElement.append(ancre);
+  }
   diagnosticElement.hidden = false;
   frameElement.hidden = true;
+}
+
+/**
+ * Passe au rouge les badges restés en attente. Ceux qui sont déjà verts ont
+ * bel et bien été franchis : les repeindre effacerait l'information la plus
+ * utile, celle de l'étape où le démarrage s'est arrêté.
+ */
+function marquerBadgesEnEchec() {
+  for (const id of BADGE_IDS) {
+    const badge = document.getElementById(`badge-${id}`);
+    if (badge.classList.contains("pending")) setBadge(id, false);
+  }
 }
 
 /** Rend la place à l'application : le diagnostic n'a plus lieu d'être. */
@@ -622,6 +652,11 @@ function hideDiagnostic() {
  * auparavant une « ERREUR FATALE » et passait tous les badges au rouge à
  * chaque première visite sur Firefox et WebKit.
  *
+ * Ne sert plus qu'à l'isolation cross-origin. Le contrôle du worker, lui, a sa
+ * propre reprise (`ensureControlled`) : son échec est récupérable d'un clic,
+ * là où une page servie sans COOP/COEP ne s'isolera jamais par une navigation
+ * de plus — cet abandon-là reste donc un échec, et le reste fatal.
+ *
  * @param {{ satisfait: boolean, garde: string, attente: string, echec: string }} etape
  * @returns {Promise<void>}
  */
@@ -638,15 +673,106 @@ function resumeAfterReload({ satisfait, garde, attente, echec }) {
   return new Promise(() => {}); // la page se recharge, on n'ira pas plus loin
 }
 
-// Après la toute première installation, la page n'est pas encore contrôlée
-// par le SW : un unique rechargement règle ça.
-function ensureControlled() {
-  return resumeAfterReload({
-    satisfait: navigator.serviceWorker.controller !== null,
-    garde: GARDE_CONTROLE,
-    attente: "Premier passage : activation du Service Worker",
-    echec: "Le Service Worker ne prend pas le contrôle de la page",
+// Marge laissée à `clients.claim()` pour parvenir jusqu'à la page.
+//
+// `navigator.serviceWorker.ready` se résout dès que la registration possède un
+// worker actif ; la revendication des clients, elle, se propage juste après,
+// par un aller-retour de messages entre le worker et le document. Lire
+// `controller` dans la foulée de `ready`, c'est donc parfois lire quelques
+// millisecondes trop tôt — et c'est ce qui déclenchait un rechargement à une
+// page qui allait être contrôlée de toute façon. Deux secondes : trois ordres
+// de grandeur au-dessus du round-trip attendu, marge confortable même sous le
+// bridage processeur 8× mesuré par `npm run test:bridage`, et sans commune
+// mesure avec le coût de l'alternative (une navigation complète).
+const DELAI_CONTROLE_MS = 2_000;
+
+/**
+ * Laisse au worker le temps de revendiquer la page, sans jamais l'attendre
+ * plus que de raison. Rend la main dès `controllerchange`, et de toute façon
+ * au bout du délai — l'appelant relit `controller` et décide.
+ * @returns {Promise<void>}
+ */
+function attendreControle() {
+  if (navigator.serviceWorker.controller) return Promise.resolve();
+  return new Promise((resolve) => {
+    const conclure = () => {
+      clearTimeout(minuterie);
+      navigator.serviceWorker.removeEventListener("controllerchange", conclure);
+      resolve();
+    };
+    const minuterie = setTimeout(conclure, DELAI_CONTROLE_MS);
+    navigator.serviceWorker.addEventListener("controllerchange", conclure);
   });
+}
+
+/**
+ * Le worker doit piloter la page : sans lui, aucune requête de l'application
+ * n'est servie. Au tout premier passage la page n'est pas encore contrôlée, et
+ * un rechargement règle ça — il fait partie du démarrage normal.
+ *
+ * Ce n'est PAS un échec fatal quand il ne suffit pas. Mesuré sur une sandbox
+ * publiée le 18/08/2026 : le rechargement automatique était reparti pendant
+ * que le worker s'activait encore, la page est revenue non contrôlée, la garde
+ * était déjà posée — et la coquille annonçait « ERREUR FATALE » sous quatre
+ * badges rouges alors qu'un rechargement de plus, fait à la main, la faisait
+ * démarrer normalement. Un prospect ferme l'onglet devant ce mot ; il est en
+ * plus faux. La décision (poursuivre, recharger, proposer, renoncer) vit dans
+ * shared/prerequis-demarrage.js ; ici, rien que le câblage.
+ *
+ * @returns {Promise<void>}
+ */
+async function ensureControlled() {
+  await attendreControle();
+  const tentatives = compterTentatives(sessionStorage.getItem(GARDE_CONTROLE));
+  const plan = repriseControle({
+    controle: navigator.serviceWorker.controller !== null,
+    tentatives,
+  });
+  if (plan.suite === "poursuivre") return;
+
+  if (plan.suite === "recharger") {
+    rechargerPourControle(tentatives, plan.journal);
+    return new Promise(() => {}); // la page part, on n'ira pas plus loin
+  }
+
+  // Le diagnostic prend la place de l'application : l'indicateur d'attente
+  // n'a plus rien à indiquer et masquerait le bas de l'explication.
+  indicateur.fin();
+  if (plan.suite === "proposer") {
+    // Aucun badge rouge : rien n'est cassé, il manque une navigation.
+    setBadges(null);
+    showDiagnostic(plan.titre, plan.detail, {
+      ton: "info",
+      action: {
+        libelle: plan.libelleAction,
+        onClick(bouton) {
+          bouton.disabled = true;
+          rechargerPourControle(tentatives, "Rechargement demandé par le visiteur");
+        },
+      },
+    });
+  } else {
+    logLine(`${plan.titre} — ${plan.detail}`);
+    showDiagnostic(plan.titre, plan.detail, { lien: plan.lien });
+    marquerBadgesEnEchec();
+  }
+  // Le démarrage attend désormais un clic, ou s'arrête là. Ne jamais se
+  // résoudre est ce qui l'empêche de continuer, sans lever — donc sans
+  // repasser par la bannière d'échec fatal.
+  return new Promise(() => {});
+}
+
+/**
+ * Consomme un rechargement du quota et recharge. Le compteur vit dans
+ * `sessionStorage` : il est propre à cet onglet et disparaît avec lui, ce qui
+ * fait qu'un visiteur revenu plus tard repart avec son quota entier.
+ * @param {number} tentatives rechargements déjà consommés
+ * @param {string} journal ce qu'on inscrit avant de partir
+ */
+function rechargerPourControle(tentatives, journal) {
+  sessionStorage.setItem(GARDE_CONTROLE, String(tentatives + 1));
+  logLine(`${journal} — rechargement…`);
+  location.reload();
 }
 
 // Le SW ré-injecte COOP/COEP, mais seulement sur les navigations qu'il
@@ -669,8 +795,5 @@ start().catch((error) => {
   indicateur.fin();
   logLine(`ERREUR FATALE: ${error.message}`);
   showDiagnostic("Le démarrage a échoué", error.message);
-  for (const id of BADGE_IDS) {
-    const badge = document.getElementById(`badge-${id}`);
-    if (badge.classList.contains("pending")) setBadge(id, false);
-  }
+  marquerBadgesEnEchec();
 });
