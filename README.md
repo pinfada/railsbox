@@ -293,11 +293,12 @@ ce qui ne l'est pas, et pourquoi : [`SECURITY.md`](SECURITY.md).
 demande de fusion. Elle est la **seule** façon de figurer ici depuis un dépôt
 privé : aucune détection automatique ne le verra jamais.
 
-<!-- Ajoutez-vous : une ligne, dans l'ordre alphabétique. -->
-<!-- - [Nom](https://exemple.org) — ce que vous montrez · [la démonstration](https://…) -->
+La liste vit dans **[docs/utilisateurs.md](docs/utilisateurs.md)** — une ligne,
+dans l'ordre alphabétique, par demande de fusion. Elle est reprise dans
+[docs/adoption.md](docs/adoption.md) à chaque mesure.
 
-_Personne pour l'instant. Si railsbox vous sert, ouvrez une demande de fusion :
-c'est le seul retour que le projet reçoit._
+_Personne pour l'instant. Si railsbox vous sert, ajoutez-vous : c'est le seul
+retour que le projet reçoit._
 
 Les sandboxes **publiques** sont détectées automatiquement et recensées dans
 [docs/adoption.md](docs/adoption.md), régénéré chaque semaine avec les mesures

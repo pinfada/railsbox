@@ -22,6 +22,13 @@ image de conteneur : seulement le nombre de versions que *nous* avons publiées,
 c'est-à-dire notre propre activité. Le chiffre reste ici pour dater les
 révisions de base, jamais comme signal d'adoption.
 
+## Qui l'utilise
+
+_Personne ne s'est encore déclaré. Si railsbox vous sert, ajoutez-vous : c'est le seul retour que le projet reçoit — et **la seule façon d'apparaître depuis un dépôt privé**, qu'aucune détection ne verra jamais._
+
+Liste tenue à la main, dans [docs/utilisateurs.md](utilisateurs.md) — le seul
+fichier à modifier : cette page-ci est régénérée chaque semaine.
+
 ## Sandboxes publiques détectées
 
 - [`pinfada/GenealogyApp`](https://github.com/pinfada/GenealogyApp)
@@ -35,7 +42,7 @@ y figure parce qu'il déclare publiquement utiliser railsbox.
 
 ## À lire avec les chiffres
 
-- **Les clones ne mesurent pas l'adoption.** Chaque construction de sandbox clone ce dépôt (`actions/checkout`) : 89 construction(s) sur la période y contribuent, sans compter la CI de railsbox elle-même. Les « uniques » sont des runners éphémères, pas des personnes.
+- **Les clones ne mesurent pas l'adoption.** Chaque construction de sandbox clone ce dépôt (`actions/checkout`) : 90 construction(s) sur la période y contribuent, sans compter la CI de railsbox elle-même. Les « uniques » sont des runners éphémères, pas des personnes.
 - **Les dépôts privés sont invisibles.** Aucune recherche ne les voit, aucun compteur ne les distingue. C'est le modèle — pas de serveur, pas de compte, pas de télémétrie — et non un défaut d'outillage.
 - **La recherche de code dépend du jeton employé** : elle voit les dépôts publics, plus les dépôts privés auxquels ce jeton a accès. La liste ci-dessus peut donc contenir des dépôts privés du mainteneur.
 

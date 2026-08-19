@@ -48,6 +48,7 @@ function uniques(valeur) {
  *   depotsPublics?: string[],
  *   depotsPrives?: number | null,
  *   constructionsInternes?: number | null,
+ *   utilisateurs?: string,
  * }} mesures
  * @returns {string} Markdown terminé par un saut de ligne
  */
@@ -58,7 +59,14 @@ export function pageAdoption({
   depotsPublics = [],
   depotsPrives = null,
   constructionsInternes = null,
+  utilisateurs = "",
 }) {
+  // Le fragment manuel est rédigé pour un contributeur : ses commentaires
+  // d'instructions n'ont rien à faire dans la page publiée.
+  const utilisateursRendus = String(utilisateurs)
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .trim();
+
   const publics = [...depotsPublics].sort();
   const liste =
     publics.length === 0
@@ -99,6 +107,17 @@ faite, l'API de GitHub n'expose **aucun compteur de téléchargements** pour une
 image de conteneur : seulement le nombre de versions que *nous* avons publiées,
 c'est-à-dire notre propre activité. Le chiffre reste ici pour dater les
 révisions de base, jamais comme signal d'adoption.
+
+## Qui l'utilise
+
+${
+  utilisateursRendus
+    ? utilisateursRendus
+    : "_Personne ne s'est encore déclaré. Si railsbox vous sert, ajoutez-vous : c'est le seul retour que le projet reçoit — et **la seule façon d'apparaître depuis un dépôt privé**, qu'aucune détection ne verra jamais._"
+}
+
+Liste tenue à la main, dans [docs/utilisateurs.md](utilisateurs.md) — le seul
+fichier à modifier : cette page-ci est régénérée chaque semaine.
 
 ## Sandboxes publiques détectées
 

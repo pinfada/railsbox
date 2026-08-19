@@ -33,7 +33,7 @@
 // vaut mieux qu'un échec, et « — » ne se confond pas avec zéro.
 
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { pageAdoption } from "./mesurer-adoption.mjs";
 
@@ -122,6 +122,12 @@ async function main() {
     (d) => d.workflow_runs?.length,
   );
 
+  // Fragment tenu à la main : la seule façon dont un utilisateur PRIVÉ peut
+  // figurer, aucune détection ne le voyant jamais. Il vit dans son propre
+  // fichier parce que cette page-ci est réécrite chaque semaine — l'y écrire
+  // directement le ferait disparaître au prochain lundi.
+  const utilisateurs = await readFile("docs/utilisateurs.md", "utf8").catch(() => "");
+
   const date = new Date().toISOString().slice(0, 10).split("-").reverse().join("/");
   await mkdir("docs", { recursive: true });
   await writeFile(
@@ -132,6 +138,7 @@ async function main() {
       versionsBase,
       depotsPublics,
       constructionsInternes,
+      utilisateurs,
     }),
     "utf8",
   );

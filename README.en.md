@@ -281,10 +281,11 @@ real secrets or real data. What is defended, what is not, and why:
 It is the **only** way to appear here from a private repository: no automatic
 detection will ever see one.
 
-<!-- Add yourself: one line, alphabetical order. -->
-<!-- - [Name](https://example.org) — what you showcase · [the demo](https://…) -->
+The list lives in **[docs/utilisateurs.md](docs/utilisateurs.md)** — one line,
+alphabetical order, through a pull request. It is echoed in
+[docs/adoption.md](docs/adoption.md) at every measurement.
 
-_Nobody yet. If railsbox is useful to you, open a pull request: it is the only
+_Nobody yet. If railsbox is useful to you, add yourself: it is the only
 feedback this project gets._
 
 **Public** sandboxes are detected automatically and listed in

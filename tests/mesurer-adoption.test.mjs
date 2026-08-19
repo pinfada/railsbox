@@ -78,3 +78,25 @@ test("le compteur ghcr n'est jamais présenté comme un signal d'usage", () => {
   assert.match(md, /aucun compteur de téléchargements/);
   assert.match(md, /Aucune ligne de ce tableau ne mesure l'usage privé/);
 });
+
+test("la liste manuelle apparaît, sans ses instructions de contribution", () => {
+  const md = pageAdoption({
+    ...MESURES,
+    utilisateurs: "<!-- comment s'ajouter -->\n- [Acme](https://acme.test) — boutique",
+  });
+  assert.match(md, /- \[Acme\]\(https:\/\/acme\.test\) — boutique/);
+  assert.doesNotMatch(md, /comment s'ajouter/, "le guide du contributeur n'est pas publié");
+});
+
+test("liste vide : on invite, et on dit pourquoi elle est le seul canal", () => {
+  const md = pageAdoption({ ...MESURES, utilisateurs: "<!-- guide seul -->" });
+  assert.match(md, /Personne ne s'est encore déclaré/);
+  assert.match(md, /seule façon d'apparaître depuis un dépôt privé/);
+});
+
+test("la page renvoie vers le fichier à modifier, pas vers elle-même", () => {
+  // Éditer adoption.md serait perdu au prochain lundi : la page doit le dire.
+  const md = pageAdoption(MESURES);
+  assert.match(md, /docs\/utilisateurs\.md/);
+  assert.match(md, /régénérée chaque semaine/);
+});
