@@ -1,7 +1,12 @@
 /* Inspecteur d'environnement : panneau latéral.
    Reprend les jetons de la page hôte (terminal sombre, monospace) et ajoute
    une couleur sémantique distincte de l'accent — l'accent sert aux actions,
-   le sémantique à l'état d'une variable. */
+   le sémantique à l'état d'une variable.
+
+   Plancher typographique : 0.75rem (12 px) pour les libellés en capitales,
+   0.8125rem (13 px) dès qu'il s'agit d'un texte à lire ou d'un contrôle à
+   viser. En dessous, ce panneau devient le maillon illisible d'une interface
+   qu'on ne consulte justement que quand quelque chose ne démarre pas. */
 :root {
   --env-critique: #ff6b6b;
   --env-externe: #d4a72c;
@@ -11,7 +16,7 @@
 
 .env-declencheur {
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
@@ -31,6 +36,16 @@
 .env-declencheur:focus-visible {
   color: var(--text);
   border-color: var(--accent);
+}
+/* Le seul changement de couleur ne suffit pas à situer le focus quand on
+   navigue au clavier : il faut un contour, sur chaque cible du panneau. */
+.env-declencheur:focus-visible,
+.env-fermer:focus-visible,
+.env-bouton-ligne:focus-visible,
+.env-action:focus-visible,
+.env-persistance input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .env-declencheur[data-alerte="oui"] {
   color: var(--env-critique);
@@ -121,7 +136,7 @@
   gap: 1.5rem;
   padding: 0.85rem 1.2rem;
   border-bottom: 1px solid var(--border);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 .env-resume div {
   display: flex;
@@ -146,7 +161,7 @@
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  font-size: 0.62rem;
+  font-size: 0.75rem;
 }
 
 .env-corps {
@@ -156,13 +171,13 @@
 }
 .env-explication {
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: 0.8125rem;
   line-height: 1.6;
   margin: 0.6rem 0 1rem;
 }
 .env-vide {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.875rem;
   line-height: 1.7;
   padding: 1.5rem 0;
   text-align: center;
@@ -192,13 +207,13 @@
   flex-wrap: wrap;
 }
 .env-nom {
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   font-weight: 700;
   color: var(--text);
   word-break: break-all;
 }
 .env-pastille {
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.07em;
   padding: 0.1rem 0.45rem;
@@ -217,7 +232,7 @@
 }
 .env-famille {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   margin-left: auto;
 }
 
@@ -229,7 +244,7 @@
   flex: 1;
   min-width: 0;
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.8125rem;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -245,7 +260,7 @@
 }
 .env-bouton-ligne {
   font: inherit;
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
@@ -264,7 +279,7 @@
 
 .env-source {
   color: #6b7885;
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   line-height: 1.5;
   word-break: break-word;
   border-top: 1px dashed var(--border);
@@ -284,7 +299,7 @@
 }
 .env-action {
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.04em;
   padding: 0.6rem 0.8rem;
   border-radius: 5px;
@@ -315,11 +330,20 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* Raison du blocage, affichée sous les actions coupées et reliée au bouton
+   par aria-describedby : une infobulle `title` ne s'ouvre qu'à la souris. */
+.env-aide {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .env-persistance {
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  font-size: 0.7rem;
+  font-size: 0.8125rem;
   color: var(--muted);
   cursor: pointer;
   user-select: none;
@@ -328,7 +352,7 @@
   accent-color: var(--accent);
 }
 .env-etat {
-  font-size: 0.7rem;
+  font-size: 0.8125rem;
   color: var(--muted);
   min-height: 1.1em;
   line-height: 1.5;

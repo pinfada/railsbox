@@ -20,6 +20,8 @@ import {
   resumerManques,
 } from "./shared/prerequis-demarrage.js";
 import { creerIndicateurDemarrage } from "./shared/progression-demarrage.js";
+import { lireRequetesSql, mesuresDemarrage } from "./shared/bilan-demarrage.js";
+import { nomSandbox } from "./shared/nom-sandbox.js";
 import { createVeilleController } from "./shared/veille.js";
 import { PLAFOND_RETENTION_MS } from "./shared/session-privee.js";
 
@@ -45,6 +47,28 @@ let vmInstance = null;
 let artifactConfig = null;
 const MAX_LOG_LINES = 800;
 const BADGE_IDS = ["sw", "coi", "vm", "http"];
+
+/**
+ * État des badges EN TOUTES LETTRES.
+ *
+ * La classe CSS ne dit rien à personne : la pastille qui la matérialise est un
+ * `::before`, et un lecteur d'écran n'annonce pas le contenu généré. Un
+ * visiteur non voyant entendait donc « Service Worker » sans jamais savoir si
+ * le Service Worker marchait — quatre badges, zéro information.
+ */
+const ETATS_BADGE = {
+  ok: "actif",
+  error: "indisponible",
+  pending: "en attente",
+  neutre: "inactif",
+};
+
+// Le titre garde « railsbox » après le nom de l'application : c'est ce qui
+// distingue l'onglet d'une application ordinaire, et le test de bout en bout
+// de la page hôte le vérifie. Le nom lui-même se déduit dans
+// shared/nom-sandbox.js — il vient d'un fichier téléchargé, donc d'une source
+// non fiable, et le nettoyage qu'il exige mérite ses propres tests.
+const SUFFIXE_TITRE = "propulsée par railsbox";
 
 const TITRE_SECONDAIRE = "Cette démonstration est déjà ouverte dans un autre onglet";
 const DETAIL_SECONDAIRE =
@@ -87,6 +111,45 @@ const frameElement = /** @type {HTMLIFrameElement} */ (document.getElementById("
 const diagnosticElement = document.getElementById("diagnostic");
 const etatElement = document.getElementById("etat-demarrage");
 
+// --- Jalons du démarrage ---------------------------------------------------
+//
+// Trois horodatages, tous tenus par CETTE page — aucun n'est déduit du journal.
+// Ils répondent à la seule question que se pose vraiment celui qui attend :
+// qu'est-ce qui prend une minute ?
+//
+// Mesuré le 19/08/2026 sur la sandbox jiyufit, démarrage à froid : 55 s en
+// tout, dont 24 s passées DANS Rails pour construire la première page
+// (« Completed 200 OK in 24292ms », que l'application écrit elle-même). La
+// moitié de l'attente n'est donc pas l'émulation. Sans ce partage affiché,
+// tout est mis au compte de railsbox — et l'optimisation part chercher les
+// secondes là où elles ne sont pas.
+const jalons = {
+  /** Chargement de la coquille (évaluation de ce module). */
+  debut: Date.now(),
+  /** Premier aller-retour HTTP réussi jusqu'à la VM. @type {number | null} */
+  vmRepond: null,
+  /** Cadre effectivement chargé, donc première page RENDUE. @type {number | null} */
+  premierRendu: null,
+};
+
+// Étape en cours et instant où elle a commencé. L'indicateur partagé compte
+// depuis le début du démarrage, ce qui suffit tant que les étapes défilent ;
+// la dernière, elle, dure à elle seule la moitié de l'attente (5/5 atteinte à
+// 28 s, application visible à 55 s). Un compteur global qui monte pendant 27 s
+// sans que rien ne change se lit comme un blocage : celui-ci dit sur QUOI on
+// attend, et depuis quand.
+let etapeCourante = null;
+let debutEtapeMs = Date.now();
+
+/**
+ * Compte de requêtes SQL de la dernière page servie, tel que l'application
+ * l'écrit dans son propre journal. `null` tant qu'aucune ligne n'a été
+ * reconnue — et c'est ce `null` qu'on affiche en n'affichant rien : un
+ * « 0 requête » deviné ferait passer une mesure absente pour une mesure nulle.
+ * @type {{ requetes: number, cachees: number | null } | null}
+ */
+let requetesSql = null;
+
 // Le journal de boot est long, gris, et défile : il informe qui le lit, pas qui
 // attend. La mesure sous bridage processeur (npm run test:bridage) a chiffré
 // cette attente sur la sandbox publiée : 25 s avant que l'application soit
@@ -95,7 +158,7 @@ const etatElement = document.getElementById("etat-demarrage");
 const indicateur = creerIndicateurDemarrage({
   afficher: (etat) => {
     if (!etatElement) return;
-    etatElement.textContent = etat.texte;
+    etatElement.textContent = etat.texte + suffixePremierRendu();
     etatElement.classList.toggle("tres-lente", etat.lenteur === "tres-lente");
     etatElement.hidden = false;
   },
@@ -104,10 +167,34 @@ const indicateur = creerIndicateurDemarrage({
   },
 });
 
+/**
+ * Déclare l'étape en cours et remet à zéro son chronomètre propre.
+ * @param {string} cle clé de shared/progression-demarrage.js
+ */
+function etape(cle) {
+  etapeCourante = cle;
+  debutEtapeMs = Date.now();
+  indicateur.etape(cle);
+}
+
+/**
+ * Complément affiché pendant la DERNIÈRE étape, et seulement elle : à ce
+ * moment précis railsbox n'a plus rien à faire, c'est l'application qui
+ * construit sa page. Le dire évite qu'une attente d'une demi-minute soit mise
+ * au compte de la sandbox — et mesurée, c'est bien la moitié du démarrage.
+ * @returns {string}
+ */
+function suffixePremierRendu() {
+  if (etapeCourante !== "premierePage") return "";
+  const secondes = Math.max(0, Math.floor((Date.now() - debutEtapeMs) / 1000));
+  return ` · premier rendu par l'application depuis ${secondes} s`;
+}
+
 function logLine(text) {
   // Chaque ligne passe par le détecteur : une variable manquante citée par
   // l'application ouvre l'inspecteur au lieu de se perdre dans le journal.
   inspector?.ingest(text);
+  noterRequetesSql(text);
   const stamp = new Date().toLocaleTimeString();
   logElement.textContent += `[${stamp}] ${text}\n`;
   const lines = logElement.textContent.split("\n");
@@ -117,10 +204,44 @@ function logLine(text) {
   logElement.scrollTop = logElement.scrollHeight;
 }
 
-function setBadge(id, ok) {
+/**
+ * Retient le compte de requêtes SQL d'une ligne de journal applicatif.
+ *
+ * Défensif par construction : une ligne qui ne correspond pas ne change rien,
+ * et le bilan omettra simplement cette information. Jamais d'exception ici —
+ * cette fonction est sur le chemin de CHAQUE ligne de console de la VM, une
+ * levée y arrêterait le journal entier.
+ * @param {string} texte
+ */
+function noterRequetesSql(texte) {
+  const lu = lireRequetesSql(texte);
+  if (lu) requetesSql = lu;
+}
+
+/**
+ * Peint un badge : la classe pour l'œil, le texte pour l'oreille.
+ *
+ * `.badge-etat` peut manquer (coquille plus ancienne, ou remaniée) : on se
+ * contente alors de la classe, plutôt que d'écrire par-dessus le nom du badge
+ * et de le rendre illisible pour tout le monde.
+ * @param {string} id
+ * @param {"ok" | "error" | "pending" | "neutre"} etat
+ */
+function peindreBadge(id, etat) {
   const badge = document.getElementById(`badge-${id}`);
+  if (!badge) return;
   badge.classList.remove("pending", "ok", "error");
-  badge.classList.add(ok ? "ok" : "error");
+  if (etat !== "neutre") badge.classList.add(etat);
+  const cible = badge.querySelector(".badge-etat");
+  if (cible) cible.textContent = ETATS_BADGE[etat];
+}
+
+/**
+ * @param {string} id
+ * @param {boolean} ok
+ */
+function setBadge(id, ok) {
+  peindreBadge(id, ok ? "ok" : "error");
 }
 
 /**
@@ -130,18 +251,31 @@ function setBadge(id, ok) {
  * @param {"pending" | null} etat
  */
 function setBadges(etat) {
-  for (const id of BADGE_IDS) {
-    const badge = document.getElementById(`badge-${id}`);
-    badge.classList.remove("pending", "ok", "error");
-    if (etat) badge.classList.add(etat);
-  }
+  for (const id of BADGE_IDS) peindreBadge(id, etat ?? "neutre");
+}
+
+/**
+ * Renomme un badge SANS détruire sa structure interne. Un
+ * `badge.textContent = …` effacerait `.badge-etat`, donc l'état en toutes
+ * lettres, donc exactement ce qu'un lecteur d'écran est seul à pouvoir lire.
+ * @param {string} id
+ * @param {string} nom
+ */
+function nommerBadge(id, nom) {
+  const badge = document.getElementById(`badge-${id}`);
+  if (!badge) return;
+  const cible = badge.querySelector(".badge-nom");
+  if (cible) cible.textContent = nom;
+  // Ni `.badge-nom` ni `.badge-etat` : le badge est un simple libellé, on peut
+  // l'écrire entier sans rien perdre.
+  else if (!badge.querySelector(".badge-etat")) badge.textContent = nom;
 }
 
 async function start() {
   if (!checkBrowserSupport()) return;
   await ensureSingleSandbox();
 
-  indicateur.etape("serviceWorker");
+  etape("serviceWorker");
   logLine("Enregistrement du Service Worker proxy…");
   // updateViaCache: "none" — le défaut (« imports ») contourne le cache HTTP
   // pour le script du worker MAIS PAS pour ses imports. Or toute la logique du
@@ -167,11 +301,11 @@ async function start() {
   // délivrées. Chromium se montre indulgent, la spécification ne l'est pas.
   navigator.serviceWorker.startMessages?.();
 
-  indicateur.etape("isolation");
+  etape("isolation");
   await ensureCrossOriginIsolated();
   setBadge("coi", true);
 
-  indicateur.etape("vm");
+  etape("vm");
   const vm = await bootSelectedEngine();
   vmInstance = vm;
   window.__vm = vm; // hook de diagnostic (DevTools)
@@ -185,9 +319,12 @@ async function start() {
 
   installInspector(vm);
 
-  indicateur.etape("application");
+  etape("application");
   logLine("Attente du serveur applicatif à l'intérieur de la VM…");
   await waitForApplication(vm);
+  // Jalon : à partir d'ici, railsbox a fini son travail — proxy, isolation,
+  // artefacts, VM, serveur. Tout ce qui suit est le temps de l'APPLICATION.
+  jalons.vmRepond = Date.now();
   setBadge("http", true);
 
   // Dernière étape, et la seule que rien ne signalait : la VM doit encore
@@ -197,8 +334,19 @@ async function start() {
   // arrive » de « c'est bloqué ».
   // L'indicateur reste donc jusqu'au chargement effectif du cadre, et non
   // jusqu'à la simple affectation de son adresse.
-  indicateur.etape("premierePage");
-  frameElement.addEventListener("load", () => indicateur.fin(), { once: true });
+  etape("premierePage");
+  frameElement.addEventListener(
+    "load",
+    () => {
+      // Le démarrage n'est terminé QU'ICI. `load` du cadre, c'est le document
+      // de l'application effectivement rendu — pas son adresse affectée, pas
+      // une sonde HTTP qui a répondu.
+      jalons.premierRendu = Date.now();
+      indicateur.fin();
+      publierBilan();
+    },
+    { once: true },
+  );
   frameElement.src = APP_URL;
   logLine(`Application disponible → iframe sur ${APP_URL}`);
 
@@ -342,14 +490,38 @@ function installInspector(vm) {
   document.getElementById("env-slot").append(inspector.element);
 }
 
+/**
+ * Ce qu'une sonde HTTP interne inscrit au journal.
+ *
+ * L'ancienne formulation — « Sonde HTTP interne n°1 — Délai dépassé en
+ * attendant la VM v86 » — décrivait comme un échec le déroulement le plus
+ * normal du démarrage : la n°2 réussit sept secondes plus tard, à froid comme
+ * à chaud. Un visiteur qui lit ça pendant que son écran est vide en conclut
+ * que c'est cassé, et ferme l'onglet sept secondes avant l'application.
+ *
+ * Le mot « OK » est conservé tel quel sur la sonde qui réussit : c'est à lui
+ * que `npm run test:bridage` distingue les sondes abouties des autres
+ * (tests/bridage/bridage-cpu.spec.mjs), et les mesures publiées reposent
+ * dessus. Il ne doit donc apparaître dans AUCUN message d'attente.
+ *
+ * @param {number} attempt numéro de la sonde, à partir de 1
+ * @param {string | null | undefined} error cause de l'attente, absente si la sonde a abouti
+ * @returns {string}
+ */
+function ligneSonde(attempt, error) {
+  if (!error) return `Sonde HTTP interne n°${attempt} — OK, la VM répond`;
+  return (
+    `Sonde HTTP interne n°${attempt} — pas encore de réponse (${error}) : ` +
+    "le serveur applicatif démarre encore, nouvelle tentative"
+  );
+}
+
 // Attend l'application ; si elle ne démarre pas et que des variables
 // manquantes ont été détectées, laisse une chance à la réparation avant
 // d'abandonner.
 async function waitForApplication(vm, repairAttempt = 0) {
   try {
-    await vm.waitUntilReady((attempt, error) =>
-      logLine(`Sonde HTTP interne n°${attempt}${error ? ` — ${error}` : " — OK"}`),
-    );
+    await vm.waitUntilReady((attempt, error) => logLine(ligneSonde(attempt, error)));
   } catch (error) {
     // Toutes les variables détectées comptent, même déjà remplies : une
     // valeur erronée saisie au tour précédent mérite une chance de correction.
@@ -371,7 +543,7 @@ async function waitForApplication(vm, repairAttempt = 0) {
 
 async function bootSelectedEngine() {
   const params = new URLSearchParams(location.search);
-  document.getElementById("badge-vm").textContent = "VM v86";
+  nommerBadge("vm", "VM v86");
   logLine("Boot de la VM Linux i386 (v86, open source)…");
   logLine(
     "Premier boot à froid : plusieurs minutes. Boots suivants : restaurés depuis l'instantané.",
@@ -390,6 +562,9 @@ async function bootSelectedEngine() {
     throw new Error("v86-config.json introuvable — construisez d'abord la sandbox");
   }
   const config = await configResponse.json();
+  // Première chose qu'on sait de la sandbox : son nom. Le visiteur est venu
+  // pour l'APPLICATION, pas pour railsbox.
+  appliquerNomSandbox(config);
   // Le Service Worker met en cache les artefacts immuables (morceaux de
   // disque, noyau, initrd) sous un nom dérivé de CETTE configuration. Il faut
   // qu'il la connaisse avant que v86 ne demande son premier morceau — et il
@@ -593,11 +768,20 @@ function checkBrowserSupport() {
  * cette page ne peut aider, il reste à renvoyer le visiteur vers ce que la
  * sandbox exige de son navigateur.
  *
+ * L'action SECONDAIRE, enfin, n'existe que pour les panneaux qui posent une
+ * question plutôt que d'annoncer un fait : demander « redémarrer ? » sans
+ * offrir de revenir en arrière serait un piège, puisque le panneau a déjà pris
+ * la place de l'application.
+ *
  * @param {string} titre
  * @param {string} detail
- * @param {{ ton?: "erreur" | "info", action?: { libelle: string, onClick: (bouton: HTMLButtonElement) => void } | null, lien?: { libelle: string, href: string } | null }} [options]
+ * @param {{ ton?: "erreur" | "info", action?: { libelle: string, onClick: (bouton: HTMLButtonElement) => void } | null, secondaire?: { libelle: string, onClick: (bouton: HTMLButtonElement) => void } | null, lien?: { libelle: string, href: string } | null }} [options]
  */
-function showDiagnostic(titre, detail, { ton = "erreur", action = null, lien = null } = {}) {
+function showDiagnostic(
+  titre,
+  detail,
+  { ton = "erreur", action = null, secondaire = null, lien = null } = {},
+) {
   if (!diagnosticElement) return;
   diagnosticElement.replaceChildren();
   diagnosticElement.classList.toggle("info", ton === "info");
@@ -613,6 +797,23 @@ function showDiagnostic(titre, detail, { ton = "erreur", action = null, lien = n
     bouton.id = "diagnostic-action";
     bouton.textContent = action.libelle;
     bouton.addEventListener("click", () => action.onClick(bouton));
+    diagnosticElement.append(bouton);
+  }
+  if (secondaire) {
+    const bouton = document.createElement("button");
+    bouton.type = "button";
+    bouton.id = "diagnostic-secondaire";
+    bouton.className = "secondaire";
+    bouton.textContent = secondaire.libelle;
+    // Habillage posé ici et pas dans la feuille de style : celle-ci ne connaît
+    // qu'un bouton de diagnostic, plein et accentué. Deux boutons pleins côte à
+    // côte donneraient le même poids à « redémarrer » et à « ne rien faire »,
+    // et se toucheraient. Trois propriétés suffisent à rendre celui-ci
+    // secondaire ; elles ont vocation à rejoindre `.secondaire` dans index.html.
+    bouton.style.marginLeft = "0.8rem";
+    bouton.style.background = "transparent";
+    bouton.style.color = "var(--accent)";
+    bouton.addEventListener("click", () => secondaire.onClick(bouton));
     diagnosticElement.append(bouton);
   }
   if (lien) {
@@ -797,6 +998,267 @@ function ensureCrossOriginIsolated() {
       "SharedArrayBuffer indisponible : servez la page avec les en-têtes COOP/COEP (voir serve.mjs)",
   });
 }
+
+// --- Nom de la sandbox -----------------------------------------------------
+//
+// Le titre de l'onglet et le titre de la page annonçaient « railsbox » : le
+// nom de la MACHINERIE. Le visiteur, lui, arrive pour une application précise,
+// qui n'était nommée nulle part — ni dans l'onglet, ni dans l'en-tête, ni dans
+// un favori qu'il aurait posé. Avec deux démonstrations ouvertes, ses deux
+// onglets portaient le même titre.
+
+/**
+ * Nomme la page d'après l'application. Ne lève JAMAIS : un titre manqué ne
+ * vaut pas un démarrage manqué, et cette fonction est appelée en plein boot.
+ * @param {Record<string, any> | null} config
+ */
+function appliquerNomSandbox(config) {
+  try {
+    const nom = nomSandbox(config);
+    const titre = document.getElementById("titre-app");
+    if (titre) titre.textContent = nom;
+    document.title = `${nom} — ${SUFFIXE_TITRE}`;
+  } catch (error) {
+    logLine(`Nom de la sandbox indéterminé, titre laissé tel quel : ${error.message}`);
+  }
+}
+
+// --- Bilan de démarrage ----------------------------------------------------
+
+/**
+ * Publie le bilan : au journal toujours, dans la page si elle offre un endroit
+ * pour ça.
+ *
+ * Le journal reste la trace ; `#bilan-boot` est ce que le visiteur lit. Il n'a
+ * pas à savoir que la sandbox a démarré, il le voit — ce qu'il ignore, et ce
+ * qu'il attribue à railsbox par défaut, c'est la part de l'attente qui revient
+ * à l'application elle-même.
+ */
+function publierBilan() {
+  const mesures = mesuresDemarrage({ jalons, requetesSql });
+  logLine(`Bilan du démarrage — ${mesures.map((m) => `${m.libelle} : ${m.valeur}`).join(" · ")}`);
+  const section = document.getElementById("bilan-boot");
+  if (!section) return;
+  const liste = document.createElement("dl");
+  liste.id = "bilan-mesures";
+  for (const mesure of mesures) {
+    const terme = document.createElement("dt");
+    terme.textContent = mesure.libelle;
+    const valeur = document.createElement("dd");
+    valeur.textContent = mesure.valeur;
+    liste.append(terme, valeur);
+  }
+  // On remplace NOTRE liste, pas le contenu de la section : le titre qu'elle
+  // porte peut-être vient de la page, et l'écraser serait s'arroger un balisage
+  // qui ne nous appartient pas.
+  section.querySelector("#bilan-mesures")?.remove();
+  if (!section.querySelector("h2, h3")) {
+    const titre = document.createElement("h2");
+    titre.textContent = "Bilan du démarrage";
+    section.prepend(titre);
+  }
+  section.append(liste);
+  section.hidden = false;
+}
+
+// --- Contrôles de la coquille ----------------------------------------------
+
+// Choix du visiteur sur le journal, retenu PAR SANDBOX : deux démonstrations
+// publiées sur la même origine partagent `localStorage`, et le pli de l'une
+// n'a rien à dire du pli de l'autre. Même raisonnement que le nom du verrou
+// d'élection, même clé de découpage.
+const CLE_JOURNAL = `railsbox:journal:${SHELL_PATH}`;
+const HOTES_MAINTENEUR = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+const TITRE_REDEMARRAGE = "Redémarrer la sandbox ?";
+const DETAIL_REDEMARRAGE =
+  "La machine virtuelle n'a pas de bouton « reset » : la redémarrer, c'est recharger cette " +
+  "page. Elle repartira de son instantané mémoire déjà téléchargé — quelques dizaines de " +
+  "secondes, pas un premier boot. En revanche tout ce qui a été saisi ou créé dans " +
+  "l'application depuis le démarrage disparaît : le disque de la VM ne vit qu'en mémoire, et " +
+  "cette mémoire part avec la page.";
+const LIBELLE_REDEMARRAGE = "Redémarrer maintenant";
+const LIBELLE_ANNULER = "Revenir à l'application";
+
+/**
+ * Journal déplié par défaut ? Oui chez le mainteneur, non chez le visiteur.
+ * C'est un outil de diagnostic : en local, c'est ce qu'on regarde ; sur une
+ * sandbox publiée, c'est un tiers d'écran de gris qui défile devant quelqu'un
+ * venu voir l'APPLICATION. Le choix explicite du visiteur, lui, prime dans les
+ * deux cas.
+ * @returns {boolean}
+ */
+function journalOuvertParDefaut() {
+  return HOTES_MAINTENEUR.has(location.hostname);
+}
+
+/**
+ * `localStorage` LÈVE dans un navigateur qui refuse le stockage (mode privé
+ * strict, cookies de tiers bloqués) : une préférence d'affichage ne justifie
+ * pas de faire échouer la page.
+ * @param {string} cle
+ * @returns {string | null}
+ */
+function lirePreference(cle) {
+  try {
+    return localStorage.getItem(cle);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string} cle
+ * @param {string} valeur
+ */
+function ecrirePreference(cle, valeur) {
+  try {
+    localStorage.setItem(cle, valeur);
+  } catch {
+    // Préférence non retenue : le pli vaudra pour cette visite seulement.
+  }
+}
+
+/**
+ * Porte l'état du journal DEUX FOIS, et c'est voulu.
+ *
+ * `aria-expanded` est la source de vérité : c'est ce qu'annonce un lecteur
+ * d'écran, ce que suit le chevron du bouton, et ce que lisent les règles en
+ * `:has()`. La classe sur `<body>` est le jumeau de ces règles pour un moteur
+ * sans `:has()` — qui invalide le sélecteur, donc la règle, donc le repli. Le
+ * journal resterait déplié sur ce moteur-là sans elle. Ni l'un ni l'autre ne
+ * pose `hidden` sur le volet : la feuille lui donne `display: grid`, un
+ * attribut `hidden` y serait sans effet visible tout en prétendant le
+ * contraire aux technologies d'assistance.
+ * @param {HTMLElement} bouton
+ * @param {boolean} ouvert
+ */
+function appliquerEtatJournal(bouton, ouvert) {
+  bouton.setAttribute("aria-expanded", String(ouvert));
+  document.body.classList.toggle("journal-replie", !ouvert);
+}
+
+/**
+ * @param {HTMLElement} bouton
+ */
+function installerJournalRepliable(bouton) {
+  const memoire = lirePreference(CLE_JOURNAL);
+  let ouvert = memoire === null ? journalOuvertParDefaut() : memoire === "1";
+  appliquerEtatJournal(bouton, ouvert);
+  bouton.addEventListener("click", () => {
+    ouvert = !ouvert;
+    appliquerEtatJournal(bouton, ouvert);
+    ecrirePreference(CLE_JOURNAL, ouvert ? "1" : "0");
+  });
+}
+
+/**
+ * Plein écran sur le cadre de l'application — jamais sur la page entière : ce
+ * qu'on veut agrandir, c'est l'application, pas la coquille qui l'entoure.
+ *
+ * Le refus est un cas NORMAL, pas une panne : politique de permissions du
+ * document, iframe sans autorisation de plein écran, geste non reconnu. Une
+ * bannière par-dessus l'application serait une punition disproportionnée ; la
+ * ligne de journal suffit, et elle nomme la cause exacte.
+ * @param {HTMLElement} bouton
+ */
+function installerPleinEcran(bouton) {
+  bouton.addEventListener("click", () => {
+    const demande = frameElement?.requestFullscreen?.bind(frameElement);
+    if (!demande) {
+      logLine("Plein écran indisponible : ce navigateur n'expose pas l'API Fullscreen.");
+      return;
+    }
+    Promise.resolve(demande()).catch((error) => {
+      logLine(`Plein écran refusé par le navigateur : ${error.message}`);
+    });
+  });
+}
+
+/**
+ * Ce qu'affichait le panneau de diagnostic, gardé le temps d'une question.
+ * @typedef {{ enfants: ChildNode[], info: boolean, cadreMasque: boolean }} PanneauSauve
+ */
+
+/**
+ * Photographie le panneau en place — les NŒUDS eux-mêmes, donc leurs
+ * écouteurs avec : le bouton « reprendre la sandbox » d'un onglet secondaire
+ * doit rester cliquable après avoir été rendu.
+ * @returns {PanneauSauve | null} `null` si rien n'était affiché
+ */
+function sauverDiagnostic() {
+  if (!diagnosticElement || diagnosticElement.hidden) return null;
+  return {
+    enfants: [...diagnosticElement.childNodes],
+    info: diagnosticElement.classList.contains("info"),
+    // `hidden` peut valoir « until-found » et pas seulement un booléen : on
+    // ne retient que le fait, qui est tout ce que cette page pose.
+    cadreMasque: Boolean(frameElement.hidden),
+  };
+}
+
+/**
+ * Rend la place à ce qui l'occupait — ou à l'application si rien ne l'occupait.
+ * @param {PanneauSauve | null} sauvegarde
+ */
+function restaurerDiagnostic(sauvegarde) {
+  if (!sauvegarde || !diagnosticElement) {
+    hideDiagnostic();
+    return;
+  }
+  diagnosticElement.replaceChildren(...sauvegarde.enfants);
+  diagnosticElement.classList.toggle("info", sauvegarde.info);
+  diagnosticElement.hidden = false;
+  frameElement.hidden = sauvegarde.cadreMasque;
+}
+
+/**
+ * Redémarrage. Il n'existe AUCUN chemin propre pour relancer la VM en place :
+ * `bootVm` construit un émulateur et l'état de l'invité vit dans la mémoire de
+ * cette page. Recharger EST le redémarrage — mais recharger jette aussi tout
+ * ce que le visiteur a saisi, et un bouton qui fait ça sans prévenir est un
+ * piège. D'où la confirmation, qui dit exactement ce qui va se passer.
+ *
+ * La confirmation prend la place de l'application, donc parfois la place d'un
+ * autre panneau — celui d'un onglet secondaire, celui d'une session expirée où
+ * une lecture de disque est justement RETENUE pour ne rien perdre. Renoncer
+ * doit alors rendre ce panneau intact, sans quoi le bouton « redémarrer »
+ * détruirait par ricochet ce que le panneau protégeait.
+ */
+function demanderRedemarrage() {
+  const precedent = sauverDiagnostic();
+  showDiagnostic(TITRE_REDEMARRAGE, DETAIL_REDEMARRAGE, {
+    ton: "info",
+    action: {
+      libelle: LIBELLE_REDEMARRAGE,
+      onClick(bouton) {
+        bouton.disabled = true;
+        logLine("Redémarrage confirmé par le visiteur — rechargement de la page.");
+        location.reload();
+      },
+    },
+    secondaire: { libelle: LIBELLE_ANNULER, onClick: () => restaurerDiagnostic(precedent) },
+  });
+}
+
+/**
+ * Câble les contrôles. Appelé AVANT `start()`, et volontairement : replier le
+ * journal, passer en plein écran et redémarrer doivent marcher même quand le
+ * démarrage, lui, ne marche pas — c'est précisément là qu'on en a besoin.
+ *
+ * Chaque contrôle est facultatif : la coquille peut être publiée sans, et une
+ * page à laquelle il manque un bouton doit démarrer normalement.
+ */
+function installerControles() {
+  const boutonJournal = document.getElementById("btn-journal");
+  if (boutonJournal) installerJournalRepliable(boutonJournal);
+  const boutonPleinEcran = document.getElementById("btn-plein-ecran");
+  if (boutonPleinEcran) installerPleinEcran(boutonPleinEcran);
+  const boutonRedemarrer = document.getElementById("btn-redemarrer");
+  boutonRedemarrer?.addEventListener("click", () => demanderRedemarrage());
+}
+
+installerControles();
 
 start().catch((error) => {
   // Le diagnostic remplace l'application : l'indicateur d'attente n'a plus
