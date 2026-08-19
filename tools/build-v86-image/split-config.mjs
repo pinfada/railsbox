@@ -261,6 +261,44 @@ export function buildSplitConfig({
   return config;
 }
 
+/**
+ * Substitue, dans une configuration v86, le nom d'un artefact par celui qui
+ * vient réellement d'être publié (ADR 0007).
+ *
+ * POURQUOI CETTE FONCTION EXISTE. La configuration est écrite AVANT le
+ * découpage — c'est elle qui nomme les artefacts — mais l'empreinte de contenu
+ * n'est connue QUE du découpeur, qui seul lit les octets. Plutôt que de faire
+ * relire 512 Mo à quelqu'un d'autre, le découpeur rend la main ici : il ne
+ * décide de rien sur la forme de la configuration, il fournit deux noms et
+ * cette fonction — qui vit avec le reste de la connaissance du format — fait la
+ * substitution.
+ *
+ * Seul le NOM DE FICHIER est comparé et remplacé : le chemin qui le précède
+ * (`disks/`, `/disks/`, une URL absolue) relève de la topologie de l'ADR 0004
+ * et n'a aucune raison de bouger.
+ *
+ * Rend la liste des champs touchés — vide si aucun ne nomme cet artefact.
+ * L'appelant DOIT traiter ce cas : publier des morceaux versionnés en laissant
+ * la configuration nommer les anciens est exactement l'incohérence que le
+ * versionnement vient supprimer.
+ * @param {Record<string, any>} config configuration v86, laissée intacte
+ * @param {string} oldName nom de fichier publié jusque-là (`demo-app.ext2.zst`)
+ * @param {string} newName nom de fichier réellement publié
+ * @returns {{ config: Record<string, any>, fields: string[] }} copie modifiée et champs touchés
+ */
+export function replacePublishedArtifact(config, oldName, newName) {
+  const fields = [];
+  const patched = { ...config };
+  for (const [field, value] of Object.entries(config)) {
+    if (typeof value !== "string") continue;
+    const cut = value.lastIndexOf("/") + 1;
+    if (value.slice(cut) !== oldName) continue;
+    patched[field] = `${value.slice(0, cut)}${newName}`;
+    fields.push(field);
+  }
+  return { config: patched, fields };
+}
+
 // Interface en ligne de commande minimale, appelée par build-app-disk.sh :
 //   node split-config.mjs --check-packages "libmagickwand-dev libxml2-dev" \
 //                         [--base-revision 3.3-r2]

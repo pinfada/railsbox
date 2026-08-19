@@ -294,8 +294,17 @@ jobs:
           echo "SB_ETAPE=Découpage des artefacts de l'application" >> "$GITHUB_ENV"
           {
             nom="$SB_NOM"
+            config="public/disks/${nom}-split-config.json"
+            # --fingerprint : les noms publiés portent l'empreinte du contenu
+            # (ADR 0007). Un nom stable au contenu changeant laissait tout cache
+            # resservir le morceau d'une AUTRE construction sous la même URL —
+            # un instantané mémoire restauré sur le disque d'une autre image,
+            # donc une VM qui ne répond jamais. --config accorde la
+            # configuration aux noms réellement publiés : elle a été écrite
+            # avant le découpage, et seul le découpage connaît l'empreinte.
             node tools/build-v86-image/split-artifact.mjs \
-              "public/disks/${nom}-app.ext2" --zstd --out publication/disks
+              "public/disks/${nom}-app.ext2" --zstd \
+              --fingerprint --config "$config" --out publication/disks
             # L'instantané est découpé LUI AUSSI depuis 2026-08-17 (ADR 0003).
             # Gzippé d'un seul tenant il pesait le tiers du brut, ce qui suffit
             # pour la démonstration (~76 Mo) mais pas pour une application
@@ -307,8 +316,11 @@ jobs:
             # c'est NOTRE code qui décompresse, avec DecompressionStream.
             node tools/build-v86-image/split-artifact.mjs \
               "public/disks/${nom}-split-state.bin" --gzip \
+              --fingerprint --config "$config" \
               --chunk-size "${CHUNK_BYTES}" --out publication/disks
-            cp "public/disks/${nom}-split-config.json" publication/disks/v86-config.json
+            # La configuration est copiée APRÈS les deux découpages : elle porte
+            # désormais les noms versionnés qu'ils viennent de publier.
+            cp "$config" publication/disks/v86-config.json
 
             # Assets fingerprintés extraits du disque applicatif et servis
             # STATIQUEMENT par le Service Worker : c'est le levier de performance
@@ -348,9 +360,14 @@ jobs:
             # Garde-fou POSITIF : les trois gros artefacts sont découpés, et
             # chacun laisse son inventaire. Un inventaire manquant signale une
             # étape sautée — défaut qui, sans cette vérification, ne se voyait
-            # qu'au chargement chez le visiteur.
-            for inventaire in "${SB_NOM}-app.ext2-parts.json" "${SB_NOM}-split-state.bin-parts.json"; do
-              if [ ! -f "publication/disks/${inventaire}" ]; then
+            # qu'au chargement chez le visiteur. Les noms portent l'empreinte du
+            # contenu (ADR 0007), d'où les motifs : ce qu'on vérifie ici est
+            # qu'une étape de découpage a eu lieu. Que la configuration nomme
+            # bien CES morceaux-là est garanti en amont, le découpeur échouant
+            # si aucun de ses champs ne désigne l'artefact qu'il publie.
+            for inventaire in publication/disks/"${SB_NOM}"-app-*.ext2-parts.json \
+                              publication/disks/"${SB_NOM}"-split-state-*.bin-parts.json; do
+              if [ ! -f "$inventaire" ]; then
                 echo "::error::Inventaire de morceaux absent : ${inventaire}"
                 echo "Le disque applicatif et l'instantané doivent être découpés (ADR 0003)."
                 exit 1

@@ -28,6 +28,20 @@ export const DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024;
 export const MAX_PART_BYTES = 95 * 1024 * 1024;
 
 /**
+ * Longueur de l'empreinte de contenu portée par un nom d'artefact publié
+ * (ADR 0007). Douze caractères hexadécimaux, soit 48 bits.
+ *
+ * POURQUOI DOUZE. L'empreinte ne sert pas à authentifier un contenu mais à le
+ * DISTINGUER de celui d'une autre construction : la seule collision qui coûte
+ * quelque chose est celle de deux artefacts d'une même sandbox, dont il n'y a
+ * jamais plus de quelques milliers dans toute la vie d'un dépôt. À 48 bits, la
+ * probabilité d'en croiser une reste sous 10⁻⁷ pour 10 000 constructions, alors
+ * qu'un SHA-256 complet allongerait de 52 caractères les 128 noms de morceaux —
+ * pour rien de gagné.
+ */
+export const DIGEST_HEX_LENGTH = 12;
+
+/**
  * Sépare une URL d'artefact en base et extension, selon la règle de v86 : la
  * dernière extension, suivie du `.zst` optionnel qui marque la compression.
  * @param {string} url URL ou chemin de l'artefact (`/disks/demo-app.ext2.zst`)
@@ -52,6 +66,39 @@ export function splitArtifactName(url) {
 export function partName(url, start, chunkBytes = DEFAULT_CHUNK_BYTES) {
   const { basename, extension } = splitArtifactName(url);
   return `${basename}${start}-${start + chunkBytes}${extension}`;
+}
+
+/**
+ * Insère l'empreinte de contenu dans le nom d'un artefact, avant son extension.
+ *
+ *   demo-app.ext2        + 0123456789ab → demo-app-0123456789ab.ext2
+ *   demo-split-state.bin + 0123456789ab → demo-split-state-0123456789ab.bin
+ *
+ * C'est TOUT le levier du versionnement : v86 dérive lui-même les noms de
+ * morceaux de l'URL de l'artefact ({@link partName}), et la coquille dérive de
+ * même l'inventaire et les morceaux de l'instantané. Versionner la base de
+ * l'URL versionne donc les 128 morceaux, sans toucher au chargeur.
+ *
+ * Le nom attendu est celui de l'artefact NON COMPRESSÉ : le suffixe `.zst` ou
+ * `.gz` est ajouté après, sans quoi l'empreinte tomberait après l'extension
+ * (`demo-app.ext2-<empreinte>.zst`) et v86 en dériverait des morceaux
+ * introuvables.
+ * @param {string} name nom ou chemin de l'artefact non compressé
+ * @param {string} digest empreinte hexadécimale
+ * @returns {string} nom versionné
+ * @throws {Error} si le nom porte déjà un suffixe de compression ou l'empreinte n'est pas hexadécimale
+ */
+export function versionedArtifactName(name, digest) {
+  if (/\.(zst|gz)$/.test(String(name))) {
+    throw new Error(
+      `Nom déjà compressé : ${name}. Versionnez l'artefact avant d'ajouter le suffixe.`,
+    );
+  }
+  if (!/^[0-9a-f]+$/.test(String(digest))) {
+    throw new Error(`Empreinte hexadécimale attendue, reçu : ${JSON.stringify(digest)}`);
+  }
+  const { basename, extension } = splitArtifactName(name);
+  return `${basename}${digest}${extension}`;
 }
 
 /**
