@@ -153,6 +153,14 @@ const SYSTEM_LIB_PACKAGES = Object.freeze({
   // toute la pile GLib/GTK n'achèteraient rien. libvips-tools apporte `vips`,
   // qui rend la présence vérifiable — et ne coûte rien de plus.
   libvips: Object.freeze(["libvips42", "libvips-tools"]),
+  // webp-ffi compile jpegdec.c, pngdec.c et tiffdec.c : elle a besoin des
+  // en-têtes des TROIS formats d'entrée en plus de ceux de libwebp.
+  // Découvert en trois passages successifs sur tryzealot/zealot — chaque
+  // ajout révélait l'inclusion suivante. L'Aptfile de l'application ne
+  // nommait que `libwebp-dev` : sur la pile Heroku, les autres sont déjà là.
+  // `libjpeg62-turbo-dev` plutôt que le virtuel `libjpeg-dev` : apt refuse
+  // d'installer un paquet virtuel dès qu'il a plusieurs fournisseurs.
+  libwebp: Object.freeze(["libwebp-dev", "libjpeg62-turbo-dev", "libpng-dev", "libtiff-dev"]),
   libxml2: Object.freeze(["libxml2-dev"]),
   libxslt: Object.freeze(["libxslt1-dev"]),
   // libsass : sassc compile sa copie embarquée, aucun paquet système utile.

@@ -131,6 +131,30 @@ test("extraPackages n'installe ni PostgreSQL ni Redis pour une application sqlit
   assert.deepEqual(packages, ["libsqlite3-dev"]);
 });
 
+test("extraPackages fournit les en-têtes libwebp que webp-ffi compile", () => {
+  // webp-ffi est une liaison FFI qui compile POURTANT une extension : sans
+  // `libwebp-dev`, `bundle install` s'arrête sur « fatal error:
+  // webp/encode.h ». Le cas vient de tryzealot/zealot, première application
+  // tierce à l'avoir exigé — et la contre-épreuve compte autant : ruby-vips,
+  // liaison FFI qui ne compile rien, ne doit toujours PAS tirer d'en-têtes.
+  const packages = extraPackages({
+    database: "postgresql",
+    nativeGems: [
+      { name: "webp-ffi", systemLibs: ["libwebp"] },
+      { name: "ruby-vips", systemLibs: ["libvips"] },
+    ],
+    services: { redis: false },
+  });
+
+  // Les trois formats d'entrée comptent autant que libwebp : la gem compile
+  // jpegdec.c, pngdec.c et tiffdec.c, et chaque en-tête manquant arrête
+  // `bundle install` — un par passage, jusqu'à ce qu'ils y soient tous.
+  for (const paquet of ["libwebp-dev", "libjpeg62-turbo-dev", "libpng-dev", "libtiff-dev"]) {
+    assert.ok(packages.includes(paquet), `${paquet} doit être installé`);
+  }
+  assert.ok(!packages.includes("libvips-dev"), "ceux de libvips ne le doivent pas");
+});
+
 test("extraPackages traduit libvips en paquets de RUNTIME, sans les en-têtes", () => {
   // Arrange : la pile d'image_processing sur une application PostgreSQL.
   const manifest = {
