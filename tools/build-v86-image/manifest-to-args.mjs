@@ -11,6 +11,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ASSET_STAGE, binaryAssetGems, planAssets } from "../detect/assets.mjs";
+import { mecanismeCouvert, messageMecanismeInconnu } from "../detect/authentification.mjs";
 import { detectApp, readOptionalFile } from "../detect/detect.mjs";
 import { sandboxSansDonneesFindings } from "../detect/donnees-demo.mjs";
 import { planExclusions } from "../detect/exclusions.mjs";
@@ -490,6 +491,25 @@ export async function analyzeApp(appDir, appName, options = {}) {
       seedCommand: manifest.seed?.command,
     }),
   );
+
+  // Auto-connexion promise mais mécanisme non reconnu : le contrôle a lieu ici
+  // parce qu'il croise une donnée DÉTECTÉE (le mécanisme) et une donnée
+  // DÉCLARÉE (auto_login), qui n'existe qu'après la fusion. `auto_login_code`
+  // le fait taire : le mainteneur qui écrit son propre fragment sait mieux que
+  // nous où l'application range sa session.
+  if (manifest.seed?.autoLogin && !manifest.seed?.autoLoginCode) {
+    const mecanisme = manifest.authMecanisme;
+    if (!mecanismeCouvert(mecanisme)) {
+      findings.push(
+        createFinding(
+          SEVERITY.WARNING,
+          "auto-login-mecanisme-inconnu",
+          messageMecanismeInconnu(mecanisme),
+          { mecanisme },
+        ),
+      );
+    }
+  }
 
   // Une série de Ruby irrésoluble est un diagnostic BLOQUANT, pas une
   // exception : ainsi le rapport structuré (avec son remède) est présenté à

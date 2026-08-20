@@ -337,24 +337,59 @@ contenir.
 > les sessions ; pour les jetons, il faut émettre le jeton et le donner à la
 > page. C'est ce que fait la recette ci-dessous.
 
-> **Il ne couvre pas non plus l'authentification intégrée de Rails 8.**
-> `bin/rails generate authentication` ne produit ni Devise ni Warden : il crée
-> un modèle `Session`, en range l'identifiant dans un **cookie signé**, et
-> relit `Session.find_by(id: cookies.signed[:session_id])` à chaque requête.
-> Warden et `env["rack.session"]` n'y sont jamais consultés — l'auto-connexion
-> s'exécute donc, trouve l'utilisateur, écrit la session… et l'application
-> l'ignore. Le visiteur arrive **déconnecté, sans aucun message** : ni erreur
-> de construction, ni avertissement dans le journal, puisque de son point de
-> vue railsbox a fait son travail.
+#### Les trois mécanismes que l'auto-connexion sait ouvrir
+
+`auto_login` ne devine pas : il écrit la session là où l'application ira la
+lire, et il ne connaît que trois endroits.
+
+| Mécanisme | Reconnu à | Ce que railsbox écrit |
+| --- | --- | --- |
+| **Warden (Devise)** | la gem `devise` ou `warden` | `warden.set_user`, dans la bonne portée |
+| **Session en base + cookie signé** | un modèle `Session` **et** une lecture de `cookies.signed[:session_id]` | un enregistrement `Session`, puis le cookie signé |
+| **Session Rack** | une écriture `session[:user_id]` dans les contrôleurs | `env["rack.session"][:user_id]` |
+
+Le deuxième est celui de `bin/rails generate authentication`, l'authentification
+**intégrée de Rails 8** — donc celle de la plupart des applications neuves. Il
+est reconnu à la **lecture du cookie**, jamais au seul nom du modèle : `Session`
+est un nom métier courant (une séance, un cours), et créer un enregistrement
+parasite dans la base d'une démonstration serait pire que ne rien faire.
+
+**En dehors de ces trois cas, l'analyse vous prévient** — diagnostic
+`[auto-login-mecanisme-inconnu]`, non bloquant. C'est le point important :
+sans lui, l'auto-connexion s'exécutait, trouvait l'utilisateur, écrivait une
+session que l'application ne lisait pas, et le visiteur arrivait déconnecté
+**sans qu'aucune erreur ne soit levée** — ni construction rouge, ni ligne dans
+le journal. Ce silence coûtait bien plus cher que le mécanisme manquant.
+
+Le rapport d'analyse affiche désormais le mécanisme retenu dès qu'une
+auto-connexion est demandée :
+
+```
+Auto-login        : demo@example.com
+Authentification  : session en base + cookie signé (générateur Rails 8)
+```
+
+Pour tout le reste — jetons, Rodauth, une pile maison —, `auto_login_code`
+reste la sortie : le fragment reçoit `env` et fait ce que votre application
+attend. Le déclarer fait taire le diagnostic, puisque vous savez alors mieux
+que railsbox où la session se range.
+
+> **Si vous itérez en local, videz le pot à cookies entre deux essais.**
+> L'auto-connexion n'est tentée **qu'une fois par visiteur** — sans quoi elle
+> reconnecterait quiconque vient de se déconnecter, et la démonstration ne
+> pourrait jamais montrer son propre écran de connexion. Le marqueur est un
+> cookie, et le proxy le conserve dans une base IndexedDB `railsbox-cookies`
+> propre à l'origine. Reconstruire la sandbox ne l'efface pas : votre nouvelle
+> configuration semblera sans effet alors qu'elle n'a simplement pas été
+> essayée. Depuis la console du navigateur :
 >
-> Vérifié le 20/08/2026 sur une application Rails 8.1 réelle. C'est le cas qui
-> va devenir le plus fréquent, la commande étant le point de départ conseillé
-> des applications neuves. Le contournement disponible aujourd'hui est
-> `auto_login_code` : le fragment reçoit `env`, à lui de créer
-> l'enregistrement de session que l'application attend. Le support natif reste
-> à écrire — il suppose que l'auto-connexion puisse poser un cookie sur la
-> RÉPONSE, ce que le middleware actuel, qui s'exécute avant l'application, ne
-> fait pas.
+> ```js
+> indexedDB.deleteDatabase("railsbox-cookies");
+> ```
+>
+> Un visiteur qui découvre une sandbox publiée n'est jamais concerné : il
+> arrive sans marqueur. Le piège est réservé à qui teste plusieurs
+> constructions sur la même adresse.
 
 #### Recette : auto-connexion d'un SPA qui s'authentifie par JWT (devise-jwt)
 

@@ -30,6 +30,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {readonly string[]} [dataMigrations] migrations qui écrivent des lignes
  * @property {readonly string[]} [databaseAdapters] adaptateurs vus dans config/database.yml
  * @property {import("./sqlite.mjs").SqliteDriverState} [sqliteDriver] disponibilité du pilote sqlite3
+ * @property {string} [authMecanisme] mécanisme d'authentification reconnu (voir authentification.mjs)
  * @property {string|null} [bundler] version de Bundler ayant produit le lock
  * @property {{npm?: boolean, scripts?: readonly string[], tools?: readonly string[], stage?: string, binaryGems?: readonly string[], install?: string, output?: readonly string[]}} [assets] pipeline d'assets, étage de précompilation et répertoires exportés
  * @property {readonly NativeGem[]} [nativeGems] gems à extension native

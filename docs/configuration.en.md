@@ -284,22 +284,58 @@ their session, which no snapshot can contain.
 > tokens you must mint the token and hand it to the page. That is what the
 > recipe below does.
 
-> **Nor does it cover Rails 8's built-in authentication.**
-> `bin/rails generate authentication` produces neither Devise nor Warden: it
-> creates a `Session` model, stores its id in a **signed cookie**, and re-reads
-> `Session.find_by(id: cookies.signed[:session_id])` on every request. Warden
-> and `env["rack.session"]` are never consulted — so auto-login runs, finds the
-> user, writes the session… and the application ignores it. The visitor arrives
-> **signed out, with no message at all**: no build error, no warning in the
-> log, because from railsbox's point of view it did its job.
+#### The three mechanisms auto-login can open
+
+`auto_login` does not guess: it writes the session where the application will
+read it, and it knows only three places.
+
+| Mechanism | Recognised by | What railsbox writes |
+| --- | --- | --- |
+| **Warden (Devise)** | the `devise` or `warden` gem | `warden.set_user`, in the right scope |
+| **Database session + signed cookie** | a `Session` model **and** a read of `cookies.signed[:session_id]` | a `Session` record, then the signed cookie |
+| **Rack session** | a `session[:user_id]` write in the controllers | `env["rack.session"][:user_id]` |
+
+The second is what `bin/rails generate authentication` produces — Rails 8's
+**built-in** authentication, hence that of most new applications. It is
+recognised by the **cookie read**, never by the model name alone: `Session` is a
+common domain name (a class, a coaching slot), and creating a stray record in a
+demo's database would be worse than doing nothing.
+
+**Outside those three cases, the analysis warns you** — the
+`[auto-login-mecanisme-inconnu]` diagnostic, non-blocking. That is the important
+part: without it, auto-login ran, found the user, wrote a session the
+application never read, and the visitor arrived signed out **with no error
+raised at all** — no red build, no line in the log. That silence cost far more
+than the missing mechanism.
+
+The analysis report now states the mechanism it settled on as soon as auto-login
+is requested:
+
+```
+Auto-login        : demo@example.com
+Authentification  : session en base + cookie signé (générateur Rails 8)
+```
+
+For everything else — tokens, Rodauth, a hand-rolled stack — `auto_login_code`
+remains the way out: the fragment receives `env` and does whatever your
+application expects. Declaring it silences the diagnostic, since you then know
+better than railsbox where the session belongs.
+
+> **If you iterate locally, clear the cookie jar between attempts.** Auto-login
+> is attempted **only once per visitor** — otherwise it would sign back in
+> anyone who just signed out, and the demo could never show its own sign-in
+> screen. The marker is a cookie, and the proxy keeps it in an origin-scoped
+> `railsbox-cookies` IndexedDB database. Rebuilding the sandbox does not clear
+> it: your new configuration will look ineffective when in fact it was never
+> tried. From the browser console:
 >
-> Verified on 2026-08-20 against a real Rails 8.1 application. This is the case
-> that will become the most common, the generator being the recommended
-> starting point for new applications. Today's workaround is `auto_login_code`:
-> the fragment receives `env`, and can create whatever session record the
-> application expects. Native support is still to be written — it requires
-> auto-login to be able to set a cookie on the RESPONSE, which the current
-> middleware, running before the application, does not do.
+> ```js
+> indexedDB.deleteDatabase("railsbox-cookies");
+> ```
+>
+> A visitor discovering a published sandbox is never affected — they arrive
+> without a marker. The trap is reserved for whoever tests several builds at
+> the same address.
 
 #### Recipe: auto-login for a JWT-authenticated SPA (devise-jwt)
 

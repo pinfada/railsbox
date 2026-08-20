@@ -131,13 +131,72 @@ ${connectionBody(options)}
           # paraîtrait réussir et le visiteur resterait déconnecté.
           warden.set_user(utilisateur, scope: portee_warden(utilisateur))
           pose = true
+        else
+          # Pas de Warden : l'application n'utilise ni Devise ni la pile qui en
+          # dépend. C'est le cas de l'authentification INTÉGRÉE de Rails 8,
+          # celle que produit « rails generate authentication » — donc celle de
+          # la plupart des applications neuves. Elle ne lit ni Warden ni
+          # rack.session : elle relit Session.find_by(id:
+          # cookies.signed[:session_id]) à chaque requête. Sans ce chemin,
+          # l'auto-connexion s'exécutait, trouvait l'utilisateur, écrivait une
+          # session que PERSONNE ne lisait, et le visiteur arrivait déconnecté
+          # sans le moindre message.
+          #
+          # La tentative est réservée au cas « sans Warden » : une application
+          # Devise qui aurait par ailleurs un modèle Session métier (un coaching,
+          # une séance) ne doit surtout pas s'en voir créer un enregistrement.
+          pose = true if connecter_par_cookie(env, utilisateur)
         end
         session = env["rack.session"]
         if session
           session[:user_id] = utilisateur.id
           pose = true
         end
-        raise "ni Warden ni session Rack n'est disponible" unless pose
+        raise "ni Warden, ni cookie de session, ni session Rack n'est disponible" unless pose
+      end
+
+      # Ouvre une session au format de « rails generate authentication ».
+      #
+      # On ne signe rien à la main : le middleware est monté DANS la pile, donc
+      # à l'intérieur d'ActionDispatch::Cookies, et écrire dans son porte-cookies
+      # laisse Rails signer, sérialiser et poser l'en-tête exactement comme le
+      # ferait l'application. Écrire AVANT l'appel applicatif a un second effet
+      # utile : la valeur est relisible dans la même requête, qui part donc déjà
+      # authentifiée au lieu d'attendre la suivante.
+      #
+      # Rend false — jamais une exception — dès qu'un signe manque : ce chemin
+      # est une tentative, pas une exigence.
+      def connecter_par_cookie(env, utilisateur)
+        return false unless defined?(::ActionDispatch::Request)
+        return false unless Object.const_defined?("Session")
+        modele = Object.const_get("Session")
+        return false unless modele.respond_to?(:column_names)
+        colonnes = modele.column_names
+        # Forme de la table produite par le générateur. « user_id » seul ne
+        # suffit pas à distinguer une session d'authentification d'un modèle
+        # métier homonyme ; « ip_address » ou « user_agent » le font.
+        return false unless colonnes.include?("user_id")
+        return false unless colonnes.include?("ip_address") || colonnes.include?("user_agent")
+        return false unless utilisateur.respond_to?(:sessions)
+
+        requete = ::ActionDispatch::Request.new(env)
+        return false unless requete.respond_to?(:cookie_jar)
+
+        attributs = {}
+        attributs[:user_agent] = env["HTTP_USER_AGENT"].to_s if colonnes.include?("user_agent")
+        attributs[:ip_address] = env["REMOTE_ADDR"].to_s if colonnes.include?("ip_address")
+        session = utilisateur.sessions.create!(attributs)
+
+        # Mêmes options que le générateur : permanent, httponly, same_site lax.
+        requete.cookie_jar.signed.permanent[:session_id] = {
+          value: session.id,
+          httponly: true,
+          same_site: :lax
+        }
+        true
+      rescue StandardError => erreur
+        avertir("session par cookie impossible (#{erreur.class} : #{erreur.message})")
+        false
       end
 
       def portee_warden(utilisateur)

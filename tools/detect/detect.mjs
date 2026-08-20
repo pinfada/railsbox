@@ -21,6 +21,7 @@ import {
   satisfiesRubyRequirement,
 } from "./ruby-requirement.mjs";
 import { detectSslSettings, isSslEnforced } from "./ssl.mjs";
+import { detectMecanismeAuth } from "./authentification.mjs";
 
 // Réexporté ici : la fonction vit avec l'analyse des contraintes (l'inverse
 // créerait un cycle d'imports), mais son point d'entrée public reste detect.
@@ -122,6 +123,52 @@ async function readMigrations(appDir) {
       text: (await readOptionalFile(join(dir, name))) ?? "",
     })),
   );
+}
+
+/**
+ * Sources où vit l'authentification, concaténées.
+ *
+ * On ne lit PAS tout `app/` : la question tient dans trois endroits
+ * conventionnels, et une lecture exhaustive coûterait cher sur une grosse
+ * application pour un gain nul. Un mécanisme caché ailleurs sortira en
+ * « inconnu », ce qui produit un avertissement — le bon comportement quand on
+ * ne sait pas.
+ * @param {string} appDir racine de l'application
+ * @returns {Promise<string>} sources concaténées, vide si rien n'est lisible
+ */
+async function readAuthSources(appDir) {
+  const fixes = [
+    join(appDir, "app", "controllers", "application_controller.rb"),
+    join(appDir, "app", "controllers", "sessions_controller.rb"),
+  ];
+  const concerns = join(appDir, "app", "controllers", "concerns");
+  /** @type {string[]} */
+  let entries = [];
+  try {
+    entries = (await readdir(concerns)).filter((name) => name.endsWith(".rb"));
+  } catch (error) {
+    if (!error || !ABSENT_CODES.includes(error.code)) throw error;
+  }
+  const chemins = [...fixes, ...entries.map((name) => join(concerns, name))];
+  const textes = await Promise.all(chemins.map((chemin) => readOptionalFile(chemin)));
+  return textes.filter(Boolean).join("\n");
+}
+
+/**
+ * Noms des modèles de l'application, en minuscules et sans extension.
+ * @param {string} appDir racine de l'application
+ * @returns {Promise<readonly string[]>} noms de modèles, vide si le dossier manque
+ */
+async function readModelNames(appDir) {
+  try {
+    const entries = await readdir(join(appDir, "app", "models"));
+    return Object.freeze(
+      entries.filter((name) => name.endsWith(".rb")).map((name) => name.slice(0, -3).toLowerCase()),
+    );
+  } catch (error) {
+    if (error && ABSENT_CODES.includes(error.code)) return Object.freeze([]);
+    throw error;
+  }
 }
 
 /** Répertoires où vit le JavaScript écrit par l'application. */
@@ -502,6 +549,8 @@ export async function detectApp(appDir, options = {}) {
     migrations,
     javascriptFiles,
     seedsRb,
+    sourcesAuth,
+    nomsModeles,
   ] = await Promise.all([
     readOptionalFile(join(appDir, ".ruby-version")),
     readOptionalFile(join(appDir, "Gemfile")),
@@ -527,6 +576,11 @@ export async function detectApp(appDir, options = {}) {
     // Le jeu de démonstration : lu ici, jugé après la fusion de railsbox.yml —
     // une commande de seed déclarée l'emporte sur ce fichier (donnees-demo.mjs).
     readOptionalFile(join(appDir, "db", "seeds.rb")),
+    // Le mécanisme d'authentification : railsbox promet « le visiteur arrive
+    // connecté », et cette promesse n'a de sens que s'il sait OÙ l'application
+    // ira chercher la session. Quand il ne le sait pas, il doit le dire.
+    readAuthSources(appDir),
+    readModelNames(appDir),
   ]);
 
   /** @type {Finding[]} */
@@ -642,6 +696,14 @@ export async function detectApp(appDir, options = {}) {
     // verdict dépend aussi de `seed.command`, qui n'arrive qu'à la fusion.
     seedsFile: etatFichierSeeds(seedsRb),
     sqliteDriver: sqlite,
+    // Mécanisme d'authentification reconnu. Aucun diagnostic ici : il ne devient
+    // un problème que si `auto_login` est déclaré, et cette clé n'arrive qu'à la
+    // fusion de railsbox.yml.
+    authMecanisme: detectMecanismeAuth({
+      gems: [...specs.keys()],
+      sources: sourcesAuth,
+      modeles: nomsModeles,
+    }),
     ssl: ssl.ssl,
     bundler,
     assets: assetPlan.plan,

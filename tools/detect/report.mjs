@@ -2,6 +2,7 @@
 // ou d'avertissement porte un remède : un rapport qui constate sans dire quoi
 // faire oblige l'utilisateur à lire le code, ce qui est un échec de produit.
 import { ASSET_STAGE } from "./assets.mjs";
+import { LIBELLES } from "./authentification.mjs";
 import { SEVERITY } from "./findings.mjs";
 import { satisfiesRubyRequirement } from "./ruby-requirement.mjs";
 
@@ -72,6 +73,13 @@ export const REMEDIES = Object.freeze({
     "Rien à faire si le dépannage vous suffit. Mais la correction durable reste de déplacer " +
     "ces données dans db/seeds.rb : railsbox rejouera alors l'historique pour rien, et " +
     "l'application fonctionnera aussi hors de la sandbox.",
+  "auto-login-mecanisme-inconnu":
+    "Deux issues. Si l'application range sa session ailleurs que dans Warden, dans " +
+    "session[:user_id] ou dans le cookie signé du générateur Rails 8, écrivez le fragment " +
+    "vous-même : seed.auto_login_code reçoit `env` et fait ce qu'il faut (recette dans " +
+    "docs/configuration.md). Si vous préférez que le visiteur arrive déconnecté, retirez " +
+    "seed.auto_login — une démonstration qui montre son écran de connexion est un choix " +
+    "légitime, et c'est le silence qu'on corrige ici, pas votre application.",
   "sandbox-sans-donnees":
     "Déclarez un jeu de démonstration dans railsbox.yml : un bloc seed: avec une clé " +
     "command:, exécutée à la CONSTRUCTION, avant la capture de l'instantané. Écrire ce jeu " +
@@ -227,6 +235,12 @@ function summaryLines(manifest) {
   if (manifest.seed) {
     lines.push(field("Commande de seed", manifest.seed.command));
     lines.push(field("Auto-login", manifest.seed.autoLogin));
+    // Le mécanisme reconnu, affiché DÈS qu'une auto-connexion est demandée :
+    // c'est ce qui manquait pour comprendre, sans lire le code de railsbox,
+    // pourquoi un visiteur arrivait déconnecté malgré une construction verte.
+    if (manifest.seed.autoLogin && !manifest.seed.autoLoginCode) {
+      lines.push(field("Authentification", LIBELLES[manifest.authMecanisme]));
+    }
   }
   if (manifest.env) {
     const names = Object.keys(manifest.env);
