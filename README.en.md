@@ -48,8 +48,15 @@ jobs:
 > button): if that works and a `push` does nothing, the filter is the culprit.
 
 The railsbox repository is public, so any repository can reference this workflow
-directly. Pin a tag or a SHA instead of `@main` if you would rather freeze the
-version.
+directly.
+
+> **`@main` moves. Pin a tag if your demo has to hold.**
+> `uses: pinfada/railsbox/.github/workflows/construire-sandbox.yml@v2.2.0`
+> gives you a frozen build chain; `@main` gives you fixes as they land, and the
+> risk that an upstream change alters your sandbox without warning. For a demo
+> you show to third parties, pin it. The version used is written on the first
+> line of every sandbox's boot log — it is the first thing you will be asked
+> for if you report a problem.
 
 ### 2. Enable GitHub Pages on the `gh-pages` branch
 
@@ -75,6 +82,14 @@ The workflow prints this badge ready to paste, with your URLs, in every build
 summary. It is served by your own sandbox rather than by a third-party badge
 generator: nothing to maintain, and nothing that can go down without your demo
 going down too.
+
+> **Pasting it is your job, and that is deliberate.** railsbox NEVER writes to
+> your default branch: it only pushes to `gh-pages`. Rewriting a repository's
+> README to slip a badge in would be an intrusion, and the day it goes wrong,
+> it goes wrong in your history. It does generate a full README **on the
+> `gh-pages` branch**, badge included — visible as such on a showcase
+> repository, whose default branch is `gh-pages`, but invisible on your source
+> repository, where it is not.
 
 > **The click opens the current tab.** GitHub strips `target="_blank"` from
 > READMEs whatever syntax you use — verified against its rendering API. No badge

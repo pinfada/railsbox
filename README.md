@@ -49,8 +49,16 @@ jobs:
 > *Run workflow*) : si elle passe et qu'un `push` ne fait rien, c'est le filtre.
 
 Le dépôt railsbox est public : n'importe quel dépôt peut référencer ce workflow
-directement. Épinglez un tag ou un SHA à la place de `@main` si vous préférez
-figer la version.
+directement.
+
+> **`@main` bouge. Épinglez un tag si votre démonstration doit tenir.**
+> `uses: pinfada/railsbox/.github/workflows/construire-sandbox.yml@v2.2.0`
+> vous donne une chaîne de construction figée ; `@main` vous donne les
+> correctifs au fil de l'eau, et le risque qu'une modification en amont change
+> votre sandbox sans prévenir. Sur une démonstration que vous montrez à des
+> tiers, épinglez. La version employée est écrite en première ligne du journal
+> de boot de chaque sandbox : c'est ce qu'on vous demandera si vous signalez un
+> problème.
 
 ### 2. Activez GitHub Pages sur la branche `gh-pages`
 
@@ -77,6 +85,14 @@ Le workflow imprime ce badge tout prêt, avec vos URL, dans le résumé de chaqu
 construction. Il est servi par votre propre sandbox et non par un générateur
 tiers : rien à maintenir, rien qui puisse tomber sans que votre démonstration
 tombe aussi.
+
+> **C'est à vous de le coller, et c'est délibéré.** railsbox n'écrit JAMAIS
+> dans votre branche par défaut : il ne pousse que sur `gh-pages`. Réécrire le
+> README d'un dépôt pour y glisser un badge serait une intrusion, et le jour
+> où ça se passe mal, ça se passe mal dans votre historique. Il génère en
+> revanche un README complet **sur la branche `gh-pages`**, badge compris —
+> visible tel quel sur un dépôt vitrine, dont `gh-pages` est la branche par
+> défaut, mais invisible sur votre dépôt source, où elle ne l'est pas.
 
 > **Le clic ouvre l'onglet courant.** GitHub retire `target="_blank"` des
 > README, quelle que soit la syntaxe employée — vérifié sur son API de rendu.

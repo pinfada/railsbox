@@ -22,6 +22,7 @@ import {
 import { creerIndicateurDemarrage } from "./shared/progression-demarrage.js";
 import { lireRequetesSql, mesuresDemarrage } from "./shared/bilan-demarrage.js";
 import { nomSandbox } from "./shared/nom-sandbox.js";
+import { VERSION_RAILSBOX } from "./shared/version.js";
 import { createVeilleController } from "./shared/veille.js";
 import { PLAFOND_RETENTION_MS } from "./shared/session-privee.js";
 
@@ -275,6 +276,11 @@ async function start() {
   if (!checkBrowserSupport()) return;
   await ensureSingleSandbox();
 
+  // Première ligne du journal, et c'est voulu : quand une sandbox publiée se
+  // comporte mal des semaines après sa construction, la version qui l'a
+  // fabriquée est le premier renseignement à donner. Le journal étant replié
+  // par défaut sur une sandbox publiée, le visiteur ne la voit pas.
+  logLine(`railsbox ${VERSION_RAILSBOX}`);
   etape("serviceWorker");
   logLine("Enregistrement du Service Worker proxy…");
   // updateViaCache: "none" — le défaut (« imports ») contourne le cache HTTP
