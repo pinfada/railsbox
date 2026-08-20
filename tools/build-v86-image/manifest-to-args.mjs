@@ -301,7 +301,7 @@ export function splitPackages(manifest, baseRevision) {
  * `public/assets` — il ne relance rien.
  * @param {Manifest} manifest manifeste fusionné
  * @param {Map<string, string>} specs gems résolues du Gemfile.lock
- * @returns {{npm: boolean, scripts: string[], stage: string, install: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
+ * @returns {{npm: boolean, scripts: string[], stage: string, install: string, manager: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
  */
 export function assetsPlan(manifest, specs) {
   const { plan } = planAssets({ assets: manifest.assets, specs });
@@ -310,6 +310,7 @@ export function assetsPlan(manifest, specs) {
     scripts: [...plan.scripts],
     stage: plan.stage,
     install: plan.install,
+    manager: plan.manager,
     binaryGems: [...plan.binaryGems],
     precompile: plan.stage === ASSET_STAGE.GUEST,
     output: [...plan.output],
@@ -392,6 +393,12 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
     ASSETS_STAGE: assets.stage,
     HOST_ASSETS: assets.stage === ASSET_STAGE.HOST ? "1" : "0",
     NPM_INSTALL_COMMAND: assets.install,
+    // Gestionnaire de paquets front, sous forme d'IDENTIFIANT SEUL (`npm` ou
+    // `pnpm`). La version déclarée par l'application n'entre jamais ici : elle
+    // vient d'un package.json tiers, et c'est Corepack qui la lit lui-même
+    // dans le projet. Ce qui traverse est donc une valeur d'une liste fermée,
+    // jamais une chaîne d'origine tierce.
+    PACKAGE_MANAGER: assets.manager,
     // Répertoires que l'étage amd64 remonte vers le disque applicatif. Les
     // deux premiers sont structurels ; les suivants viennent de la détection
     // (vite_rails, Shakapacker) ou de `assets.output` du railsbox.yml, et sont

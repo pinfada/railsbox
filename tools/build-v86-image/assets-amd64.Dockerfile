@@ -38,6 +38,24 @@ RUN set -eu; \
     apt-get update && apt-get install -y --no-install-recommends ${paquets} \
     && rm -rf /var/lib/apt/lists/*
 
+# Gestionnaire de paquets front : `npm` ou `pnpm`, IDENTIFIANT SEUL. La
+# version déclarée par l'application n'arrive jamais jusqu'ici — Corepack la
+# lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
+# une chaîne tierce dans une commande.
+#
+# `corepack enable pnpm` ne fait qu'installer un shim : rien n'est téléchargé
+# tant que pnpm n'est pas invoqué DANS le projet, où il provisionne alors la
+# version exacte demandée. C'est aussi ce shim que `jsbundling-rails`
+# retrouvera pour son `javascript:install`.
+ARG PACKAGE_MANAGER="npm"
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN set -eu; \
+    case "$PACKAGE_MANAGER" in \
+      npm) : ;; \
+      pnpm) corepack enable pnpm ;; \
+      *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
+    esac
+
 WORKDIR /app
 
 # Bundle d'abord : couche cachée tant que le Gemfile ne bouge pas.
@@ -94,7 +112,7 @@ rm -f /tmp/app-env.sh
 # lui a été écrit ici, et nulle part ailleurs. C'est ce qui permet, plus bas,
 # de nommer les répertoires produits qui ne seront pas exportés.
 touch /tmp/rib-repere
-for script in ${ASSET_SCRIPTS}; do npm run "$script"; done
+for script in ${ASSET_SCRIPTS}; do "${PACKAGE_MANAGER}" run "$script"; done
 bundle exec rails assets:precompile
 RIB_ASSETS
 

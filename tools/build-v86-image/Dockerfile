@@ -33,6 +33,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates openssl nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
+# Gestionnaire de paquets front : `npm` ou `pnpm`, IDENTIFIANT SEUL. La
+# version déclarée par l'application n'arrive jamais jusqu'ici — Corepack la
+# lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
+# une chaîne tierce dans une commande.
+#
+# `corepack enable pnpm` ne fait qu'installer un shim : rien n'est téléchargé
+# tant que pnpm n'est pas invoqué DANS le projet, où il provisionne alors la
+# version exacte demandée. C'est aussi ce shim que `jsbundling-rails`
+# retrouvera pour son `javascript:install`.
+ARG PACKAGE_MANAGER="npm"
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN set -eu; \
+    case "$PACKAGE_MANAGER" in \
+      npm) : ;; \
+      pnpm) corepack enable pnpm ;; \
+      *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
+    esac
+
 # LES MÊMES PAQUETS QUE LE ROOTFS, et pour la même raison : cet étage fait lui
 # aussi un `bundle install` complet, donc il compile les mêmes gems natives.
 # La liste ci-dessus était figée, si bien qu'une application dont une gem
@@ -93,7 +111,7 @@ ARG APP_ENV_TRUSTED=""
 RUN printf '%s\n' "$APP_ENV_MANIFEST" > /tmp/app-env.sh \
     && printf '%s\n' "$APP_ENV_TRUSTED" >> /tmp/app-env.sh \
     && set -a && . /tmp/app-env.sh && set +a \
-    && for script in $ASSET_SCRIPTS; do npm run "$script"; done \
+    && for script in $ASSET_SCRIPTS; do "$PACKAGE_MANAGER" run "$script"; done \
     && bundle exec rails assets:precompile \
     && rm -f /tmp/app-env.sh
 

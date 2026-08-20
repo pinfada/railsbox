@@ -513,11 +513,16 @@ function detectAssets(packageJson) {
   const scripts = KNOWN_BUILD_SCRIPTS.filter((name) => Boolean(parsed?.scripts?.[name]));
   const declared = { ...(parsed?.dependencies ?? {}), ...(parsed?.devDependencies ?? {}) };
   const tools = KNOWN_ASSET_TOOLS.filter((name) => name in declared);
+  // Le champ `packageManager` est relevé BRUT ici et validé plus loin
+  // (planPackageManager) : la lecture d'un fichier tiers ne doit rien décider,
+  // et la validation vit à un seul endroit.
+  const packageManager = typeof parsed?.packageManager === "string" ? parsed.packageManager : null;
   return {
     assets: Object.freeze({
       npm: true,
       scripts: Object.freeze(scripts),
       tools: Object.freeze(tools),
+      packageManager,
     }),
     findings: [],
   };
