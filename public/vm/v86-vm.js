@@ -12,6 +12,7 @@ import {
   splitHttpResponse,
 } from "../shared/serial-codec.js";
 import { loadSnapshot } from "../shared/snapshot-parts.js";
+import { INSTANTANE, verifierInstantane } from "../shared/instantane-lien.js";
 import {
   buildDiskImages,
   isBootableConfig,
@@ -147,6 +148,23 @@ async function resolveSnapshot(snapshotKey, config, onConsole) {
   if (cached) {
     onConsole(`[v86] instantané local trouvé (${formatMegabytes(cached)}) — restauration…`);
     return { state: cached, fromCache: true };
+  }
+  // L'instantané est-il celui de CE disque ? Les deux fichiers portent les
+  // mêmes noms d'une construction à l'autre, et rien dans les noms ne dit
+  // qu'ils ont cessé d'aller ensemble. Restaurer un état posé sur un système
+  // de fichiers qu'il ne connaît pas donne une VM dont Puma ne répond jamais —
+  // 337 s de sondes muettes, sans un message (ADR 0007). Un boot à froid coûte
+  // des minutes ; celui-là ne finit pas.
+  //
+  // L'ABSENCE DE MARQUE EST TOLÉRÉE, et c'est le point : toutes les sandboxes
+  // publiées avant que `stateFor` n'existe ont un instantané valide et pas de
+  // marque. Les refuser les ferait booter à froid pour rien. Seul le DÉSACCORD
+  // est refusé.
+  const lien = verifierInstantane(config);
+  if (lien.verdict === INSTANTANE.DESACCORDE) {
+    onConsole(`[v86] instantané écarté — ${lien.raison}`);
+    onConsole("[v86] boot à froid (plusieurs minutes) plutôt qu'un état incohérent");
+    return { state: null, fromCache: false };
   }
   if (!config.state) {
     onConsole("[v86] aucun instantané — boot à froid (plusieurs minutes)");
