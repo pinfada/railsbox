@@ -383,6 +383,23 @@ CONTAINER_ID="$(docker create --platform linux/386 "$IMAGE_TAG")"
 docker export "$CONTAINER_ID" | tar -xf - -C "$WORK_DIR" app
 docker rm "$CONTAINER_ID" >/dev/null
 
+# Marqueur posé par app.Dockerfile quand les seeds ont tourné sans rien insérer.
+# La panne qu'il révèle est SILENCIEUSE par nature : la construction est verte,
+# la sandbox démarre, et c'est le visiteur qui découvre des listes vides. Elle
+# échappe à l'analyse amont, qui ne peut que lire le fichier de seeds — pas
+# savoir qu'un `if ENV[...]` l'a court-circuité.
+BASE_VIDE="$WORK_DIR/app/.railsbox/base-vide"
+if [ -f "$BASE_VIDE" ]; then
+  echo "⚠ Les seeds se sont exécutés et la base est VIDE (aucun enregistrement)." >&2
+  echo "  La sandbox démarrera, et ne montrera rien : listes vides, pages « nothing" >&2
+  echo "  here yet », formulaires sans contexte. Rien d'autre ne le signalera." >&2
+  echo "  Cause la plus fréquente : des seeds conditionnés à des variables" >&2
+  echo "  d'environnement absentes ici. Déclarez-les dans le bloc env: de" >&2
+  echo "  railsbox.yml — avec des valeurs FACTICES, le disque est public." >&2
+  # Lu, donc retiré : il n'a rien à faire dans le disque livré.
+  rm -f "$BASE_VIDE"
+fi
+
 USED_MB="$(du -sm "$WORK_DIR/app" | cut -f1)"
 echo "  Contenu /app : ${USED_MB} Mo (cible ${APP_DISK_MB} Mo)"
 if [ "$USED_MB" -gt "$APP_DISK_MB" ]; then

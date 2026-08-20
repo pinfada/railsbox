@@ -349,6 +349,36 @@ if [ -n "${SEED_COMMAND}" ]; then
   else
     sh -c "${SEED_COMMAND}"
   fi
+  # Des seeds qui s'exécutent n'insèrent pas forcément quoi que ce soit.
+  #
+  # L'analyse amont sait dire qu'un db/seeds.rb est absent, vide ou réduit à des
+  # commentaires. Elle ne peut pas savoir qu'un fichier de trente lignes bien
+  # réelles n'a rien créé — un `if ENV["ADMIN_EMAIL"] … else puts "skipping"`
+  # suffit, et c'est un patron courant sur les applications déployables. Mesuré
+  # le 20/08/2026 sur une application tierce : seeds verts, base vide, sandbox
+  # ouvrant sur un écran « créez le premier compte ».
+  #
+  # On compte donc pour de bon, ici, où la base existe encore. Le marqueur est
+  # relu et EFFACÉ par build-app-disk.sh après l'export : il ne voyage pas dans
+  # le disque livré.
+  mkdir -p /app/.railsbox
+  cat > /tmp/rib-compter.rb <<'RUBY'
+# Défensif de bout en bout : ce contrôle est un confort de diagnostic, il ne
+# doit jamais coûter une construction. Toute erreur est avalée en le disant.
+begin
+  connexion = ActiveRecord::Base.connection
+  internes = %w[schema_migrations ar_internal_metadata]
+  total = connexion.tables.reject { |table| internes.include?(table) }.sum do |table|
+    connexion.select_value("SELECT COUNT(*) FROM #{connexion.quote_table_name(table)}").to_i
+  end
+  puts "[build] #{total} enregistrement(s) en base après les seeds"
+  File.write("/app/.railsbox/base-vide", "") if total.zero?
+rescue StandardError => erreur
+  puts "[build] comptage des enregistrements impossible (#{erreur.class}) — contrôle ignoré"
+end
+RUBY
+  bundle exec rails runner /tmp/rib-compter.rb || echo "[build] comptage impossible — contrôle ignoré"
+  rm -f /tmp/rib-compter.rb
 fi
 if [ "${WITH_REDIS}" = 1 ]; then redis-cli shutdown nosave || true; fi
 if [ "${WITH_POSTGRES}" = 1 ]; then

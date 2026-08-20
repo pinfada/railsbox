@@ -284,6 +284,23 @@ their session, which no snapshot can contain.
 > tokens you must mint the token and hand it to the page. That is what the
 > recipe below does.
 
+> **Nor does it cover Rails 8's built-in authentication.**
+> `bin/rails generate authentication` produces neither Devise nor Warden: it
+> creates a `Session` model, stores its id in a **signed cookie**, and re-reads
+> `Session.find_by(id: cookies.signed[:session_id])` on every request. Warden
+> and `env["rack.session"]` are never consulted — so auto-login runs, finds the
+> user, writes the session… and the application ignores it. The visitor arrives
+> **signed out, with no message at all**: no build error, no warning in the
+> log, because from railsbox's point of view it did its job.
+>
+> Verified on 2026-08-20 against a real Rails 8.1 application. This is the case
+> that will become the most common, the generator being the recommended
+> starting point for new applications. Today's workaround is `auto_login_code`:
+> the fragment receives `env`, and can create whatever session record the
+> application expects. Native support is still to be written — it requires
+> auto-login to be able to set a cookie on the RESPONSE, which the current
+> middleware, running before the application, does not do.
+
 #### Recipe: auto-login for a JWT-authenticated SPA (devise-jwt)
 
 Three pieces. **One**: the fragment mints the token and drops it in the session.

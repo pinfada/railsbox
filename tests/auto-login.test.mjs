@@ -49,10 +49,26 @@ test("une seule tentative par visiteur, marquée par un cookie", () => {
   assert.match(source, /COOKIE = "railsbox_auto_login"/);
 });
 
-test("la colonne email est vérifiée avant d'être interrogée", () => {
+test("la colonne est vérifiée avant d'être interrogée", () => {
   // find_by(email:) lève sur un modèle sans cette colonne.
   const source = buildAutoLoginInitializer({ autoLogin: "a@b.c" });
-  assert.match(source, /column_names\.include\?\("email"\)/);
+  assert.match(source, /column_names\.include\?\(colonne\)/);
+  assert.match(
+    source,
+    /next unless modele\.column_names\.include\?\(colonne\)\s*\n\s*trouve = modele\.find_by/,
+    "la vérification doit précéder immédiatement l'interrogation",
+  );
+});
+
+test("les deux conventions de colonne d'adresse sont essayées", () => {
+  // « email » est la convention de Devise ; « email_address » celle que produit
+  // `bin/rails generate authentication`, l'authentification intégrée de
+  // Rails 8, donc celle des applications neuves. N'en chercher qu'une laissait
+  // l'auto-connexion échouer EN SILENCE sur les autres : l'utilisateur
+  // existait, le visiteur arrivait déconnecté, et rien ne l'expliquait.
+  // Constaté sur une application tierce (Rails 8.1) le 20/08/2026.
+  const source = buildAutoLoginInitializer({ autoLogin: "a@b.c" });
+  assert.match(source, /\["email", "email_address"\]\.each do \|colonne\|/);
 });
 
 test("le fichier est inerte hors sandbox", () => {

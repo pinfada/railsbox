@@ -196,9 +196,19 @@ const HELPERS = `
         return nil unless Object.const_defined?(nom_modele)
         modele = Object.const_get(nom_modele)
         return modele.first if identifiant.nil?
-        if modele.respond_to?(:column_names) && modele.column_names.include?("email")
-          trouve = modele.find_by(email: identifiant)
-          return trouve if trouve
+        # Deux conventions, pas une. « email » est celle de Devise et des
+        # applications antérieures ; « email_address » est celle que produit
+        # « rails generate authentication », l'authentification intégrée de
+        # Rails 8 — donc celle de la plupart des applications neuves. Ne
+        # chercher que la première laissait l'auto-connexion échouer en silence
+        # sur les secondes : l'utilisateur existait, le visiteur arrivait
+        # déconnecté, et rien ne disait pourquoi.
+        if modele.respond_to?(:column_names)
+          ["email", "email_address"].each do |colonne|
+            next unless modele.column_names.include?(colonne)
+            trouve = modele.find_by(colonne => identifiant)
+            return trouve if trouve
+          end
         end
         return modele.find_by(id: identifiant) if identifiant.to_s.match?(/\\A\\d+\\z/)
         nil

@@ -337,6 +337,25 @@ contenir.
 > les sessions ; pour les jetons, il faut émettre le jeton et le donner à la
 > page. C'est ce que fait la recette ci-dessous.
 
+> **Il ne couvre pas non plus l'authentification intégrée de Rails 8.**
+> `bin/rails generate authentication` ne produit ni Devise ni Warden : il crée
+> un modèle `Session`, en range l'identifiant dans un **cookie signé**, et
+> relit `Session.find_by(id: cookies.signed[:session_id])` à chaque requête.
+> Warden et `env["rack.session"]` n'y sont jamais consultés — l'auto-connexion
+> s'exécute donc, trouve l'utilisateur, écrit la session… et l'application
+> l'ignore. Le visiteur arrive **déconnecté, sans aucun message** : ni erreur
+> de construction, ni avertissement dans le journal, puisque de son point de
+> vue railsbox a fait son travail.
+>
+> Vérifié le 20/08/2026 sur une application Rails 8.1 réelle. C'est le cas qui
+> va devenir le plus fréquent, la commande étant le point de départ conseillé
+> des applications neuves. Le contournement disponible aujourd'hui est
+> `auto_login_code` : le fragment reçoit `env`, à lui de créer
+> l'enregistrement de session que l'application attend. Le support natif reste
+> à écrire — il suppose que l'auto-connexion puisse poser un cookie sur la
+> RÉPONSE, ce que le middleware actuel, qui s'exécute avant l'application, ne
+> fait pas.
+
 #### Recette : auto-connexion d'un SPA qui s'authentifie par JWT (devise-jwt)
 
 Trois pièces. **Une** : le fragment émet le jeton et le dépose dans la session.
