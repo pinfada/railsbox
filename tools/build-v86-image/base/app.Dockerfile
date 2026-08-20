@@ -404,8 +404,27 @@ mkdir -p /app/.railsbox
   # NotImplementedError). Fournir un service sans l'annoncer revient à ne pas
   # le fournir. Le bloc env: du railsbox.yml, écrit plus bas, garde le dernier
   # mot pour une application qui veut une autre base ou un autre hôte.
+  # Et la réciproque, qui manquait : quand Redis n'est PAS démarré, il faut
+  # retirer REDIS_URL, pas se contenter de ne pas l'écrire. Le rootfs de base
+  # l'exporte INCONDITIONNELLEMENT (base/Dockerfile), alors que guest-init.sh
+  # ne démarre Redis que sur RIB_WITH_REDIS=1 : toute sandbox annonçait donc un
+  # Redis qui n'existait pas. Une application défensive — `if
+  # ENV["REDIS_URL"].present?` … `else :memory_store`, le patron correct et très
+  # répandu — prenait la branche Redis et ne démarrait plus du tout.
+  #
+  # Mesuré le 20/08/2026 sur une application tierce (Rails 8.1, cache_store
+  # conditionnel, gem redis absente du Gemfile) : « Unable to load application:
+  # Could not find cache store adapter for redis_cache_store ». L'application
+  # était juste, la base mentait.
+  #
+  # La correction vit ICI et pas seulement dans la base parce que les bases
+  # publiées sont figées : 3.3-r2 restera telle quelle, et le disque applicatif
+  # est la seule couche qui puisse la corriger — il est sourcé après elle
+  # (start-app.sh : env.sh, puis app-env.sh).
   if [ "${WITH_REDIS}" = 1 ]; then
     echo "export REDIS_URL=redis://127.0.0.1:6379/0"
+  else
+    echo "unset REDIS_URL"
   fi
   if [ "${WITH_POSTGRES}" = 1 ]; then
     echo "export PGDATA=${PG_DATA_DIR}"

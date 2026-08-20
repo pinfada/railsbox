@@ -428,4 +428,12 @@ cat > "$OUTPUT_DIR/$NAME-app.json" <<FICHE
 FICHE
 
 echo "✓ Disque applicatif prêt : $NAME-app.ext2 ($((APP_DISK_BYTES / 1048576)) Mo)"
-echo "  Delta d'instantané :  node tools/build-v86-image/make-delta-snapshot.mjs --name $NAME --base $BASE_IMAGE"
+# Le --base de make-delta-snapshot.mjs n'est PAS celui de ce script : il nomme
+# le préfixe des artefacts LOCAUX (public/disks/base-3.3-r2.ext2), pas l'image
+# Docker de construction. Recopier $BASE_IMAGE ici imprimait une commande qui
+# ne peut pas marcher — elle faisait chercher un fichier
+# « public/disks/ghcr.io/pinfada/railsbox-base:3.3-r2.ext2 », et l'erreur
+# « introuvable » ne disait pas que la faute venait de la ligne suggérée.
+BASE_ARTEFACTS="base-${BASE_REVISION:-3.3}"
+echo "  Delta d'instantané :  node tools/build-v86-image/make-delta-snapshot.mjs --name $NAME --base $BASE_ARTEFACTS"
+echo "    (artefacts attendus : public/disks/$BASE_ARTEFACTS.ext2 et $BASE_ARTEFACTS-state.bin)"

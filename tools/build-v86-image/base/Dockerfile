@@ -173,8 +173,14 @@ export RAILS_MAX_THREADS=4
 export PORT=3000
 export TZ=Europe/Paris
 export NOKOGIRI_USE_SYSTEM_LIBRARIES=true
-export REDIS_URL='redis://127.0.0.1:6379/1'
 ENVFILE
+# REDIS_URL n'est PAS déclaré ici, et c'est délibéré. La base l'exportait
+# inconditionnellement alors que guest-init.sh ne démarre Redis que sur
+# RIB_WITH_REDIS=1 : toute sandbox annonçait un service absent. Une application
+# qui teste `ENV["REDIS_URL"].present?` — le patron correct — prenait la
+# branche Redis et ne démarrait plus. C'est le disque applicatif qui déclare la
+# variable, et seulement quand Redis tourne (base/app.Dockerfile) ; les bases
+# déjà publiées, elles, sont corrigées par le `unset` qu'il écrit.
 chmod 600 /opt/rib/env.sh
 
 # Point de montage du disque applicatif, vide dans la base.
