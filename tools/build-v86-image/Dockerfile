@@ -33,6 +33,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates openssl nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
+# LES MÊMES PAQUETS QUE LE ROOTFS, et pour la même raison : cet étage fait lui
+# aussi un `bundle install` complet, donc il compile les mêmes gems natives.
+# La liste ci-dessus était figée, si bien qu'une application dont une gem
+# exigeait des en-têtes supplémentaires échouait ICI, après que le rootfs, lui,
+# avait été correctement servi. Trouvé sur tryzealot/zealot : corriger
+# `webp-ffi` dans la table gem → bibliothèques n'a fait que déplacer l'échec
+# d'un étage.
+#
+# La liste entière est passée telle quelle, paquets de RUNTIME compris
+# (redis-server, libvips-tools…) : cet étage est jetable — seul `public/assets`
+# en sort — et le trier coûterait plus en complexité qu'il n'économiserait.
+ARG EXTRA_PACKAGES=""
+RUN set -eu; \
+    if [ -n "$EXTRA_PACKAGES" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends $EXTRA_PACKAGES \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 WORKDIR /app
 ENV BUNDLE_WITHOUT="development:test" BUNDLE_JOBS=4 BUNDLE_FROZEN=false
 COPY Gemfile* ./
