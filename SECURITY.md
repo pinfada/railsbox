@@ -59,7 +59,7 @@ dans sa propre VM. En conséquence :
 | XSS dans l'application → exfiltration réseau | CSP **toujours** ajoutée aux documents `/app` proxifiés (`connect-src 'self'`, `form-action 'self'`) — fetch/XHR/beacon et formulaires vers des tiers sont bloqués. Une politique posée par l'application n'y substitue pas la nôtre : les deux s'appliquent conjointement. **Canal résiduel assumé** : `img-src` reste large (fonds de carte) — un pixel-beacon image reste possible depuis une app compromise ; l'iframe étant same-origin, une telle app peut aussi lire le `localStorage` de la page et l'IndexedDB de l'origine (d'où l'option « session seulement » de l'inspecteur) |
 | Encadrement de l'application par un tiers | la CSP injectée impose `frame-ancestors 'self'` à tout document proxifié. railsbox **lève** l'interdiction que l'application pose elle-même (`X-Frame-Options: DENY`, `frame-ancestors 'none'`) — il impose l'iframe, il doit donc en assumer la conséquence — mais la remplace par la sienne : l'encadrement reste limité à notre origine, jamais ouvert |
 | Requêtes forgées par un tiers → VM | refusées en **403** par le Service Worker (`appRequestRefusal`) : navigation de premier niveau, signal d'origine étranger (`Origin`, référent, `Sec-Fetch-Site`) ou écriture non attribuable n'atteignent jamais le pont — voir la règle exacte ci-dessous |
-| Commandes du proxy (pont VM, identité des artefacts, cookies du document) | acceptées du **seul document coquille** (`isShellClient`) : un client servi sous `/app/` — la surface d'un XSS applicatif — ne peut ni détourner le pont, ni empoisonner le cache, ni dicter au proxy des cookies que le navigateur ne lui montre pas |
+| Commandes du proxy (pont VM, identité des artefacts, cookies du document, reprise de session) | **capacité non forgeable** : elles ne voyagent que sur un `MessagePort` privé, gardé dans la fermeture du module de la coquille. Le canal public ne porte plus aucune commande — un canal ne s'y **propose** pas, il **répond** à un tour que le worker seul ouvre, avec un nonce à usage unique, périssable et adressé à un client donné ; et le worker n'ouvre de tour que s'il n'a pas de canal utilisable. Les deux messages restants sont en outre filtrés par `isShellClient` (liste d'admission : `<base>/` et `<base>/index.html`). Ce que cela ferme, et que le filtre d'URL ne pouvait pas fermer : un XSS applicatif qui injecte un `<script src="/app/…">` dans le DOM du parent s'exécute DANS la coquille, avec son URL — il ne détient pourtant pas le port, ne peut pas obtenir de tour, et perd celui qui s'ouvre (la coquille a inscrit son écouteur avant lui). Éprouvé de bout en bout : `tests/e2e/frontiere-coquille.e2e.spec.mjs`, `tests/e2e/relais-onglets.e2e.spec.mjs` et, avec le vrai `main.js`, `tests/e2e/relais-onglets-reel.e2e.spec.mjs`, [ADR 0008](docs/decisions/0008-separation-origine-de-l-application.md) |
 | Deux onglets sur la même sandbox | un verrou exclusif Web Locks (`shared/election-onglet.js`) élit l'onglet actif : un seul boote une VM, le second l'annonce au visiteur et propose de reprendre la main. L'isolation entre sandboxes est celle des **visiteurs**, pas des onglets — le Service Worker ne retient qu'un pont, si bien que deux VM concurrentes faisaient partir les écritures d'un onglet dans la VM de l'autre |
 | Page hôte | Content-Security-Policy (`index.html`), `X-Content-Type-Options: nosniff` |
 | Serveur de dev | anti-traversée de répertoire (`resolveSafePath`, testée) |
@@ -83,10 +83,16 @@ figuré ici et qui étaient fausses.
   same-origin ; un XSS dans l'application peut ouvrir l'IndexedDB
   `railsbox-cookies` de l'origine, tout comme il peut lire le `localStorage` de
   l'inspecteur. Deux gardes bornent la portée de ce défaut, sans le supprimer :
-  le pont vers la VM et la déclaration d'artefacts ne sont acceptés que du
-  **document coquille** (`isShellClient` — sans quoi un XSS posait son propre
-  `MessagePort` et lisait chaque descripteur de requête, `cookie:` en clair), et
-  aucune requête inter-origine n'atteint le pont.
+  aucune requête inter-origine n'atteint le pont, et **le pont lui-même n'est
+  plus joignable sans la capacité** — les commandes du proxy ne voyagent que
+  sur le `MessagePort` privé de la coquille. Un XSS applicatif atteint bien le
+  realm de la coquille (l'iframe porte `allow-same-origin`, et un
+  `<script src="/app/…">` injecté dans le DOM du parent s'y exécute avec
+  l'URL de la coquille) : aucun critère d'émetteur ne l'en distingue, et c'est
+  pourquoi le filtre d'URL ne suffisait pas. Ce qui l'arrête est qu'il ne
+  détient pas le port, et ne peut pas le fabriquer. Ce qui reste ouvert est
+  décrit par
+  [l'ADR 0008](docs/decisions/0008-separation-origine-de-l-application.md).
 - **L'en-tête `Origin` n'est plus relayé au guest** (`request-codec.js`).
   Rails le compare à `request.base_url` (`forgery_protection_origin_check`) ;
   or le guest ne peut pas connaître de façon fiable l'origine publique
@@ -114,9 +120,9 @@ figuré ici et qui étaient fausses.
   (fuseau, locale, consentement, js-cookie) crée un vrai cookie du navigateur
   dont aucune réponse de la VM n'a parlé. Un Service Worker n'a pas de DOM et
   ne voit pas non plus l'en-tête `Cookie` des requêtes qu'il intercepte : il
-  DEMANDE donc ces cookies à ses clients (`cookies-document-request`), et
-  n'interroge que ceux qui passent `isShellClient` — jamais un document servi
-  sous `/app/`, qui pourrait sinon dicter des cookies que le navigateur ne lui
+  DEMANDE donc ces cookies à la coquille (`cookies-document-request`) — sur le
+  canal privé, et sur lui seul, si bien qu'aucun document servi sous `/app/` ni
+  aucun script injecté ne peut dicter des cookies que le navigateur ne lui
   montre pas. Trois gardes encadrent ce qui revient : le **bocal reste
   autoritaire** (un nom qu'il porte n'est ni doublé ni remplacé, la session et
   les `HttpOnly` sont donc hors d'atteinte de ce chemin), le rapport passe par
@@ -205,6 +211,27 @@ bocal n'a pas besoin d'apparier `SameSite`.
 
 ## Hors périmètre (assumé)
 
+- **XSS dans l'application émulée ⇒ exécution dans la coquille.** L'iframe
+  applicative porte `sandbox="allow-scripts allow-same-origin"` : les deux
+  ensemble laissent le contenu sortir de son bac-à-sable, et Chromium le dit
+  dans la console à chaque chargement. `allow-same-origin` n'est pas une
+  facilité — sans lui l'iframe reçoit une origine opaque, qui n'est cliente
+  d'aucun Service Worker : il n'y aurait plus de proxy, donc plus de produit.
+  Un XSS applicatif atteint donc le realm de la coquille, y exécute du code,
+  et peut lire tout ce que l'origine expose (IndexedDB, localStorage).
+  Ce qu'il n'obtient PAS, depuis la capacité : le pont vers la VM, la
+  configuration des artefacts, les cookies du document, la reprise de session —
+  y compris après un redémarrage du worker, puisqu'un canal ne s'obtient plus
+  qu'en répondant à un tour, et que la coquille y répond avant lui. Ce qui
+  reste : cet avantage tient à un ORDRE (notre écouteur est inscrit le premier)
+  et à une LISTE d'intrinsèques capturés avant toute exécution étrangère —
+  `MessageChannel`, les accesseurs `port1`/`port2`, `postMessage`, `start`, le
+  setter `onmessage`, le getter `MessageEvent.data`, `addEventListener`,
+  `Reflect.apply` et les accès au contrôleur. Chacun est un piège
+  possible : remplacé, il recevrait le port privé en `this` au moment où la
+  coquille s'en sert. Une énumération n'est pas une preuve. C'est du
+  durcissement, pas une frontière — l'analyse et la seule issue réelle vivent
+  dans [l'ADR 0008](docs/decisions/0008-separation-origine-de-l-application.md).
 - **Confidentialité des artefacts** : une sandbox publiée est publique par
   nature. Une URL non listée n'est pas une protection.
 - **Réseau sortant** : la VM n'a pas d'accès réseau externe — les appels

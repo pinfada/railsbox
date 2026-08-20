@@ -1,0 +1,16 @@
+{
+  // Vérification STRICTE du Service Worker lui-même.
+  //
+  // `tsconfig.strict.json` couvre les modules purs qui DÉCIDENT ; celui-ci
+  // couvre l'endroit où les décisions sont APPLIQUÉES. C'est ici qu'un canal
+  // est adopté ou refusé, qu'un port devient le pont, qu'une réponse est mise
+  // en cache — et un `undefined` non vu y devient un refus qui ne refuse pas.
+  //
+  // Deux cibles séparées parce que le worker n'a pas le même environnement :
+  // `lib: WebWorker` plutôt que `DOM`. Les mêler ferait passer pour valide un
+  // accès au DOM depuis le worker, ou l'inverse.
+  "extends": "./tsconfig.sw.json",
+  "compilerOptions": {
+    "strict": true
+  }
+}

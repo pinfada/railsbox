@@ -169,6 +169,7 @@ export function estArtefactCacheable({ status, type, redirected }) {
  * @returns {{ kernel: string | null, initrd: string | null, disks: string[], state: string | null }}
  */
 export function immutableArtifacts(config, baseHref) {
+  /** @param {unknown} value */
   const absolute = (value) => {
     if (!value) return null;
     try {

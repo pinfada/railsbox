@@ -1,0 +1,28 @@
+{
+  // Vérification STRICTE des modules qui décident de la sécurité.
+  //
+  // `strict` sur le dépôt entier produit ~720 diagnostics, en grande partie sur
+  // le pilotage de v86 et sur l'outillage de construction : une dette réelle,
+  // mais sans rapport avec ce qui filtre une requête. La passer d'un bloc
+  // reviendrait à annoter des centaines de lignes sans qu'aucune frontière n'en
+  // sorte mieux gardée.
+  //
+  // Ce périmètre-ci est celui qui juge : la frontière du proxy, la validation
+  // des requêtes qui franchissent le pont série, le bocal à cookies, la
+  // rétention de session. Un `undefined` non vu y devient un refus qui ne
+  // refuse pas. Il est tenu à zéro diagnostic, et il s'élargit fichier par
+  // fichier — pas d'un coup.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true
+  },
+  "include": [
+    "public/types.d.ts",
+    "public/shared/proxy-logic.js",
+    "public/shared/request-codec.js",
+    "public/shared/serial-codec.js",
+    "public/shared/cookie-jar.js",
+    "public/shared/session-privee.js",
+    "public/shared/snapshot-parts.js"
+  ]
+}

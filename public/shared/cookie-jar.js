@@ -229,13 +229,15 @@ export function parseSetCookie(raw, { requestPath = "/", now = Date.now() } = {}
  * @returns {{ setCookies: string[], headers: Array<[string, string]> }}
  */
 export function extractSetCookie(headers) {
+  /** @type {string[]} */
   const setCookies = [];
+  /** @type {Array<[string, string]>} */
   const reste = [];
   for (const [name, value] of headers ?? []) {
     if (String(name).toLowerCase() === "set-cookie") {
       setCookies.push(String(value));
     } else {
-      reste.push([name, value]);
+      reste.push([String(name), String(value)]);
     }
   }
   return { setCookies, headers: reste };
@@ -319,8 +321,8 @@ export function mergeBrowserCookies(header, browserCookies, requestPath) {
   let fusion = header ?? "";
   for (const brut of browserCookies ?? []) {
     const cookie = {
-      name: brut?.name,
-      value: brut?.value,
+      name: String(brut?.name ?? ""),
+      value: String(brut?.value ?? ""),
       path: typeof brut?.path === "string" && brut.path.startsWith("/") ? brut.path : "/",
       expiresAt: null,
     };

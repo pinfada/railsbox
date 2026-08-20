@@ -331,6 +331,7 @@ async function downloadParts(plan, { onLog, sleep, fetch }) {
  * @returns {Promise<Response>}
  */
 async function fetchPart(url, { sleep, fetch }) {
+  /** @type {Error | null} */
   let derniere = null;
   for (let essai = 0; essai < PART_ATTEMPTS; essai += 1) {
     if (essai > 0) await sleep(RETRY_BASE_MS * 2 ** (essai - 1));
@@ -341,8 +342,12 @@ async function fetchPart(url, { sleep, fetch }) {
       if (response.status < 500 && response.status !== 429) throw echec;
       derniere = echec;
     } catch (error) {
-      if (/^HTTP \d{3} sur /.test(error.message)) throw error;
-      derniere = error;
+      // `catch` reçoit n'importe quoi : une erreur réseau, mais aussi tout ce
+      // qu'un `fetch` injecté pourrait lancer. On la ramène à une Error avant
+      // de la lire, sinon `.message` est une hypothèse.
+      const echec = error instanceof Error ? error : new Error(String(error));
+      if (/^HTTP \d{3} sur /.test(echec.message)) throw echec;
+      derniere = echec;
     }
   }
   throw new Error(`${derniere?.message ?? "échec"} — après ${PART_ATTEMPTS} tentatives`);

@@ -117,10 +117,11 @@ Quatre niveaux, quatre coûts, quatre choses prouvées. Ils ne se remplacent pas
 | --------------------------- | ------------------------- | --------------------------------------------------------------------------------------- | -------- |
 | **N1 — unitaires**          | `npm test`                | Toute la logique pure : décisions, codecs, classement, validation.                        | ~1 s     |
 | **N2 — E2E navigateur**     | `npm run test:e2e`        | Ce qui n'existe que dans un navigateur : Service Worker réel, isolation, cookies, cache. | ~1 min   |
+| **N2b — matrice sécurité** | `npm run test:securite`   | Les épreuves de FRONTIÈRE (provenance, iframe, cookies, coquille) rejouées sur **chromium, firefox et webkit** : ces défenses reposent sur des différences entre moteurs, et un verdict de Chromium seul ne dit rien d'elles. | ~1 min |
 | **N3 — intégration VM**     | `npm run test:integration`| Le protocole série complet contre une **vraie VM v86** sous Node : corps de 1 Mo, `ENV`/`RST`, montage base + application. | ~1 min (artefacts requis) |
 | **N4 — recette en ligne**   | `npm run test:live`       | La sandbox **publiée**, à son URL réelle : chemins relatifs, absence de 404, aucune origine externe, aucun préflight, et une **écriture** réelle (billet créé, jeton CSRF compris). | ~2 min, réseau |
 
-`npm run check` (= N1 + lint + format + typecheck sur trois cibles) est **la
+`npm run check` (= N1 + lint + format + typecheck sur quatre cibles) est **la
 
 `npm run check` inclut `npm run lint:shell` : shellcheck relit les scripts de
 construction. Il utilise le binaire du système s'il est là, sinon Docker ; faute
@@ -137,6 +138,8 @@ Ce qu'il faut jouer, en pratique :
 | -------------------------------------------------------------- | ---------------------------- |
 | `tools/detect/`, `classifier-echec.mjs`, `shared/*.js` (logique) | N1                           |
 | `public/sw-proxy.js`, `public/main.js`, `public/index.html`      | N1 + N2, et N4 si vous le pouvez |
+| `isShellClient`, `appRequestRefusal`, `cookie-jar.js`, la CSP injectée | N1 + **N2b** — ces frontières se comportent différemment selon le moteur |
+| Le canal de commande privé (`main.js`, `sw-proxy.js`, `proxy-logic.js`) | N1 + N2b, **et `relais-onglets-reel`** : seule épreuve qui joue le passage de rôle avec la vraie coquille, pièges armés sur les intrinsèques du canal (artefacts requis) |
 | `shared/serial-codec.js` ou `base/rib/serial-bridge.py`          | N1 + N3 (les deux bouts du protocole doivent rester d'accord) |
 | `public/vm/v86-vm.js`, `shared/v86-config.js`, `vm-harness.mjs`  | N1 + N3                      |
 | Les workflows, la chaîne de construction                          | N1, puis « Valider les variantes » à la demande |
@@ -158,6 +161,8 @@ Sur d'autres moteurs (Chromium seul par défaut) :
 ```bash
 RAILSBOX_MOTEURS=tous            npm run test:live
 RAILSBOX_MOTEURS=firefox,webkit  npm run test:e2e
+# N2b prend les trois moteurs par défaut ; la variable sert à n'en rejouer qu'un.
+RAILSBOX_MOTEURS=webkit          npm run test:securite
 ```
 
 Sur un autre port que 8091 — **indispensable si deux copies du dépôt (arbres de

@@ -25,6 +25,12 @@ import { nomSandbox } from "./shared/nom-sandbox.js";
 import { VERSION_RAILSBOX } from "./shared/version.js";
 import { createVeilleController } from "./shared/veille.js";
 import { PLAFOND_RETENTION_MS } from "./shared/session-privee.js";
+import {
+  MESSAGE_CANAL_DEMANDE,
+  MESSAGE_CANAL_OK,
+  MESSAGE_CANAL_PERDU,
+  MESSAGE_ETABLIR_CANAL,
+} from "./shared/proxy-logic.js";
 
 // Tout est relatif à la page : la coquille est publiée à la racine en
 // développement, mais sous « /<depot>/ » sur le Pages de projet de chaque
@@ -37,6 +43,310 @@ const SHELL_PATH = new URL("./", document.baseURI).pathname;
 // Deuxième chance après réparation : l'application vient d'être relancée
 // avec les nouvelles variables, elle doit rebooter (plusieurs minutes).
 const MAX_REPAIR_RETRIES = 2;
+
+// --- CANAL DE COMMANDE PRIVÉ ----------------------------------------------
+//
+// Le port par lequel cette page — et rien d'autre — commande le Service
+// Worker. Il vit dans la fermeture de ce module : aucune propriété de `window`,
+// aucun objet joignable ne le porte. C'est ce qui le rend non forgeable pour un
+// script injecté DANS cette page.
+//
+// Le scénario contre lequel il existe : l'iframe applicative porte
+// `allow-same-origin`, donc un XSS de l'application atteint `parent.document`
+// et peut y ajouter un `<script src="/app/…">` — même origine, donc autorisé
+// par notre CSP. Ce script s'exécute ici, avec l'URL de cette page : aucun
+// filtre sur l'ÉMETTEUR ne le distingue de nous. Il ne peut pas, en revanche,
+// obtenir ce port.
+let canalCommande = null;
+// Le canal a-t-il été CONFIRMÉ par le worker ? Un canal proposé n'est pas un
+// canal adopté : le worker peut le refuser (nonce périmé, tour déjà clos).
+let canalConfirme = false;
+// Commandes émises avant que le canal ne soit confirmé. Sans cette file, une
+// configuration d'artefacts déclarée trop tôt était perdue, et le worker
+// l'attendait sans jamais la redemander.
+const commandesEnAttente = [];
+
+// --- INTRINSÈQUES CAPTURÉS À L'ÉVALUATION DU MODULE ------------------------
+//
+// Tout ce qui suit est lu MAINTENANT, avant qu'aucun contenu applicatif
+// n'existe, et rappelé ensuite par `Reflect.apply` sur la référence d'origine.
+//
+// Un script injecté s'exécute dans ce realm : il peut remplacer n'importe quel
+// intrinsèque. LA LISTE DOIT COUVRIR TOUT CE QUI TOUCHE LE PORT, pas seulement
+// l'envoi — c'est l'erreur qu'une relecture a trouvée ici. Il ne suffit pas de
+// se méfier de `postMessage` :
+//
+//   MessagePort.prototype.start = function () { vole(this); return … };
+//
+// posé AVANT le tour de rétablissement, ce piège reçoit notre port privé en
+// `this` au moment même où nous le démarrons. Les accesseurs `port1`/`port2`
+// de `MessageChannel`, le setter `onmessage` de `MessagePort` et le getter
+// `MessageEvent.data` sont des surfaces identiques. Toutes sont capturées
+// ci-dessous et rappelées par `Reflect.apply` : la fonction remplacée n'est
+// jamais invoquée, et le port n'apparaît dans aucun `this` observable.
+//
+// TOUT EST FACULTATIF ICI. Un navigateur sans Service Worker — webview qui le
+// refuse, mode restreint — doit obtenir le diagnostic de `checkBrowserSupport`,
+// pas une exception à l'évaluation du module. Chaque capture est donc gardée.
+const APPLIQUER = Reflect.apply;
+const DESCRIPTEUR = Object.getOwnPropertyDescriptor;
+const CANAL_MESSAGE = MessageChannel;
+const CONSTRUCTEUR_EVENT_TARGET = typeof EventTarget === "function" ? EventTarget : null;
+const CONSTRUCTEUR_MESSAGE_EVENT = typeof MessageEvent === "function" ? MessageEvent : null;
+const CONSTRUCTEUR_SERVICE_WORKER = typeof ServiceWorker === "function" ? ServiceWorker : null;
+const LIRE_PORT1 = DESCRIPTEUR(MessageChannel.prototype, "port1")?.get;
+const LIRE_PORT2 = DESCRIPTEUR(MessageChannel.prototype, "port2")?.get;
+const POSTER_SUR_PORT = MessagePort.prototype.postMessage;
+const DEMARRER_PORT = MessagePort.prototype.start;
+const POSER_ONMESSAGE = DESCRIPTEUR(MessagePort.prototype, "onmessage")?.set;
+const LIRE_DONNEES_MESSAGE = CONSTRUCTEUR_MESSAGE_EVENT
+  ? DESCRIPTEUR(CONSTRUCTEUR_MESSAGE_EVENT.prototype, "data")?.get
+  : null;
+const POSTER_AU_WORKER = CONSTRUCTEUR_SERVICE_WORKER?.prototype.postMessage ?? null;
+const ECOUTER = EventTarget.prototype.addEventListener;
+const CONTENEUR_SW = navigator.serviceWorker ?? null;
+const LIRE_CONTROLEUR =
+  typeof ServiceWorkerContainer === "function"
+    ? DESCRIPTEUR(ServiceWorkerContainer.prototype, "controller")?.get
+    : null;
+// Décidé une fois, avant tout code applicatif. Relire `EventTarget` ou
+// `ServiceWorker` dans un `instanceof` au moment du rétablissement permettrait
+// à un XSS de forcer la branche de compatibilité, qui utilise volontairement
+// les propriétés ordinaires des doubles de test.
+const CONTENEUR_SW_NATIF = Boolean(
+  CONTENEUR_SW &&
+  LIRE_CONTROLEUR &&
+  CONSTRUCTEUR_EVENT_TARGET &&
+  CONTENEUR_SW instanceof CONSTRUCTEUR_EVENT_TARGET,
+);
+
+// Relecture des mêmes intrinsèques, à l'appel : ce qui a changé depuis le
+// démarrage signale un realm modifié. Voir `realmIntact`.
+const RELECTURES = [
+  () => Reflect.apply,
+  () => Object.getOwnPropertyDescriptor,
+  () => (typeof MessageChannel === "function" ? MessageChannel : null),
+  () => (typeof EventTarget === "function" ? EventTarget : null),
+  () => (typeof MessageEvent === "function" ? MessageEvent : null),
+  () => (typeof ServiceWorker === "function" ? ServiceWorker : null),
+  () =>
+    typeof MessageChannel === "function"
+      ? DESCRIPTEUR(MessageChannel.prototype, "port1")?.get
+      : null,
+  () =>
+    typeof MessageChannel === "function"
+      ? DESCRIPTEUR(MessageChannel.prototype, "port2")?.get
+      : null,
+  () => (typeof MessagePort === "function" ? MessagePort.prototype.postMessage : null),
+  () => (typeof MessagePort === "function" ? MessagePort.prototype.start : null),
+  () =>
+    typeof MessagePort === "function" ? DESCRIPTEUR(MessagePort.prototype, "onmessage")?.set : null,
+  () =>
+    CONSTRUCTEUR_MESSAGE_EVENT
+      ? DESCRIPTEUR(CONSTRUCTEUR_MESSAGE_EVENT.prototype, "data")?.get
+      : null,
+  () => (typeof EventTarget === "function" ? EventTarget.prototype.addEventListener : null),
+];
+const CAPTURES = [
+  APPLIQUER,
+  DESCRIPTEUR,
+  CANAL_MESSAGE,
+  CONSTRUCTEUR_EVENT_TARGET,
+  CONSTRUCTEUR_MESSAGE_EVENT,
+  CONSTRUCTEUR_SERVICE_WORKER,
+  LIRE_PORT1,
+  LIRE_PORT2,
+  POSTER_SUR_PORT,
+  DEMARRER_PORT,
+  POSER_ONMESSAGE,
+  LIRE_DONNEES_MESSAGE,
+  ECOUTER,
+];
+let falsificationSignalee = false;
+
+/**
+ * Un des intrinsèques dont dépend le canal a-t-il été remplacé depuis le
+ * démarrage ?
+ *
+ * CE N'EST PAS UNE GARDE, C'EST UN SIGNAL, et il faut dire pourquoi. Les
+ * opérations ci-dessus passent toutes par les références capturées : un
+ * remplacement est déjà inerte, et refuser d'établir le canal ne protégerait
+ * rien de plus. Ça casserait en revanche la sandbox chez les visiteurs dont
+ * une extension instrumente ces objets — un faux positif coûteux pour un gain
+ * nul. Recharger la coquille n'aiderait pas davantage : l'iframe applicative
+ * se recharge avec elle et peut réinjecter.
+ *
+ * Ce que le signal apporte, c'est de le DIRE : sans lui, un realm modifié
+ * restait parfaitement silencieux dans le journal de démarrage.
+ * @returns {boolean}
+ */
+function realmIntact() {
+  for (let index = 0; index < RELECTURES.length; index += 1) {
+    if (RELECTURES[index]() !== CAPTURES[index]) return false;
+  }
+  return true;
+}
+
+/**
+ * Crée le canal privé SANS toucher au port par une opération remplaçable :
+ * les accesseurs `port1`/`port2`, le setter `onmessage` et `start` passent
+ * tous par leur référence d'origine.
+ * @param {(event: MessageEvent) => void} surMessage
+ * @returns {{ port1: MessagePort, port2: MessagePort }}
+ */
+function creerCanalPrive(surMessage) {
+  const paire = new CANAL_MESSAGE();
+  const port1 = LIRE_PORT1 ? APPLIQUER(LIRE_PORT1, paire, []) : paire.port1;
+  const port2 = LIRE_PORT2 ? APPLIQUER(LIRE_PORT2, paire, []) : paire.port2;
+  if (POSER_ONMESSAGE) APPLIQUER(POSER_ONMESSAGE, port1, [surMessage]);
+  else port1.onmessage = surMessage;
+  APPLIQUER(DEMARRER_PORT, port1, []);
+  return { port1, port2 };
+}
+
+/**
+ * Lit un `MessageEvent` sans invoquer son getter courant. Ce getter est une
+ * surface de capacité à part entière : sur un message de `MessagePort`, il
+ * s'exécute pendant la distribution et peut récupérer le port privé via
+ * `event.currentTarget`, avant même que notre gestionnaire ne voie les
+ * données. Le repli ne sert que les doubles qui appellent directement les
+ * gestionnaires avec un objet ordinaire.
+ * @param {MessageEvent | { data?: any }} event
+ * @returns {any}
+ */
+function donneesMessage(event) {
+  if (LIRE_DONNEES_MESSAGE) {
+    try {
+      return APPLIQUER(LIRE_DONNEES_MESSAGE, event, []);
+    } catch {
+      // Un vrai MessageEvent satisfait toujours le brand check du getter.
+      // Seuls les doubles de test arrivent ici.
+    }
+  }
+  return event.data;
+}
+
+/** Le contrôleur réel, quoi qu'on ait fait à `navigator` depuis. */
+function controleurSW() {
+  if (!CONTENEUR_SW) return null;
+  // La lecture par le descripteur d'origine ignore un `navigator.serviceWorker`
+  // masqué par `Object.defineProperty`. Le repli sert les bancs de test, qui
+  // remplacent le conteneur par un objet ordinaire.
+  if (CONTENEUR_SW_NATIF && LIRE_CONTROLEUR) {
+    return APPLIQUER(LIRE_CONTROLEUR, CONTENEUR_SW, []);
+  }
+  return /** @type {any} */ (CONTENEUR_SW).controller ?? null;
+}
+
+/**
+ * Poste au contrôleur par la référence d'origine — un
+ * `ServiceWorker.prototype.postMessage` remplacé n'est jamais appelé.
+ * @param {Record<string, unknown>} message
+ * @param {any[]} [transfer]
+ */
+function posterAuControleur(message, transfer = []) {
+  const controleur = controleurSW();
+  if (!controleur) return false;
+  if (CONTENEUR_SW_NATIF && POSTER_AU_WORKER) {
+    APPLIQUER(POSTER_AU_WORKER, controleur, [message, transfer]);
+    return true;
+  }
+  controleur.postMessage(message, transfer);
+  return true;
+}
+
+/**
+ * Envoie une commande au proxy par le canal privé.
+ *
+ * Tant que le canal n'est pas confirmé, la commande est MISE DE CÔTÉ et un
+ * tour de rétablissement est demandé : c'est le réessai qui manquait au
+ * passage de relais entre onglets. Les messages porteurs d'un transfert
+ * (le pont) ne sont pas mis en file — ils ne sont émis qu'en réponse à une
+ * demande du worker, donc canal confirmé.
+ * @param {Record<string, unknown>} message
+ * @param {any[]} [transfer]
+ * @returns {boolean} vrai si le message est parti tout de suite
+ */
+function commander(message, transfer = []) {
+  if (canalCommande && canalConfirme) {
+    APPLIQUER(POSTER_SUR_PORT, canalCommande, [message, transfer]);
+    return true;
+  }
+  if (transfer.length === 0) commandesEnAttente.push(message);
+  demanderCanal();
+  return false;
+}
+
+/** Prie le worker d'ouvrir un tour de rétablissement. N'accorde aucun droit. */
+function demanderCanal() {
+  posterAuControleur({ type: MESSAGE_CANAL_DEMANDE });
+}
+
+/**
+ * Répond à un tour de rétablissement, avec le nonce qu'il portait.
+ *
+ * L'écouteur qui appelle ceci est inscrit à l'ÉVALUATION DU MODULE, plus bas :
+ * les écouteurs sont appelés dans leur ordre d'inscription, si bien qu'un
+ * script injecté — inscrit forcément après — répond après nous, sur un nonce
+ * déjà consommé. C'est ce qui fait pencher la course, plutôt que de la laisser
+ * au hasard.
+ * @param {unknown} nonce
+ */
+function repondreAuTour(nonce) {
+  if (!controleurSW()) return;
+  signalerFalsification();
+  const { port1, port2 } = creerCanalPrive((event) => onCanalMessage(event));
+  canalCommande = port1;
+  canalConfirme = false;
+  posterAuControleur({ type: MESSAGE_ETABLIR_CANAL, nonce }, [port2]);
+}
+
+/** Journalise UNE fois qu'un intrinsèque du canal a été remplacé. */
+function signalerFalsification() {
+  if (falsificationSignalee || realmIntact()) return;
+  falsificationSignalee = true;
+  logLine(
+    "[sécurité] un intrinsèque du canal de commande a été remplacé dans cette page. " +
+      "Le canal reste établi par les références capturées au démarrage, donc hors " +
+      "d'atteinte — mais ce realm exécute du code qui n'est pas le nôtre.",
+  );
+}
+
+/**
+ * Messages reçus sur le canal privé : l'accusé de réception d'abord, les
+ * demandes du worker ensuite.
+ * @param {MessageEvent} event
+ */
+function onCanalMessage(event) {
+  const donnees = donneesMessage(event);
+  if (donnees?.type === MESSAGE_CANAL_OK) {
+    canalConfirme = true;
+    const differees = commandesEnAttente.splice(0);
+    for (const message of differees) APPLIQUER(POSTER_SUR_PORT, canalCommande, [message, []]);
+    return;
+  }
+  onWorkerMessage(event);
+}
+
+// Inscrit ICI, à l'évaluation du module, et pas dans `demarrer()` : c'est ce
+// qui garantit que nous répondons AVANT tout code inscrit plus tard.
+if (CONTENEUR_SW) {
+  /** @param {Event} evenement */
+  const surMessagePublic = (evenement) => {
+    const donnees = donneesMessage(/** @type {MessageEvent} */ (evenement));
+    if (donnees?.type === MESSAGE_CANAL_PERDU) repondreAuTour(donnees.nonce);
+  };
+  // Par la référence d'origine quand c'est un vrai `EventTarget` : un
+  // `addEventListener` remplacé ne verrait alors jamais notre inscription.
+  if (CONTENEUR_SW_NATIF) {
+    APPLIQUER(ECOUTER, CONTENEUR_SW, ["message", surMessagePublic]);
+  } else {
+    /** @type {any} */ (CONTENEUR_SW).addEventListener("message", surMessagePublic);
+  }
+  // La file de messages du worker vers la page est DÉSACTIVÉE tant qu'on n'a
+  // pas posé `onmessage` ou appelé ceci.
+  CONTENEUR_SW.startMessages?.();
+}
 
 let inspector = null;
 // Élection de l'onglet actif ; null tant que Web Locks n'est pas disponible.
@@ -298,14 +608,10 @@ async function start() {
   await ensureControlled();
   setBadge("sw", true);
 
-  // Installé AVANT le boot : la configuration des artefacts est déclarée au
-  // Service Worker dès sa lecture, donc avant la première requête de v86.
-  navigator.serviceWorker.addEventListener("message", onWorkerMessage);
-  // La file de messages du worker vers la page est DÉSACTIVÉE tant qu'on n'a
-  // pas posé `onmessage` ou appelé ceci : avec `addEventListener` seul, les
-  // demandes du worker (pont, artefacts, cookies) peuvent n'être jamais
-  // délivrées. Chromium se montre indulgent, la spécification ne l'est pas.
-  navigator.serviceWorker.startMessages?.();
+  // Le canal privé s'obtient en RÉPONDANT à un tour que le worker ouvre :
+  // aucune proposition spontanée n'est plus acceptée. L'écouteur qui répond
+  // est inscrit tout en haut de ce module, avant tout code étranger.
+  demanderCanal();
 
   etape("isolation");
   await ensureCrossOriginIsolated();
@@ -587,10 +893,11 @@ async function bootSelectedEngine() {
 }
 
 function onWorkerMessage(event) {
-  if (event.data?.type === "bridge-port-request" && vmInstance) sendBridgePort(vmInstance);
-  if (event.data?.type === "artifact-config-request") declareArtifacts(artifactConfig);
-  if (event.data?.type === "cookies-document-request") sendDocumentCookies(event.data.id);
-  if (event.data?.type === "session-expiree") traiterSessionExpiree();
+  const donnees = donneesMessage(event);
+  if (donnees?.type === "bridge-port-request" && vmInstance) sendBridgePort(vmInstance);
+  if (donnees?.type === "artifact-config-request") declareArtifacts(artifactConfig);
+  if (donnees?.type === "cookies-document-request") sendDocumentCookies(donnees.id);
+  if (donnees?.type === "session-expiree") traiterSessionExpiree();
 }
 
 /**
@@ -598,11 +905,11 @@ function onWorkerMessage(event) {
  * reprendre.
  *
  * L'INTERFACE DE RECONNEXION VIT DANS CE DOCUMENT, jamais dans une iframe ni
- * une popup same-origin. Un tel document passerait `isShellClient` — il
- * n'exclut que ce qui est sous /app — et serait donc habilité à poster
- * `bridge-port` au worker, c'est-à-dire à détourner le pont et à recevoir
- * chaque descripteur de requête avec l'en-tête `cookie:` en clair. Le panneau
- * ci-dessous n'est qu'un `showDiagnostic` de plus.
+ * une popup same-origin. La raison a changé de nature depuis que les commandes
+ * passent par le canal privé : un tel document ne détiendrait pas le port, donc
+ * ne pourrait rien commander — il ne pourrait pas non plus REPRENDRE la main,
+ * et l'interface de reprise serait muette. Le panneau ci-dessous n'est qu'un
+ * `showDiagnostic` de plus.
  *
  * INTERDIT : `location.reload()`. `releaseSandboxToOtherTab` le fait
  * sciemment pour RENDRE la mémoire de la VM ; ici il la détruirait, avec tout
@@ -692,7 +999,7 @@ function reprendreApresSession() {
   } catch (error) {
     logLine(`[session] reprise de la VM impossible : ${error.message}`);
   }
-  navigator.serviceWorker.controller?.postMessage({ type: "session-restauree" });
+  commander({ type: "session-restauree" });
   logLine("Session rétablie : VM reprise, horloge recalée, lectures rejouées.");
 }
 
@@ -712,37 +1019,49 @@ function reprendreApresSession() {
  * @param {unknown} id identifiant de la demande, à renvoyer tel quel
  */
 function sendDocumentCookies(id) {
-  navigator.serviceWorker.controller?.postMessage({
-    type: "cookies-document",
-    id,
-    cookie: document.cookie,
-  });
+  commander({ type: "cookies-document", id, cookie: document.cookie });
 }
 
 /** @param {Record<string, any> | null} config */
 function declareArtifacts(config) {
   if (!config) return;
   artifactConfig = config;
-  navigator.serviceWorker.controller?.postMessage({ type: "artifact-config", config });
+  commander({ type: "artifact-config", config });
 }
 
 function sendBridgePort(vm) {
-  const controller = navigator.serviceWorker.controller;
-  if (!controller) return;
-  const channel = new MessageChannel();
-  channel.port1.onmessage = (event) => relayToVm(vm, channel.port1, event.data);
-  controller.postMessage({ type: "bridge-port" }, [channel.port2]);
+  // Même précaution que pour le canal de commande, et l'enjeu y est plus grand :
+  // ce port voit passer chaque descripteur de requête, `cookie:` EN CLAIR.
+  // Le port n'existe qu'après la création du canal, et le gestionnaire en a
+  // besoin : il le lit dans ce porte-référence plutôt que dans une liaison
+  // déclarée après son propre usage.
+  const relais = /** @type {{ port: MessagePort | null }} */ ({ port: null });
+  const paire = creerCanalPrive((event) => {
+    if (relais.port) relayToVm(vm, relais.port, donneesMessage(event));
+  });
+  relais.port = paire.port1;
+  commander({ type: "bridge-port" }, [paire.port2]);
 }
 
+// `Reflect.apply` ici pour la même raison que sur le canal de commande, et
+// l'enjeu y est plus grand encore : ce port voit passer chaque descripteur de
+// requête, en-tête `cookie:` EN CLAIR. Un `MessagePort.prototype.postMessage`
+// remplacé le recevrait en `this`.
 async function relayToVm(vm, port, data) {
   if (data?.type !== "http-request") return;
   const { descriptor, body } = data;
   try {
     const response = await vm.handleHttpRequest(descriptor, body);
     const transfer = response.body ? [response.body] : [];
-    port.postMessage({ type: "http-response", id: descriptor.id, ...response }, transfer);
+    APPLIQUER(POSTER_SUR_PORT, port, [
+      { type: "http-response", id: descriptor.id, ...response },
+      transfer,
+    ]);
   } catch (error) {
-    port.postMessage({ type: "http-response", id: descriptor.id, error: error.message });
+    APPLIQUER(POSTER_SUR_PORT, port, [
+      { type: "http-response", id: descriptor.id, error: error.message },
+      [],
+    ]);
   }
 }
 

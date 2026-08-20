@@ -7,6 +7,7 @@ import {
   normalizeBasePath,
   errorPage,
   escapeHtml,
+  estCommandePrivilegiee,
   isShellClient,
   prepareProxyHeaders,
   responseBodyFor,
@@ -313,6 +314,26 @@ test("isShellClient refuse une autre origine et une source sans URL", () => {
   assert.equal(isShellClient("pas une URL", self), false);
 });
 
+test("isShellClient refuse une page racine EXTRAITE DE L'IMAGE applicative", () => {
+  // Le critère « tout ce qui n'est pas sous /app » donnait le privilège de
+  // coquille à ces pages : RailsBox extrait chaque fichier racine du public/
+  // de l'application (404.html, 500.html…) et les sert sous leur nom nu,
+  // depuis /disks/appstatic/, SANS la CSP applicative. Un XSS dans l'une
+  // d'elles commandait donc le proxy.
+  const self = { origin: ORIGINE, basePath: "/railsbox-demo/" };
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/404.html`, self), false);
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/500.html`, self), false);
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/disks/appstatic/404.html`, self), false);
+  // Toute autre page de l'origine, y compris hors de la publication.
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo/quelconque`, self), false);
+  assert.equal(isShellClient(`${ORIGINE}/ailleurs`, self), false);
+  assert.equal(isShellClient(`${ORIGINE}/`, self), false);
+  // Un préfixe voisin ne doit pas passer pour la racine de publication.
+  assert.equal(isShellClient(`${ORIGINE}/railsbox-demo-bis/`, self), false);
+  // Racine locale : la page voisine reste refusée.
+  assert.equal(isShellClient(`${ORIGINE}/404.html`, { origin: ORIGINE, basePath: "/" }), false);
+});
+
 test("escapeHtml neutralise les cinq caractères dangereux", () => {
   assert.equal(
     escapeHtml(`<script>alert("xss") & 'fin'</script>`),
@@ -531,4 +552,20 @@ test("relaxFrameAncestors ne touche qu'à sa directive", () => {
   // Casse et espaces multiples : la directive reste reconnue.
   assert.equal(relaxFrameAncestors("Frame-Ancestors   'none'"), "frame-ancestors 'self'");
   assert.equal(relaxFrameAncestors("   "), null);
+});
+
+test("estCommandePrivilegiee couvre les quatre commandes du proxy", () => {
+  // La liste est la frontière : tout ce qui y figure devient inaccessible au
+  // canal public, et tout ce qui n'y figure pas reste ordinaire.
+  for (const type of ["artifact-config", "bridge-port", "cookies-document", "session-restauree"]) {
+    assert.equal(estCommandePrivilegiee(type), true, type);
+  }
+});
+
+test("estCommandePrivilegiee laisse passer ce qui ne commande rien", () => {
+  assert.equal(estCommandePrivilegiee("coquille-canal"), false, "l'établissement du canal");
+  assert.equal(estCommandePrivilegiee("bridge-port-request"), false, "une demande du worker");
+  assert.equal(estCommandePrivilegiee("session-expiree"), false, "une notification");
+  assert.equal(estCommandePrivilegiee(undefined), false);
+  assert.equal(estCommandePrivilegiee(42), false);
 });

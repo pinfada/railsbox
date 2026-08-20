@@ -132,6 +132,7 @@ export function creerRetentionSession({
 } = {}) {
   /** @type {Array<(issue: string) => void>} */
   let attentes = [];
+  /** @type {ReturnType<typeof setTimeout> | null} */
   let minuterie = null;
   let ouvert = false;
 

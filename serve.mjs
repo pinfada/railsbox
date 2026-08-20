@@ -8,7 +8,14 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseRange, resolveSafePath } from "./tools/serve-logic.mjs";
+import {
+  COQUILLE_NUE_HTML,
+  RANGE_HORS_FICHIER,
+  RANGE_PLAGE,
+  estCoquilleNue,
+  parseRange,
+  resolveSafePath,
+} from "./tools/serve-logic.mjs";
 import {
   CHEMIN_ETAT,
   CHEMIN_RENOUVELER,
@@ -100,7 +107,7 @@ function sendPrecompressed(response, logicalPath, compressed, urlPath) {
 function sendFile(response, filePath, fileSize, rangeHeader, urlPath) {
   const mime = MIME_TYPES.get(extname(filePath)) ?? "application/octet-stream";
   const range = parseRange(rangeHeader, fileSize);
-  if (range) {
+  if (range.type === RANGE_PLAGE) {
     response.writeHead(206, {
       "Content-Type": mime,
       "Content-Length": range.end - range.start + 1,
@@ -108,7 +115,18 @@ function sendFile(response, filePath, fileSize, rangeHeader, urlPath) {
       ...ISOLATION_HEADERS,
       ...cacheHeadersFor(urlPath),
     });
-    createReadStream(filePath, range).pipe(response);
+    createReadStream(filePath, { start: range.start, end: range.end }).pipe(response);
+    return;
+  }
+  // Plage valide mais hors fichier : 416, et « Content-Range » dit la taille
+  // réelle pour que le client puisse redemander juste.
+  if (range.type === RANGE_HORS_FICHIER) {
+    response.writeHead(416, {
+      "Content-Range": `bytes */${fileSize}`,
+      "Content-Length": 0,
+      ...ISOLATION_HEADERS,
+    });
+    response.end();
     return;
   }
   response.writeHead(200, {
@@ -202,6 +220,15 @@ async function handleRequest(request, response) {
   const urlPath = request.url ?? "/";
 
   if (SIMULATION.active && appliquerBordSimule(request, response, urlPath)) return;
+
+  // Coquille nue : l'adresse de la coquille, sans son chargeur. Réservée aux
+  // épreuves de bout en bout (voir tools/serve-logic.mjs) — le document publié
+  // sur GitHub Pages, lui, est un fichier statique que ce serveur ne sert pas.
+  if (estCoquilleNue(urlPath)) {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...ISOLATION_HEADERS });
+    response.end(COQUILLE_NUE_HTML);
+    return;
+  }
 
   // /app/* est normalement intercepté par le Service Worker. Si la requête
   // atteint ce serveur, c'est que la VM n'est pas encore prête.

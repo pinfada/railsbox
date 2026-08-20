@@ -23,17 +23,18 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { cacheNameFor } from "../../public/shared/artifact-cache.js";
+import { COQUILLE_NUE, installerCanalCoquille } from "./coquille-nue.mjs";
 
 const RACINE = fileURLToPath(new URL("../../", import.meta.url));
 const DISKS_DIR = fileURLToPath(new URL("../../public/disks/", import.meta.url));
 // Décalé du port des autres tests : deux origines, deux magasins.
 const PORT = Number(process.env.RAILSBOX_PORT ?? 8091) + 6;
 const BASE = `http://localhost:${PORT}`;
-// Page hôte volontairement inexistante : elle sert de document DANS la portée
-// du Service Worker sans déclencher main.js, donc sans tenter de booter une
-// VM. Elle passe `isShellClient` (elle n'est pas sous /app), ce qui est la
-// seule chose qui compte ici.
-const CHEMIN_HOTE = "/e2e-session-hote";
+// LA coquille, à son adresse réelle. Une page quelconque de l'origine ne
+// passe plus `isShellClient` — c'était le défaut, pas une commodité. Le
+// marqueur `coquille=nue` la sert sans son chargeur : ce test observe la
+// rétention des lectures, pas un démarrage.
+const CHEMIN_HOTE = COQUILLE_NUE;
 const OCTET = 0x7e;
 const MORCEAU = "/disks/e2e-session-0-4194304.ext2.zst";
 const FIXTURE = `${DISKS_DIR}e2e-session-0-4194304.ext2.zst`;
@@ -118,18 +119,14 @@ async function installerWorker(page) {
  * @param {import("@playwright/test").Page} page
  */
 async function preparerCoquille(page) {
+  await installerCanalCoquille(page);
   await page.evaluate((config) => {
     const vue = /** @type {any} */ (globalThis);
-    vue.__messages = [];
     vue.__lecture = null;
-    const nav = vue.navigator;
-    nav.serviceWorker.addEventListener("message", (evenement) => {
-      vue.__messages.push(evenement.data?.type);
-    });
-    // Sans cet appel, la file de messages du worker vers la page peut n'être
-    // jamais délivrée : `addEventListener` seul ne l'ouvre pas.
-    nav.serviceWorker.startMessages?.();
-    nav.serviceWorker.controller.postMessage({ type: "artifact-config", config });
+    // Les messages du worker arrivent désormais sur le CANAL PRIVÉ : c'est là
+    // qu'il faut les écouter, `__coquille.messages` les collecte.
+    vue.__messages = vue.__coquille.messages;
+    vue.__coquille.commander({ type: "artifact-config", config });
   }, CONFIG);
   await page.waitForFunction(
     async (attendu) => (await /** @type {any} */ (globalThis).caches.keys()).includes(attendu),
@@ -245,9 +242,7 @@ test.describe("Session expirée en plein boot", () => {
 
     // --- 5. La coquille libère la lecture retenue --------------------------
     await page.evaluate(() => {
-      /** @type {any} */ (globalThis).navigator.serviceWorker.controller.postMessage({
-        type: "session-restauree",
-      });
+      /** @type {any} */ (globalThis).__coquille.commander({ type: "session-restauree" });
     });
 
     await page.waitForFunction(() => /** @type {any} */ (globalThis).__lecture.fini, undefined, {

@@ -17,8 +17,8 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -44,8 +44,8 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -64,3 +64,33 @@ jobs:
         run: npx playwright install chromium
       - name: Tests E2E (page hôte — les specs VM s'ignorent sans artefacts)
         run: npm run test:e2e
+
+  # Les défenses de frontière reposent EXPLICITEMENT sur des différences entre
+  # moteurs : la règle de provenance a dû être réécrite parce que le premier
+  # correctif ne lisait que `Sec-Fetch-Site`, absent de deux moteurs sur trois,
+  # et qu'aucun test ne pouvait le voir. Un verdict rendu par Chromium seul ne
+  # dit donc rien de ces frontières.
+  #
+  # Job séparé du `e2e` ci-dessus, et non une matrice de celui-ci : la suite
+  # complète comprend un boot de VM, qui dure des minutes et n'apprend rien de
+  # plus hors Chromium. Seules les épreuves listées dans
+  # playwright.securite.config.mjs sont rejouées sur les trois moteurs.
+  securite-moteurs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Même découpage que le job e2e : apt et le CDN Playwright sont deux
+      # téléchargements fragiles, et les mêler rend leurs échecs illisibles.
+      - name: Installer les dépendances système des trois moteurs
+        run: |
+          sudo apt-get update -o Acquire::http::Pipeline-Depth=0
+          npx playwright install-deps chromium firefox webkit
+      - name: Télécharger les binaires
+        run: npx playwright install chromium firefox webkit
+      - name: Épreuves de frontière (chromium, firefox, webkit)
+        run: npm run test:securite

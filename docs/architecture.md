@@ -81,9 +81,14 @@ dans [`SECURITY.md`](../SECURITY.md)).
    `ttyS0` en mode `raw -echo`. Aucune application n'est lancée à cet étage —
    c'est la condition de l'[ADR 0002](decisions/0002-decoupage-base-application.md).
 8. `main.js` crée un `MessageChannel`, garde `port1` et transfère `port2` au
-   worker. Le worker n'accepte ce message **que du document coquille**
-   (`isShellClient`) : l'iframe applicative est un client same-origin comme un
-   autre, et sans ce filtre un XSS y posait son propre pont.
+   worker. Ce transfert passe par le **canal de commande privé** : le worker
+   n'accepte `bridge-port` que là, et ce canal ne s'obtient qu'en RÉPONDANT à
+   un tour qu'il ouvre lui-même, avec un nonce à usage unique. `isShellClient` reste posé sur
+   l'établissement du canal, mais il ne suffisait pas — un XSS applicatif
+   injecte un `<script src="/app/…">` dans le DOM du parent et s'exécute alors
+   DANS la coquille, avec son URL. Ce qui le sépare du pont n'est pas son
+   adresse, c'est qu'il ne détient pas le port
+   ([ADR 0008](decisions/0008-separation-origine-de-l-application.md)).
 9. `waitUntilReady()` sonde `GET /app/` toutes les 5 s, en recalant l'horloge
    invitée à chaque tour (trame `TIME`). Puma, lui, est déjà vivant : le delta
    d'instantané a été capturé après le démarrage applicatif, il restaure donc un

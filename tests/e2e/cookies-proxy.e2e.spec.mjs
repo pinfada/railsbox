@@ -29,7 +29,16 @@
 // n'est requis : ce test tourne en CI.
 import { expect, test } from "@playwright/test";
 
-const HOST_PATH = "/e2e-cookies-hote";
+import { COQUILLE_NUE, installerCanalCoquille } from "./coquille-nue.mjs";
+
+// LA coquille, à son adresse réelle : depuis que `isShellClient` est une
+// liste d'admission, elle seule commande le proxy. Le marqueur
+// `coquille=nue` la sert sans son chargeur — le worker et le bocal à
+// cookies suffisent ici, pas la VM.
+const HOST_PATH = COQUILLE_NUE;
+// La page TIERCE de l'épreuve CSRF : autre origine (127.0.0.1 contre
+// localhost), donc jamais une coquille, quel que soit son chemin.
+const CHEMIN_TIERS = "/e2e-cookies-tiers";
 const SERVICE_WORKER_TIMEOUT_MS = 30_000;
 const SESSION = "_demo_session";
 
@@ -168,28 +177,25 @@ async function installerPontFactice(page) {
           reponse.body ? [reponse.body] : [],
         );
       };
-      fenetre.navigator.serviceWorker.controller.postMessage({ type: "bridge-port" }, [
-        canal.port2,
-      ]);
+      fenetre.__coquille.commander({ type: "bridge-port" }, [canal.port2]);
     };
 
-    fenetre.navigator.serviceWorker.addEventListener("message", (evenement) => {
-      if (evenement.data?.type === "bridge-port-request") fenetre.__poserPont();
+    // Les demandes du worker arrivent sur le CANAL PRIVÉ, plus sur le canal
+    // public : c'est ce qui les met hors de portée d'un script injecté.
+    fenetre.__coquille.surMessage((donnees) => {
+      if (donnees?.type === "bridge-port-request") fenetre.__poserPont();
       // Même relais que main.js : un Service Worker n'a pas de DOM, donc pas de
       // `document.cookie`. Sans cette réponse, les cookies que l'application
       // pose en JavaScript n'atteignent jamais le serveur.
-      if (evenement.data?.type === "cookies-document-request") {
+      if (donnees?.type === "cookies-document-request") {
         fenetre.__cookiesDemandes = (fenetre.__cookiesDemandes ?? 0) + 1;
-        fenetre.navigator.serviceWorker.controller.postMessage({
+        fenetre.__coquille.commander({
           type: "cookies-document",
-          id: evenement.data.id,
+          id: donnees.id,
           cookie: fenetre.document.cookie,
         });
       }
     });
-    // Avec `addEventListener` seul, la file de messages du worker vers la page
-    // reste désactivée par la spécification : sans ceci, rien n'arrive.
-    fenetre.navigator.serviceWorker.startMessages?.();
     fenetre.__poserPont();
   });
 }
@@ -250,6 +256,7 @@ test.describe("Bocal à cookies du proxy", () => {
     contexte = await browser.newContext();
     page = await contexte.newPage();
     await installerWorker(page);
+    await installerCanalCoquille(page);
     await installerPontFactice(page);
   });
 
@@ -550,7 +557,7 @@ test.describe("Bocal à cookies du proxy", () => {
     const port = new URL(page.url()).port;
     const tiers = await contexte.newPage();
     try {
-      await tiers.goto(`http://127.0.0.1:${port}${HOST_PATH}`);
+      await tiers.goto(`http://127.0.0.1:${port}${CHEMIN_TIERS}`);
       await tiers.evaluate((cible) => {
         const fenetre = /** @type {any} */ (globalThis);
         const formulaire = fenetre.document.createElement("form");

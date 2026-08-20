@@ -9,6 +9,7 @@
     "test": "node --test \"tests/**/*.test.mjs\"",
     "test:integration": "node --test \"tests/integration/**/*.it.mjs\"",
     "test:e2e": "playwright test",
+    "test:securite": "playwright test --config playwright.securite.config.mjs",
     "test:live": "playwright test --config playwright.live.config.mjs",
     "test:bridage": "playwright test --config playwright.bridage.config.mjs",
     "lint": "eslint .",
@@ -16,11 +17,11 @@
     "adoption": "node tools/collecter-adoption.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.sw.json && tsc -p tsconfig.node.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.sw.json && tsc -p tsconfig.node.json && tsc -p tsconfig.strict.json && tsc -p tsconfig.sw.strict.json",
     "check": "npm run lint && npm run lint:shell && npm run format:check && npm run typecheck && npm test"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "dependencies": {
     "v86": "^0.5.432"

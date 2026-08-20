@@ -32,16 +32,18 @@ statiquement au lieu de traverser le pont série (levier de performance n°1) :
 wsl -e sh tools/extract-assets.sh   # → public/disks/assets/ + appstatic/
 ```
 
-### Trois niveaux de tests hors ligne, tous requis avant un commit
+### Quatre niveaux de tests hors ligne, tous requis avant un commit
 
 | Commande | Portée | Dépendances |
 | --- | --- | --- |
 | `npm test` | modules purs (codecs, détecteur, buildpack, config) | aucune |
 | `npm run test:integration` | protocole série complet contre une **vraie VM v86** sous Node — POST de 1 Mo, ENV/RST, montage base + application | `public/disks/` |
 | `npm run test:e2e` | boot navigateur complet dans Chromium (Playwright) : page hôte, isolation, application rendue dans l'iframe, navigation | Chromium ; VM `public/disks/` |
+| `npm run test:securite` | les épreuves de **frontière** rejouées sur chromium, firefox et webkit — ces défenses reposent sur des différences entre moteurs | les trois moteurs Playwright |
 
 `npm run check` enchaîne lint (ESLint), format (Prettier), typecheck
-(`tsc --checkJs` sur trois cibles : navigateur, Service Worker, Node) et tests
+(`tsc --checkJs` sur quatre cibles : navigateur, Service Worker, Node, et le
+périmètre `strict` des modules de sécurité — `tsconfig.strict.json`) et tests
 unitaires — c'est exactement ce que joue la CI
 ([`ci.yml`](.github/workflows/ci.yml)).
 

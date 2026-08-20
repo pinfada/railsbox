@@ -60,6 +60,13 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
   const misEnCache = [];
   /** @type {Array<{ url: string, message: any }>} */
   const messagesAuxClients = [];
+  // Messages reçus sur le CANAL PRIVÉ. C'est là que passe désormais tout ce
+  // que le worker dit à la coquille ; le canal public ne porte plus que la
+  // demande de rétablir le canal.
+  /** @type {any[]} */
+  const messagesAuCanal = [];
+  /** @type {any} */
+  let canal = null;
   /** @type {Promise<any>[]} */
   const differes = [];
   /** @type {Request[]} */
@@ -110,6 +117,9 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
     clients: {
       claim: async () => {},
       matchAll: async () => clients,
+      // Le worker s'en sert pour savoir si le porteur du canal vit encore :
+      // tant qu'il vit, aucun second canal n'est adopté.
+      get: async (id) => clients.find((client) => client.id === id),
     },
   });
   poser("caches", {
@@ -139,31 +149,101 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
 
   return {
     /**
-     * Déclare la configuration d'artefacts comme le fait main.js, et attend
-     * que le worker l'ait adoptée (il le fait dans un `waitUntil`).
-     * @param {Record<string, any>} config
+     * Demande au worker d'ouvrir un TOUR de rétablissement, et rend les nonces
+     * qu'il a adressés à chaque client. C'est ce que fait `demanderCanal()`
+     * dans main.js.
+     * @param {{ url?: string, id?: string }} [client] émetteur de la demande
+     * @returns {Promise<Array<{ url: string, nonce: string }>>}
      */
-    async declarerConfig(config) {
+    async ouvrirTour({ url = `${scope}index.html`, id = "coquille-1" } = {}) {
+      const avant = messagesAuxClients.length;
       /** @type {Promise<any>[]} */
       const attentes = [];
       dispatcher("message", {
-        data: { type: "artifact-config", config },
-        source: { url: `${scope}index.html` },
+        data: { type: "coquille-canal-demande" },
+        source: { url, id },
         ports: [],
         waitUntil: (p) => attentes.push(p),
       });
       await Promise.all(attentes);
+      return messagesAuxClients
+        .slice(avant)
+        .filter((envoi) => envoi.message?.type === "coquille-canal-request")
+        .map((envoi) => ({ url: envoi.url, nonce: envoi.message.nonce }));
     },
 
     /**
-     * Envoie un message de coquille au worker (session-restauree…).
+     * RÉPOND à un tour, avec un nonce. Le port est un objet à nous : les
+     * `MessagePort` de Node ne remplissent pas `event.ports`, dont le
+     * transfert du pont a besoin.
+     * @param {{ nonce?: string, url?: string, id?: string }} reponse
+     */
+    async repondreAuTour({ nonce, url = `${scope}index.html`, id = "coquille-1" } = {}) {
+      const port = {
+        onmessage: null,
+        start() {},
+        postMessage: (message) => messagesAuCanal.push(message),
+      };
+      /** @type {Promise<any>[]} */
+      const attentes = [];
+      dispatcher("message", {
+        data: { type: "coquille-canal", nonce },
+        source: { url, id },
+        ports: [port],
+        waitUntil: (p) => attentes.push(p),
+      });
+      await Promise.all(attentes);
+      // Adopté seulement si le worker a bien branché son écouteur : un canal
+      // refusé laisse le port muet, et le banc doit le dire plutôt que de
+      // prêter au test un canal qui n'existe pas.
+      if (typeof port.onmessage !== "function") return null;
+      canal = port;
+      return port;
+    },
+
+    /**
+     * Le tour complet, comme au démarrage d'une coquille : demander, puis
+     * répondre au nonce qui nous est adressé.
+     * @param {{ url?: string, id?: string }} [client]
+     */
+    async etablirCanal({ url = `${scope}index.html`, id = "coquille-1" } = {}) {
+      const tour = await this.ouvrirTour({ url, id });
+      const pour = tour.find((demande) => demande.url === url);
+      if (!pour) return null;
+      return this.repondreAuTour({ nonce: pour.nonce, url, id });
+    },
+
+    /**
+     * Commande le proxy PAR LE CANAL PRIVÉ, comme le fait main.js.
      * @param {Record<string, any>} data
-     * @param {string} [url] URL du client émetteur, pour éprouver le filtre
+     * @param {any[]} [ports]
+     */
+    async commander(data, ports = []) {
+      if (!canal) throw new Error("aucun canal privé établi");
+      // `traiterCommande` rend la promesse d'adoption pour `artifact-config` :
+      // sans elle, un test ne saurait pas quand la configuration a pris.
+      await canal.onmessage({ data, ports });
+    },
+
+    /**
+     * Déclare la configuration d'artefacts comme le fait main.js.
+     * @param {Record<string, any>} config
+     */
+    async declarerConfig(config) {
+      if (!canal) await this.etablirCanal();
+      await this.commander({ type: "artifact-config", config });
+    },
+
+    /**
+     * Envoie un message sur le CANAL PUBLIC. Ne sert plus qu'à éprouver le
+     * refus : c'est exactement ce que fait un script injecté dans la coquille.
+     * @param {Record<string, any>} data
+     * @param {string} [url] URL du client émetteur
      */
     envoyerMessage(data, url = `${scope}index.html`) {
       dispatcher("message", {
         data,
-        source: { url },
+        source: { url, id: "intrus" },
         ports: [],
         waitUntil: () => {},
       });
@@ -196,7 +276,7 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
       await Promise.all(differes.splice(0));
     },
 
-    /** @param {Array<{ url: string }>} liste */
+    /** @param {Array<{ url: string, id?: string }>} liste */
     poserClients(liste) {
       clients = liste.map((client) => ({
         ...client,
@@ -206,6 +286,7 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
 
     misEnCache,
     messagesAuxClients,
+    messagesAuCanal,
     requetesReseau,
 
     /** Coupe les minuteries en cours et rend les globales à leur état d'avant. */

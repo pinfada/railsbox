@@ -1,0 +1,21 @@
+# Mise à jour des actions ÉPINGLÉES PAR SHA.
+#
+# L'épinglage par SHA ferme la fenêtre où un tag mobile (`@v4`) est redirigé
+# vers du code qu'on n'a pas relu — le vecteur qui a servi contre tj-actions.
+# Mais un SHA figé ne reçoit plus les correctifs : sans ce fichier, le dépôt
+# échangeait une compromission de chaîne d'approvisionnement contre une
+# obsolescence silencieuse. Dependabot rouvre une PR à chaque version, en
+# conservant le commentaire `# v4.4.0` qui rend le SHA lisible.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      # Les actions officielles bougent ensemble : une PR par semaine, pas une
+      # par action.
+      actions-officielles:
+        patterns:
+          - "actions/*"

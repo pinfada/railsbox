@@ -316,9 +316,22 @@ export function appRequestRefusal(
  * `HttpOnly` compris. Le même filtre ferme l'abus d'`artifact-config`, qui
  * détournerait le cache d'artefacts.
  *
- * Le critère est la frontière que le proxy possède déjà : `/app/*` est
- * l'espace de l'application, tout le reste de l'origine est la coquille. Un
- * document servi sous le préfixe applicatif n'est jamais la coquille.
+ * LE CRITÈRE EST UNE LISTE D'ADMISSION, PAS UNE LISTE D'EXCLUSION. Il a
+ * d'abord été écrit à l'envers : « tout ce qui n'est pas sous /app est la
+ * coquille ». Cette formulation donnait le privilège à n'importe quel document
+ * same-origin ouvert ailleurs sur l'origine — et RailsBox en sert : les
+ * fichiers racine extraits de l'image applicative (tools/extract-assets.sh)
+ * sont rendus depuis /disks/appstatic/ sous leur nom nu, `404.html` compris,
+ * sans la CSP applicative. Une page HTML TIERCE devenait ainsi une coquille.
+ * La coquille est un document que nous publions, à une adresse que nous
+ * connaissons : on la nomme, et tout le reste est refusé par défaut.
+ *
+ * CE QUE ÇA NE FERME PAS. Tant que l'iframe applicative porte
+ * `allow-same-origin` (public/index.html), le code qui s'y exécute atteint le
+ * document parent et peut poster depuis SON contexte : ce filtre ne survit
+ * alors pas à un XSS applicatif, quelle que soit sa précision. Il ferme la
+ * porte des documents voisins, pas celle du même realm. Voir
+ * docs/decisions/0008-separation-origine-de-l-application.md.
  * @param {string | null | undefined} clientUrl
  * @param {{ origin: string, basePath?: string }} self
  * @returns {boolean}
@@ -331,8 +344,135 @@ export function isShellClient(clientUrl, { origin, basePath = "/" }) {
     return false; // client sans URL exploitable : jamais la coquille
   }
   if (url.origin !== origin) return false;
-  const prefix = appPrefix(basePath);
-  return url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`);
+  const base = normalizeBasePath(basePath);
+  return url.pathname === `${base}/` || url.pathname === `${base}/index.html`;
+}
+
+// --- Canal de commande privé ----------------------------------------------
+//
+// LE FILTRE D'URL NE SUFFIT PAS, ET NE PEUT PAS SUFFIRE. `isShellClient` juge
+// sur `event.source.url`. Or un XSS applicatif n'est pas contraint d'émettre
+// depuis l'iframe : l'iframe porte `allow-same-origin`, donc son script atteint
+// `parent.document` et peut y ajouter un `<script src="/app/…">` — même
+// origine, donc autorisé par la CSP de la coquille (`script-src 'self'`). Ce
+// script s'exécute dans le REALM DE LA COQUILLE, et le message qu'il poste
+// porte l'URL de la coquille. Le filtre le laisse alors passer par
+// construction.
+//
+// La parade ne peut donc pas être un critère sur l'émetteur : elle doit être
+// une CAPACITÉ que l'attaquant n'a pas. C'est un `MessagePort` privé, créé par
+// la coquille avant qu'aucun contenu applicatif n'existe, gardé dans la
+// fermeture de son module, et jamais exposé à un objet joignable. Le worker
+// n'accepte les commandes que sur ce port ; le canal public ne sert plus qu'à
+// l'établir.
+//
+// Ce que cela ferme : un script injecté dans la coquille ne peut plus poser de
+// pont, réécrire la configuration des artefacts, dicter des cookies ni libérer
+// des lectures retenues — il ne détient pas le port, et ne peut pas le
+// fabriquer.
+//
+// Ce que cela ne ferme pas : voir
+// docs/decisions/0008-separation-origine-de-l-application.md.
+
+/**
+ * Établissement du canal. C'est une RÉPONSE, jamais une proposition : le
+ * message ne vaut que s'il porte le `nonce` d'une demande que le worker vient
+ * d'émettre vers ce client précis.
+ *
+ * Sans cette contrainte, un worker fraîchement redémarré — le navigateur le tue
+ * dès qu'il est inactif — adoptait le premier canal proposé. Un script injecté
+ * n'avait qu'à réveiller le worker et parler le premier.
+ */
+export const MESSAGE_ETABLIR_CANAL = "coquille-canal";
+
+/** Demande du worker à la coquille : « rétablis le canal », avec son nonce. */
+export const MESSAGE_CANAL_PERDU = "coquille-canal-request";
+
+/**
+ * Demande de la coquille au worker : « ouvre un tour de rétablissement ». Elle
+ * ne donne aucun droit — elle déclenche l'émission de nonces vers LES CLIENTS
+ * COQUILLE, chacun le sien. Un script injecté peut l'émettre ; il n'y gagne
+ * rien, puisqu'il perd le tour qui suit (voir `MESSAGE_CANAL_PERDU`).
+ */
+export const MESSAGE_CANAL_DEMANDE = "coquille-canal-demande";
+
+/**
+ * ACCUSÉ DE RÉCEPTION, posté sur le canal qui vient d'être adopté. Sans lui,
+ * une coquille ne savait pas si son canal avait pris : elle ne pouvait ni
+ * réessayer, ni relâcher les commandes qu'elle avait mises de côté.
+ */
+export const MESSAGE_CANAL_OK = "coquille-canal-ok";
+
+/** Refus explicite, pour que la coquille sache qu'il faut redemander. */
+export const MESSAGE_CANAL_REFUSE = "coquille-canal-refuse";
+
+/** Durée de vie d'un nonce de rétablissement. */
+export const TTL_NONCE_CANAL_MS = 10_000;
+
+/**
+ * Une réponse d'établissement est-elle recevable ?
+ *
+ * Trois conditions, et le nonce est CONSOMMÉ par l'appelant en cas d'accord :
+ *  - le nonce correspond à une demande réellement émise ;
+ *  - il n'a pas expiré ;
+ *  - il revient DU CLIENT à qui il a été adressé.
+ *
+ * La troisième ne protège pas d'un script injecté — il vit dans le même client
+ * que la coquille, et voit donc le même nonce. Ce qui le distingue est
+ * ailleurs : la coquille a posé son écouteur à l'évaluation de son module,
+ * avant que le moindre code étranger n'existe, et les écouteurs sont appelés
+ * dans leur ordre d'inscription. Elle répond donc la première, et le nonce est
+ * déjà consommé quand l'intrus répond. Voir docs/decisions/0008.
+ * @param {Map<string, { clientId: string | null, at: number }>} demandes
+ * @param {{ nonce: unknown, clientId: string | null, maintenant: number }} reponse
+ * @returns {{ accepte: boolean, raison: string }}
+ */
+export function verifierReponseCanal(demandes, { nonce, clientId, maintenant }) {
+  if (typeof nonce !== "string" || nonce === "") {
+    return { accepte: false, raison: "canal proposé sans nonce : le worker n'a rien demandé" };
+  }
+  const demande = demandes.get(nonce);
+  if (!demande) {
+    return { accepte: false, raison: "nonce inconnu ou déjà consommé" };
+  }
+  if (maintenant - demande.at > TTL_NONCE_CANAL_MS) {
+    return { accepte: false, raison: "nonce expiré" };
+  }
+  if (demande.clientId !== clientId) {
+    return { accepte: false, raison: "nonce revenu d'un autre client que son destinataire" };
+  }
+  return { accepte: true, raison: "" };
+}
+
+/**
+ * Retire les nonces périmés. Une coquille qui ne répond jamais ferait sinon
+ * enfler la table indéfiniment.
+ * @param {Map<string, { clientId: string | null, at: number }>} demandes
+ * @param {number} maintenant
+ */
+export function purgerDemandesCanal(demandes, maintenant) {
+  for (const [nonce, demande] of demandes) {
+    if (maintenant - demande.at > TTL_NONCE_CANAL_MS) demandes.delete(nonce);
+  }
+}
+
+// Commandes qui ne sont recevables QUE sur le canal privé. La liste est
+// ouverte par CONSTRUCTION : tout message ajouté ici devient inaccessible au
+// canal public, sans qu'aucun appelant n'ait à y penser.
+const COMMANDES_PRIVILEGIEES = new Set([
+  "artifact-config",
+  "bridge-port",
+  "cookies-document",
+  "session-restauree",
+]);
+
+/**
+ * Ce type de message commande-t-il le proxy ?
+ * @param {unknown} type
+ * @returns {boolean}
+ */
+export function estCommandePrivilegiee(type) {
+  return typeof type === "string" && COMMANDES_PRIVILEGIEES.has(type);
 }
 
 // Codes pour lesquels le constructeur Response interdit un corps.
@@ -497,11 +637,11 @@ export function relaxFrameAncestors(politique) {
  * @param {unknown} text
  */
 export function escapeHtml(text) {
-  return String(text).replace(
-    /[&<>"']/g,
-    (character) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character],
-  );
+  /** @type {Record<string, string>} */
+  const remplacements = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  // `?? character` n'est pas une précaution décorative : sans lui, un caractère
+  // hors table produirait « undefined » DANS le HTML.
+  return String(text).replace(/[&<>"']/g, (character) => remplacements[character] ?? character);
 }
 
 /**

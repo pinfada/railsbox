@@ -27,6 +27,10 @@ const UPSTREAM_CHUNK_BYTES = 1536;
 const NEWLINE = 0x0a;
 const CARRIAGE_RETURN = 0x0d;
 
+/**
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
 export function bytesToBase64(bytes) {
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += BASE64_CONVERT_CHUNK) {
@@ -35,6 +39,10 @@ export function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+/**
+ * @param {string} base64
+ * @returns {Uint8Array}
+ */
 export function base64ToBytes(base64) {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -48,6 +56,12 @@ export function base64ToBytes(base64) {
 // évite d'accumuler la réponse entière en chaîne (2 Mo de corps = 2,6 Mo de
 // chaîne monolithique + 2 Mo de binaire au même instant) avant de décoder.
 // Retourne le nombre d'octets écrits.
+/**
+ * @param {string} base64
+ * @param {Uint8Array} target
+ * @param {number} offset
+ * @returns {number} octets écrits
+ */
 export function decodeBase64Into(base64, target, offset) {
   const binary = atob(base64);
   if (offset + binary.length > target.length) {
@@ -117,6 +131,10 @@ export function buildRequestFrames(id, { method, path, headers, forwardHost, coo
 // invité reprend à la seconde où l'état a été capturé. Sans recalage, Rails
 // rejette les cookies de session et les jetons CSRF (vus comme expirés), et
 // toute vérification TLS échoue.
+/**
+ * @param {number | string} epochSeconds
+ * @returns {string}
+ */
 export function buildTimeSyncFrame(epochSeconds) {
   const seconds = Math.floor(Number(epochSeconds));
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -128,7 +146,13 @@ export function buildTimeSyncFrame(epochSeconds) {
 // Injection de variables d'environnement puis relance du serveur applicatif,
 // à chaud : c'est ce qui permet de réparer une configuration manquante depuis
 // le navigateur, sans reconstruire l'image disque.
+/**
+ * @param {string} id
+ * @param {Record<string, unknown>} variables
+ * @returns {string}
+ */
 export function buildEnvironmentFrame(id, variables) {
+  /** @type {Record<string, string>} */
   const cleaned = {};
   for (const [name, value] of Object.entries(variables)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) continue;
@@ -142,10 +166,15 @@ export function buildEnvironmentFrame(id, variables) {
   return `${FRAME_MAGIC} ENV ${id} ${encoded}\n`;
 }
 
+/**
+ * @param {string} id
+ * @returns {string}
+ */
 export function buildRestartFrame(id) {
   return `${FRAME_MAGIC} RST ${id}\n`;
 }
 
+/** @param {string} line */
 export function parseFrameLine(line) {
   if (!line.startsWith(`${FRAME_MAGIC} `)) return null;
   const parts = line.split(" ");
@@ -182,6 +211,7 @@ export function createLineAssembler(onLine) {
 
   return {
     stats,
+    /** @param {number} byte */
     feedByte(byte) {
       stats.bytes += 1;
       if (byte === NEWLINE) {
@@ -233,6 +263,7 @@ export function createResponseAssembler({
   const lastTransfer = { bytes: 0, milliseconds: 0, kilobytesPerSecond: 0 };
   return {
     lastTransfer,
+    /** @param {string} line */
     handleLine(line) {
       const frame = parseFrameLine(line);
       if (frame === null) {
@@ -299,6 +330,7 @@ export function createResponseAssembler({
 }
 
 // Sépare une réponse HTTP brute en tête texte + corps binaire.
+/** @param {Uint8Array} bytes */
 export function splitHttpResponse(bytes) {
   for (let index = 0; index + 3 < bytes.length; index += 1) {
     if (

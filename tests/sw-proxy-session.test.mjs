@@ -18,6 +18,18 @@ const SCOPE = "http://localhost/";
 const MORCEAU = urlMorceau(SCOPE);
 
 /**
+ * Les notifications reçues sur le canal privé, débarrassées de l'accusé de
+ * réception et des demandes que le worker adresse à toute coquille qui vient
+ * d'établir le canal (« redonne-moi la configuration, redonne-moi le pont »).
+ * Ce sont deux conversations différentes sur le même fil.
+ * @param {{ messagesAuCanal: any[] }} worker
+ */
+const notifications = (worker) =>
+  worker.messagesAuCanal.filter(
+    (message) => !String(message.type).endsWith("-request") && message.type !== "coquille-canal-ok",
+  );
+
+/**
  * Charge un worker qui répond ce qu'on lui dit, morceau par morceau.
  * @param {Array<any> | ((request: Request) => any)} reponses
  */
@@ -27,8 +39,9 @@ async function banc(reponses) {
     scope: SCOPE,
     repondre: file ? () => file.shift() : /** @type {any} */ (reponses),
   });
+  worker.poserClients([{ url: `${SCOPE}index.html`, id: "coquille-1" }]);
+  await worker.etablirCanal();
   await worker.declarerConfig(configFactice(SCOPE));
-  worker.poserClients([{ url: `${SCOPE}index.html` }]);
   return worker;
 }
 
@@ -121,9 +134,9 @@ test("un refus de session ne rend RIEN à v86 et prévient la coquille", async (
 
     assert.equal(resolue, false, "la lecture est RETENUE, pas rendue : v86 la croit lente");
     assert.deepEqual(
-      worker.messagesAuxClients.map((envoi) => envoi.message),
+      notifications(worker),
       [{ type: "session-expiree" }],
-      "la coquille est prévenue une fois",
+      "la coquille est prévenue une fois, par son canal privé",
     );
     assert.deepEqual(worker.misEnCache, [], "un refus n'entre jamais dans le cache");
   } finally {
@@ -137,7 +150,7 @@ test("« session-restauree » rejoue la lecture, qui aboutit en 200 mis en cache
   try {
     const promesse = worker.requeter(MORCEAU);
     await new Promise((r) => setTimeout(r, 20));
-    worker.envoyerMessage({ type: "session-restauree" });
+    await worker.commander({ type: "session-restauree" });
 
     const reponse = await promesse;
     assert.equal(reponse.status, 200, "la lecture aboutit après rétablissement");
@@ -161,7 +174,7 @@ test("une rafale de morceaux ne produit qu'UNE notification", async () => {
     worker.requeter(`${SCOPE}disks/essai-4194304-8388608.ext2.zst`);
     worker.requeter(`${SCOPE}disks/essai-8388608-12582912.ext2.zst`);
     await new Promise((r) => setTimeout(r, 20));
-    assert.equal(worker.messagesAuxClients.length, 1, "une seule notification pour l'épisode");
+    assert.equal(notifications(worker).length, 1, "une seule notification pour l'épisode");
   } finally {
     worker.fermer();
   }
@@ -179,7 +192,7 @@ test("toutes les lectures retenues repartent ensemble au rétablissement", async
     ];
     await new Promise((r) => setTimeout(r, 20));
     refuser = false;
-    worker.envoyerMessage({ type: "session-restauree" });
+    await worker.commander({ type: "session-restauree" });
     const statuts = (await Promise.all(promesses)).map((r) => r.status);
     assert.deepEqual(statuts, [200, 200]);
   } finally {
@@ -187,34 +200,140 @@ test("toutes les lectures retenues repartent ensemble au rétablissement", async
   }
 });
 
-test("l'iframe applicative ne peut pas libérer les lectures retenues", async () => {
-  // `session-restauree` est filtré par `isShellClient` comme le pont et la
-  // configuration : un XSS de l'application relancerait sinon des lectures de
-  // disque sous une session qu'il n'a pas.
+test("le canal PUBLIC ne libère aucune lecture, même sous l'URL de la coquille", async () => {
+  // L'ATTAQUE RÉELLE, réduite à ce qui la caractérise. Un XSS de l'application
+  // n'émet pas depuis l'iframe : il ajoute un `<script src="/app/…">` au DOM du
+  // parent, et ce script s'exécute DANS la coquille. Son message porte donc
+  // l'URL de la coquille, et `isShellClient` ne peut pas l'en distinguer.
+  //
+  // Les deux émetteurs sont éprouvés ensemble : celui que le filtre d'URL
+  // écartait déjà, et celui qu'il ne pouvait pas écarter.
+  for (const emetteur of [`${SCOPE}app/panneau`, `${SCOPE}index.html`]) {
+    const worker = await banc(() => refus());
+    try {
+      const promesse = worker.requeter(MORCEAU);
+      let resolue = false;
+      promesse.then(() => (resolue = true));
+      await new Promise((r) => setTimeout(r, 20));
+      worker.envoyerMessage({ type: "session-restauree" }, emetteur);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(resolue, false, `lecture toujours retenue — émetteur ${emetteur}`);
+    } finally {
+      worker.fermer();
+    }
+  }
+});
+
+test("un second canal est refusé tant que la coquille qui le tient est ouverte", async () => {
+  // Sans cette règle, la capacité s'annulerait d'un « qui parle en dernier » :
+  // le script injecté proposerait son propre canal et prendrait la place. Il
+  // s'exécute dans la coquille VIVANTE — la condition qu'il lui faudrait
+  // (porteur disparu) est précisément celle qu'il ne peut pas produire.
   const worker = await banc(() => refus());
   try {
-    const promesse = worker.requeter(MORCEAU);
-    let resolue = false;
-    promesse.then(() => (resolue = true));
-    await new Promise((r) => setTimeout(r, 20));
-    worker.envoyerMessage({ type: "session-restauree" }, `${SCOPE}app/panneau`);
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(resolue, false, "la lecture reste retenue : le message a été refusé");
+    const intrus = await worker.etablirCanal({ url: `${SCOPE}index.html`, id: "coquille-1" });
+    assert.equal(intrus, null, "aucun second canal n'est adopté");
   } finally {
     worker.fermer();
   }
 });
 
-test("seule la coquille est prévenue, jamais l'iframe applicative", async () => {
+test("un canal est ré-adopté quand la coquille qui le tenait a disparu", async () => {
+  // Le pendant nécessaire : une page rechargée doit pouvoir reprendre la main,
+  // sans quoi le proxy resterait muet jusqu'à la mort du worker.
   const worker = await banc(() => refus());
-  worker.poserClients([{ url: `${SCOPE}index.html` }, { url: `${SCOPE}app/tableau` }]);
+  try {
+    worker.poserClients([{ url: `${SCOPE}index.html`, id: "coquille-2" }]);
+    const repris = await worker.etablirCanal({ url: `${SCOPE}index.html`, id: "coquille-2" });
+    assert.notEqual(repris, null, "la nouvelle coquille reprend le canal");
+  } finally {
+    worker.fermer();
+  }
+});
+
+test("aucune notification ne part sur le canal public", async () => {
+  // Ce qui garde la session ne dépend plus de l'URL des clients : les
+  // notifications ne quittent le worker que par le canal privé. Le canal
+  // public ne porte plus qu'une chose, et elle n'accorde aucun droit : la
+  // demande de rétablir le canal.
+  const worker = await banc(() => refus());
+  worker.poserClients([
+    { url: `${SCOPE}index.html`, id: "coquille-1" },
+    { url: `${SCOPE}app/tableau`, id: "app-1" },
+  ]);
   try {
     worker.requeter(MORCEAU);
     await new Promise((r) => setTimeout(r, 20));
-    assert.deepEqual(
-      worker.messagesAuxClients.map((envoi) => envoi.url),
-      [`${SCOPE}index.html`],
+    const publics = worker.messagesAuxClients.filter(
+      (envoi) => envoi.message?.type !== "coquille-canal-request",
     );
+    assert.deepEqual(publics, [], "aucune notification ne part en clair");
+    assert.deepEqual(notifications(worker), [{ type: "session-expiree" }]);
+  } finally {
+    worker.fermer();
+  }
+});
+
+test("un canal PROPOSÉ sans nonce est refusé, même quand le worker n'en a aucun", async () => {
+  // LE FOND DE LA CORRECTION. Un worker redémarré n'a plus de canal : il
+  // adoptait alors le premier proposé, et un script injecté n'avait qu'à le
+  // réveiller et parler avant la coquille. Il n'y a plus de proposition — il y
+  // a des RÉPONSES à un tour que le worker seul ouvre.
+  const worker = await chargerWorker({ scope: SCOPE, repondre: () => refus() });
+  worker.poserClients([{ url: `${SCOPE}index.html`, id: "coquille-1" }]);
+  try {
+    const spontane = await worker.repondreAuTour({ nonce: undefined });
+    assert.equal(spontane, null, "aucune adoption sans nonce");
+    const invente = await worker.repondreAuTour({ nonce: "nonce-invente-par-l-intrus" });
+    assert.equal(invente, null, "aucune adoption sur un nonce inconnu");
+  } finally {
+    worker.fermer();
+  }
+});
+
+test("un nonce ne sert qu'UNE fois — celui qui répond le second perd", async () => {
+  // La course entre la coquille et un script injecté DANS la coquille : tous
+  // deux voient le même nonce, puisqu'ils vivent dans le même client. Ce qui
+  // les départage est l'ordre — la coquille a inscrit son écouteur à
+  // l'évaluation de son module, avant que l'intrus n'existe. Ici, on éprouve
+  // la seule chose qui dépende du worker : le second arrivé est refusé.
+  const worker = await chargerWorker({ scope: SCOPE, repondre: () => refus() });
+  worker.poserClients([{ url: `${SCOPE}index.html`, id: "coquille-1" }]);
+  try {
+    const tour = await worker.ouvrirTour();
+    assert.equal(tour.length, 1, "un nonce, pour le seul client coquille");
+    const premier = await worker.repondreAuTour({ nonce: tour[0].nonce });
+    assert.notEqual(premier, null, "le premier arrivé obtient le canal");
+    const second = await worker.repondreAuTour({ nonce: tour[0].nonce });
+    assert.equal(second, null, "le nonce est consommé : le second n'obtient rien");
+  } finally {
+    worker.fermer();
+  }
+});
+
+test("un nonce ne vaut que pour le client auquel il a été adressé", async () => {
+  const worker = await chargerWorker({ scope: SCOPE, repondre: () => refus() });
+  worker.poserClients([
+    { url: `${SCOPE}index.html`, id: "coquille-1" },
+    { url: `${SCOPE}index.html`, id: "coquille-2" },
+  ]);
+  try {
+    const tour = await worker.ouvrirTour();
+    assert.equal(tour.length, 2, "un nonce par coquille, chacun le sien");
+    const detourne = await worker.repondreAuTour({ nonce: tour[0].nonce, id: "coquille-2" });
+    assert.equal(detourne, null, "le nonce d'un autre client ne vaut rien");
+  } finally {
+    worker.fermer();
+  }
+});
+
+test("aucun tour n'est ouvert tant que la coquille qui commande est vivante", async () => {
+  // Sans cette règle, un script injecté obtiendrait un tour à volonté et
+  // pourrait retenter sa chance indéfiniment.
+  const worker = await banc(() => refus());
+  try {
+    const tour = await worker.ouvrirTour();
+    assert.deepEqual(tour, [], "le worker n'émet aucun nonce : il a déjà son canal");
   } finally {
     worker.fermer();
   }
@@ -228,7 +347,7 @@ test("un 401 SANS l'en-tête convenu n'est pas retenu : il est rendu", async () 
   try {
     const reponse = await worker.requeter(MORCEAU);
     assert.equal(reponse.status, 401);
-    assert.deepEqual(worker.messagesAuxClients, [], "aucune coquille dérangée");
+    assert.deepEqual(notifications(worker), [], "aucune coquille dérangée");
   } finally {
     worker.fermer();
   }
@@ -239,7 +358,8 @@ test("un artefact HORS configuration est retenu lui aussi", async () => {
   // pas (SW redémarré, configuration pas encore déclarée) doit être retenu de
   // la même façon — c'est v86 qui gèle, pas le cache.
   const worker = await chargerWorker({ scope: SCOPE, repondre: () => refus() });
-  worker.poserClients([{ url: `${SCOPE}index.html` }]);
+  worker.poserClients([{ url: `${SCOPE}index.html`, id: "coquille-1" }]);
+  await worker.etablirCanal();
   try {
     const promesse = worker.requeter(MORCEAU);
     let resolue = false;
@@ -248,9 +368,7 @@ test("un artefact HORS configuration est retenu lui aussi", async () => {
     assert.equal(resolue, false, "retenue sans qu'aucune configuration ne soit connue");
     // Le worker redemande AUSSI la configuration qui lui manque : les deux
     // messages coexistent, et c'est bien celui de la session qu'on veut voir.
-    const sessions = worker.messagesAuxClients.filter(
-      (envoi) => envoi.message.type === "session-expiree",
-    );
+    const sessions = notifications(worker).filter((message) => message.type === "session-expiree");
     assert.equal(sessions.length, 1);
   } finally {
     worker.fermer();

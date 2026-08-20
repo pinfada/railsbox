@@ -26,7 +26,15 @@ import {
   appPrefix,
   appRequestRefusal,
   errorPage,
+  MESSAGE_CANAL_DEMANDE,
+  MESSAGE_CANAL_OK,
+  MESSAGE_CANAL_PERDU,
+  MESSAGE_CANAL_REFUSE,
+  MESSAGE_ETABLIR_CANAL,
+  estCommandePrivilegiee,
+  purgerDemandesCanal,
   isShellClient,
+  verifierReponseCanal,
   parseRootStaticIndex,
   prepareProxyHeaders,
   responseBodyFor,
@@ -119,8 +127,43 @@ const COOKIE_DB_NAME = "railsbox-cookies";
 const COOKIE_STORE = "jars";
 const COOKIE_KEY = new URL(sw.registration.scope).pathname;
 
+/**
+ * État vivant du worker. Il est ANNOTÉ plutôt que déduit : sans cela, chaque
+ * champ initialisé à `null` prenait le type `null`, et `tsc --strict` refusait
+ * ensuite toute affectation réelle — le contrôle ne portait plus sur rien.
+ * @typedef {object} EtatWorker
+ * @property {MessagePort | null} bridgePort
+ * @property {MessagePort | null} canalCoquille
+ * @property {string | null} canalClientId
+ * @property {Map<string, { clientId: string | null, at: number }>} demandesCanal
+ * @property {Array<{ resolve: (port: MessagePort) => void }>} portWaiters
+ * @property {Map<number, { resolve: Function, reject: Function, timer: any }>} pending
+ * @property {number} nextId
+ * @property {{ name: string, cache: Cache, artifacts: any } | null} artifacts
+ * @property {number} lastConfigRequest
+ * @property {{ at: number, estimate: StorageEstimate | null } | null} storageEstimate
+ * @property {Promise<Set<string>> | null} rootStatic
+ * @property {Set<string>} warned
+ * @property {Promise<void> | null} cookiesRestored
+ * @property {Promise<IDBDatabase> | null} cookieDb
+ * @property {string} documentCookie
+ * @property {Map<number, (valeur: string) => void>} cookieAsks
+ * @property {number} nextCookieAsk
+ * @property {number} cookieAskFailures
+ */
+
+/** @type {EtatWorker} */
 const state = {
   bridgePort: null,
+  // Canal de commande PRIVÉ (shared/proxy-logic.js) : le port sur lequel la
+  // coquille — et elle seule, parce qu'elle seule le détient — commande le
+  // proxy. `canalClientId` retient QUEL client l'a posé : tant que ce client
+  // vit, aucun autre canal n'est adopté.
+  canalCoquille: null,
+  canalClientId: null,
+  // Demandes de retablissement en vol : nonce -> { clientId, at }. Un canal
+  // n'est adopte qu'en REPONSE a l'une d'elles, et le nonce est consomme.
+  demandesCanal: new Map(),
   portWaiters: [],
   pending: new Map(), // id -> { resolve, reject, timer }
   nextId: 1,
@@ -160,52 +203,194 @@ sw.addEventListener("activate", (event) =>
   event.waitUntil(Promise.all([sw.clients.claim(), dropStaleFormatCaches()])),
 );
 
-// Les messages de commande du worker — le pont vers la VM, l'identité des
-// artefacts, les cookies visibles du document — ne sont acceptés QUE du
-// document coquille. L'iframe de l'application est un client same-origin comme
-// un autre : sans ce filtre, un XSS dans l'application posait son propre
-// `bridge-port` et recevait chaque descripteur de requête, `cookie:` en clair
-// (donc les cookies `HttpOnly`). Le filtre s'applique par CONSTRUCTION à tout
-// message de cette liste, y compris `cookies-document`, arrivé plus tard : un
-// client applicatif ne peut donc pas non plus dicter au proxy des cookies que
-// le navigateur ne lui montre pas.
-// La décision est pure et testée : shared/proxy-logic.js.
-// `session-restauree` rejoint la liste par CONSTRUCTION protégée : le filtre
-// s'applique à tout ce qui y figure, donc l'iframe applicative ne peut pas
-// libérer elle-même des requêtes retenues — un XSS de l'application relancerait
-// sinon des lectures de disque sous une session qu'il n'a pas.
-const MESSAGES_COQUILLE = new Set([
-  "artifact-config",
-  "bridge-port",
-  "cookies-document",
-  "session-restauree",
-]);
-
+// LE CANAL PUBLIC NE PORTE PLUS AUCUNE COMMANDE.
+//
+// Il a d'abord porté les commandes elles-mêmes, filtrées sur l'URL du client
+// émetteur (`isShellClient`). Ce filtre est nécessaire — il écarte l'iframe
+// applicative et tout document voisin — mais il ne peut pas être suffisant :
+// un XSS de l'application ajoute un `<script src="/app/…">` au DOM du parent,
+// ce script s'exécute DANS la coquille, et son message porte donc l'URL de la
+// coquille. Rien dans l'émetteur ne le distingue.
+//
+// Ce qui le distingue, c'est ce qu'il ne détient pas : le port privé, créé par
+// la coquille et gardé dans la fermeture de son module.
+//
+// Il reste ici DEUX messages, et aucun n'accorde de droit :
+//  - `coquille-canal-demande` fait ouvrir un tour de rétablissement ;
+//  - `coquille-canal` RÉPOND à un tour, avec le nonce qu'il portait.
+// `isShellClient` filtre les deux : deux gardes valent mieux qu'une.
 sw.addEventListener("message", (event) => {
-  if (!MESSAGES_COQUILLE.has(event.data?.type)) return;
-  if (!isShellClient(sourceUrl(event), { origin: sw.location.origin, basePath: BASE_PATH })) {
+  const type = event.data?.type;
+  if (estCommandePrivilegiee(type)) {
     warnOnce(
-      "client-refuse",
-      `message « ${event.data.type} » refusé : seul le document coquille commande le proxy`,
+      "canal-public",
+      `commande « ${type} » refusée sur le canal public : le proxy ne se ` +
+        "commande que sur le canal privé de la coquille",
     );
     return;
   }
-  if (event.data.type === "artifact-config") {
-    event.waitUntil(adoptArtifactConfig(event.data.config));
+  if (type !== MESSAGE_ETABLIR_CANAL && type !== MESSAGE_CANAL_DEMANDE) return;
+  if (!isShellClient(sourceUrl(event), { origin: sw.location.origin, basePath: BASE_PATH })) {
+    warnOnce("client-refuse", "canal refusé : seul le document coquille commande le proxy");
     return;
   }
-  if (event.data.type === "cookies-document") {
-    deliverDocumentCookies(event.data);
+  if (type === MESSAGE_CANAL_DEMANDE) {
+    event.waitUntil(reclamerCanal());
     return;
   }
-  if (event.data.type === "session-restauree") {
+  event.waitUntil(adopterCanalCoquille(event));
+});
+
+/**
+ * Adopte le canal privé — SEULEMENT en réponse à un tour de rétablissement.
+ *
+ * La proposition spontanée est morte, et c'est le fond de la correction : un
+ * worker redémarré (le navigateur le tue dès qu'il est inactif) adoptait le
+ * premier canal venu. Un script injecté n'avait qu'à réveiller le worker et
+ * parler avant la coquille.
+ *
+ * Désormais il faut un nonce, émis par le worker vers un client donné, à usage
+ * unique et périssable. L'intrus voit le même nonce que la coquille — il vit
+ * dans le même client — mais il répond APRÈS elle : la coquille a inscrit son
+ * écouteur à l'évaluation de son module, avant que le moindre code étranger
+ * n'existe, et les écouteurs sont appelés dans leur ordre d'inscription. Quand
+ * l'intrus répond, le nonce est déjà consommé.
+ * @param {ExtendableMessageEvent} event
+ */
+async function adopterCanalCoquille(event) {
+  const port = event.ports[0];
+  if (!port) return;
+  const emetteur = /** @type {any} */ (event.source);
+  const clientId = typeof emetteur?.id === "string" ? emetteur.id : null;
+  const verdict = verifierReponseCanal(state.demandesCanal, {
+    nonce: event.data?.nonce,
+    clientId,
+    maintenant: Date.now(),
+  });
+  if (!verdict.accepte) {
+    warnOnce("canal-refuse", `canal refusé : ${verdict.raison}`);
+    emetteur?.postMessage?.({ type: MESSAGE_CANAL_REFUSE, raison: verdict.raison });
+    return;
+  }
+  // CONSOMMÉ, et tous les autres nonces du même tour avec lui : le tour est
+  // clos, plus rien de ce qu'il a émis ne vaut.
+  state.demandesCanal.clear();
+
+  state.canalCoquille = port;
+  state.canalClientId = clientId;
+  port.onmessage = (message) => traiterCommande(message);
+  port.start?.();
+  // ACCUSÉ DE RÉCEPTION. Sans lui, la coquille ne savait pas si son canal avait
+  // pris : elle ne pouvait ni relâcher ce qu'elle avait mis de côté, ni
+  // redemander. C'est ce qui manquait au passage de relais entre onglets.
+  port.postMessage({ type: MESSAGE_CANAL_OK });
+  // Une coquille qui vient de (r)établir le canal est prête à répondre : on lui
+  // redemande ce que le redémarrage a fait perdre, plutôt que d'attendre que la
+  // première requête échoue.
+  demanderALaCoquille({ type: "artifact-config-request" });
+  if (!state.bridgePort) demanderALaCoquille({ type: "bridge-port-request" });
+}
+
+/**
+ * Abandonne le canal courant. Appelé quand son porteur a disparu, ou quand il
+ * s'est révélé incapable de servir — un onglet qui ne pilote plus la VM tient
+ * sinon le proxy en otage.
+ */
+function abandonnerCanal() {
+  if (!state.canalCoquille) return;
+  state.canalCoquille.onmessage = null;
+  state.canalCoquille = null;
+  state.canalClientId = null;
+}
+
+/**
+ * Une commande arrivée sur le canal privé. Aucun contrôle d'émetteur ici : le
+ * port EST le contrôle — le posséder, c'est être la coquille.
+ * @param {MessageEvent} event
+ */
+function traiterCommande(event) {
+  const data = event.data;
+  if (!estCommandePrivilegiee(data?.type)) return undefined;
+  if (data.type === "artifact-config") {
+    // La promesse est RENDUE plutôt qu'oubliée : un `MessagePort` n'offre pas
+    // de `waitUntil`, et le banc de test n'aurait sinon aucun moyen de savoir
+    // quand la configuration a pris.
+    return adoptArtifactConfig(data.config);
+  }
+  if (data.type === "cookies-document") {
+    deliverDocumentCookies(data);
+    return undefined;
+  }
+  if (data.type === "session-restauree") {
     const liberees = retentionSession.restaurer();
     if (liberees > 0) console.info(`[sw] session rétablie — ${liberees} lecture(s) rejouée(s)`);
-    return;
+    return undefined;
   }
-  if (!event.ports[0]) return;
-  adoptBridgePort(event.ports[0]);
-});
+  if (event.ports[0]) adoptBridgePort(event.ports[0]);
+  return undefined;
+}
+
+/**
+ * Parle à la coquille par le canal privé.
+ *
+ * Quand il n'y en a pas — worker redémarré — on ne se rabat PAS sur un envoi
+ * public de la commande : on ouvre un tour de rétablissement, et c'est la
+ * coquille qui reprendra la conversation. Un repli public rouvrirait
+ * exactement la porte que ce canal ferme.
+ * @param {Record<string, unknown>} message
+ * @returns {boolean} vrai si le message est parti par le canal privé
+ */
+function demanderALaCoquille(message) {
+  if (state.canalCoquille) {
+    state.canalCoquille.postMessage(message);
+    return true;
+  }
+  reclamerCanal();
+  return false;
+}
+
+/**
+ * Ouvre un tour de rétablissement : un nonce par client coquille, chacun le
+ * sien, tous périssables.
+ *
+ * Le tour n'a lieu QUE si le worker n'a pas de canal utilisable. Tant que le
+ * porteur courant vit, aucun nonce n'est émis — c'est ce qui empêche un script
+ * injecté d'obtenir un tour à volonté pour tenter sa chance.
+ *
+ * La disparition du porteur est VÉRIFIÉE ici, pas supposée : un onglet fermé ou
+ * rechargé laisse le worker avec un port mort, sur lequel il parlerait dans le
+ * vide. C'est ce qui bloquait le passage de relais entre onglets.
+ */
+async function reclamerCanal() {
+  if (state.canalCoquille) {
+    const porteur = state.canalClientId
+      ? await sw.clients.get(state.canalClientId).catch(() => undefined)
+      : undefined;
+    if (porteur) return;
+    abandonnerCanal();
+  }
+  const maintenant = Date.now();
+  purgerDemandesCanal(state.demandesCanal, maintenant);
+  const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of clientList) {
+    if (!isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH })) continue;
+    const nonce = nonceCanal();
+    state.demandesCanal.set(nonce, { clientId: client.id ?? null, at: maintenant });
+    client.postMessage({ type: MESSAGE_CANAL_PERDU, nonce });
+  }
+}
+
+/**
+ * Nonce de rétablissement. `randomUUID` là où il existe, tirage explicite
+ * sinon : ce qui compte est qu'il soit imprévisible, jamais qu'il soit joli.
+ * @returns {string}
+ */
+function nonceCanal() {
+  const cryptographie = /** @type {any} */ (globalThis).crypto;
+  if (typeof cryptographie?.randomUUID === "function") return cryptographie.randomUUID();
+  const octets = cryptographie.getRandomValues(new Uint8Array(16));
+  return [...octets].map((octet) => octet.toString(16).padStart(2, "0")).join("");
+}
 
 /**
  * URL du client émetteur d'un message. `event.source` peut aussi être un
@@ -231,9 +416,16 @@ function ensureBridgePort() {
   const waiting = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       state.portWaiters = state.portWaiters.filter((w) => w.resolve !== wrapped.resolve);
+      // LE CANAL EST ABANDONNÉ AVEC LA REQUÊTE. Le porteur a été sollicité et
+      // n'a pas répondu : soit il a disparu sans que le worker l'ait vu, soit
+      // il ne pilote plus la VM. Le garder reviendrait à laisser un onglet
+      // muet tenir le proxy en otage — la lecture suivante ouvrira un tour de
+      // rétablissement, et l'onglet qui pilote pourra reprendre la main.
+      abandonnerCanal();
       reject(new Error("La page hôte n'a pas fourni le pont VM (est-elle ouverte ?)"));
     }, PORT_RECOVERY_TIMEOUT_MS);
     const wrapped = {
+      /** @param {MessagePort} port */
       resolve: (port) => {
         clearTimeout(timer);
         resolve(port);
@@ -245,13 +437,11 @@ function ensureBridgePort() {
   return waiting;
 }
 
-async function requestPortFromClients() {
-  const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
-  for (const client of clientList) {
-    client.postMessage({ type: "bridge-port-request" });
-  }
+function requestPortFromClients() {
+  demanderALaCoquille({ type: "bridge-port-request" });
 }
 
+/** @param {any} data */
 function resolvePending(data) {
   if (data?.type !== "http-response") return;
   const entry = state.pending.get(data.id);
@@ -282,14 +472,11 @@ function resolvePending(data) {
  * qui n'a rien à déclarer (aucune configuration lue) recevrait sinon un
  * message par morceau.
  */
-async function requestArtifactConfigFromClients() {
+function requestArtifactConfigFromClients() {
   const now = Date.now();
   if (now - state.lastConfigRequest < CONFIG_REQUEST_INTERVAL_MS) return;
   state.lastConfigRequest = now;
-  const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
-  for (const client of clientList) {
-    client.postMessage({ type: "artifact-config-request" });
-  }
+  demanderALaCoquille({ type: "artifact-config-request" });
 }
 
 /**
@@ -313,7 +500,7 @@ async function adoptArtifactConfig(config) {
     // Cache Storage indisponible (mode privé, stockage refusé) : on continue
     // sans cache, tout le reste du Service Worker fonctionne à l'identique.
     state.artifacts = null;
-    warnOnce("ouverture", `cache d'artefacts indisponible (${error.message}) — réseau seul`);
+    warnOnce("ouverture", `cache d'artefacts indisponible (${messageErreur(error)}) — réseau seul`);
   }
 }
 
@@ -323,7 +510,7 @@ async function dropStaleFormatCaches() {
     const names = await caches.keys();
     await Promise.all(staleFormatCacheNames(names).map((stale) => caches.delete(stale)));
   } catch (error) {
-    warnOnce("purge", `purge des caches obsolètes impossible (${error.message})`);
+    warnOnce("purge", `purge des caches obsolètes impossible (${messageErreur(error)})`);
   }
 }
 
@@ -417,13 +604,8 @@ async function rejouerApresSession(request, refus) {
  * l'état de la session du visiteur.
  * @param {Record<string, unknown>} message
  */
-async function notifierCoquilles(message) {
-  const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
-  for (const client of clientList) {
-    if (isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH })) {
-      client.postMessage(message);
-    }
-  }
+function notifierCoquilles(message) {
+  demanderALaCoquille(message);
 }
 
 /**
@@ -467,7 +649,7 @@ async function storeArtifact(cache, url, response) {
     // retéléchargé la prochaine fois.
     warnOnce(
       "ecriture",
-      `mise en cache impossible (${error.message}) — retéléchargement plus tard`,
+      `mise en cache impossible (${messageErreur(error)}) — retéléchargement plus tard`,
     );
     await discardBody(response);
   }
@@ -507,6 +689,22 @@ async function hasStorageRoom(bytes) {
 /**
  * Journalise une fois par motif : un cache saturé produirait sinon une ligne
  * par morceau, ce qui noierait la console au moment où elle sert le plus.
+ * @param {string} reason
+ * @param {string} message
+ */
+/**
+ * Message lisible d'une valeur attrapée. `catch` reçoit n'importe quoi — une
+ * `Error`, mais aussi ce qu'une API du navigateur ou un `fetch` injecté peut
+ * lancer. Lire `.message` sans vérifier était une hypothèse, et elle plantait
+ * dans la branche qui gère déjà une panne.
+ * @param {unknown} error
+ * @returns {string}
+ */
+function messageErreur(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
  * @param {string} reason
  * @param {string} message
  */
@@ -712,7 +910,7 @@ async function proxyToVm(request, url) {
     const headers = await harvestCookies(reply.headers, url.pathname);
     return buildResponse(reply, headers);
   } catch (error) {
-    return errorResponse(502, `Pont HTTP en erreur: ${error.message}`);
+    return errorResponse(502, `Pont HTTP en erreur: ${messageErreur(error)}`);
   }
 }
 
@@ -765,17 +963,17 @@ async function cookieHeaderFor(requestPath) {
  * `bridge-port` et `artifact-config`, à ceci près que le sens de la demande est
  * inversé (c'est le worker qui interroge).
  *
- * CE QUE ÇA NE DONNE À PERSONNE. On n'interroge que les clients qui passent
- * `isShellClient` — jamais l'iframe applicative, qui pourrait sinon dicter au
- * proxy des cookies que le navigateur ne lui montre pas. Aucun secret ne
+ * CE QUE ÇA NE DONNE À PERSONNE. La demande part sur le CANAL PRIVÉ et la
+ * réponse n'est reçue que là : ni l'iframe applicative, ni un script injecté
+ * dans la coquille ne peuvent dicter au proxy des cookies que le navigateur ne
+ * leur montre pas — ils ne détiennent pas le port. Aucun secret ne
  * circule dans ce sens : la demande est vide, la réponse ne peut porter que ce
  * que le navigateur expose déjà à la page (jamais un `HttpOnly`), le bocal
  * reste autoritaire à la fusion, et `mergeBrowserCookies` rejoue sur ce qui
  * revient les validations d'`ingest` (`isTransmissibleCookie`).
  *
- * Clients CONTRÔLÉS uniquement : un client que ce worker ne contrôle pas n'a
- * pas de `controller`, donc aucun moyen de répondre — l'interroger ne
- * coûterait qu'un délai d'attente.
+ * Sans canal établi — worker fraîchement redémarré — on ne se rabat pas sur un
+ * envoi public : on réclame le canal, et la requête suivante en profitera.
  * @returns {Promise<Array<{ name: string, value: string, path: string }>>}
  */
 async function documentCookies() {
@@ -791,19 +989,19 @@ async function documentCookies() {
  * @returns {Promise<void>}
  */
 async function refreshDocumentCookies() {
-  const clientList = await sw.clients.matchAll({ type: "window" });
-  const coquilles = clientList.filter((client) =>
-    isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH }),
-  );
-  if (coquilles.length === 0) return;
+  if (!state.canalCoquille) {
+    reclamerCanal();
+    return;
+  }
   const id = state.nextCookieAsk++;
   const reponse = new Promise((resolve) => {
     state.cookieAsks.set(id, resolve);
     setTimeout(() => state.cookieAsks.delete(id), DOCUMENT_COOKIE_ABANDON_MS);
   });
-  // Toutes les coquilles ouvertes sont interrogées, la première réponse gagne :
-  // elles sont same-origin, donc elles voient le même magasin.
-  for (const client of coquilles) client.postMessage({ type: "cookies-document-request", id });
+  // Une seule coquille commande le proxy : c'est elle, et elle seule, qu'on
+  // interroge. La demande part par le canal privé — un document injecté dans la
+  // coquille ne peut ni la voir ni y répondre.
+  demanderALaCoquille({ type: "cookies-document-request", id });
   if (state.cookieAskFailures >= DOCUMENT_COOKIE_MAX_ATTENTES) return;
   const arrivee = await Promise.race([reponse, retarder(DOCUMENT_COOKIE_TIMEOUT_MS)]);
   if (arrivee !== RETARD) return;
@@ -832,6 +1030,7 @@ function retarder(delai) {
 function deliverDocumentCookies(data) {
   if (typeof data.cookie !== "string") return;
   state.documentCookie = data.cookie;
+  if (typeof data.id !== "number") return;
   const resoudre = state.cookieAsks.get(data.id);
   if (!resoudre) return;
   state.cookieAsks.delete(data.id);
@@ -861,6 +1060,11 @@ async function harvestCookies(rawHeaders, requestPath) {
   return headers;
 }
 
+/**
+ * @param {MessagePort} bridgePort
+ * @param {any} descriptor
+ * @param {ArrayBuffer | null} body
+ */
 function sendToBridge(bridgePort, descriptor, body) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -928,7 +1132,10 @@ async function restoreCookies() {
     });
     if (Array.isArray(saved)) cookieJar.load(saved);
   } catch (error) {
-    warnOnce("cookies-lecture", `bocal à cookies non restauré (${error.message}) — session neuve`);
+    warnOnce(
+      "cookies-lecture",
+      `bocal à cookies non restauré (${messageErreur(error)}) — session neuve`,
+    );
   }
 }
 
@@ -945,7 +1152,7 @@ async function persistCookies() {
   } catch (error) {
     // Le bocal en mémoire reste valide : seule sa survie au redémarrage du
     // worker est perdue. La requête en cours, elle, aboutit normalement.
-    warnOnce("cookies-ecriture", `bocal à cookies non persisté (${error.message})`);
+    warnOnce("cookies-ecriture", `bocal à cookies non persisté (${messageErreur(error)})`);
   }
 }
 

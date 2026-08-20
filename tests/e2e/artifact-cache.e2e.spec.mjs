@@ -10,6 +10,8 @@
 // Aucun artefact de public/disks/ n'est requis : le test pose ses propres
 // leurres et les retire ensuite. Il tourne donc en CI.
 import { expect, test } from "@playwright/test";
+
+import { COQUILLE_NUE, installerCanalCoquille } from "./coquille-nue.mjs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -21,10 +23,11 @@ const DISKS_DIR = fileURLToPath(new URL("../../public/disks/", import.meta.url))
 // hôte github.io. Un prédicat de zone fondé sur l'origine l'a déjà manquée.
 const HORS_ZONE_DIR = fileURLToPath(new URL("../../public/e2e-autre-depot/", import.meta.url));
 const CHUNK_BYTES = 4 * 1024 * 1024;
-// Page hôte volontairement inexistante : elle sert de document dans la portée
-// du Service Worker sans déclencher main.js, donc sans tenter de booter une
-// VM. Le test n'observe que le cache, rien d'autre.
-const HOST_PATH = "/e2e-cache-hote";
+// LA coquille, à son adresse réelle : elle seule commande le proxy depuis
+// que `isShellClient` est une liste d'admission. Le marqueur `coquille=nue`
+// la fait servir sans son chargeur, donc sans boot de VM — ce test
+// n'observe que le cache.
+const HOST_PATH = COQUILLE_NUE;
 const SERVICE_WORKER_TIMEOUT_MS = 30_000;
 const CACHE_TIMEOUT_MS = 10_000;
 
@@ -92,8 +95,11 @@ async function installWorker(page) {
  */
 async function declareConfig(page, config) {
   await page.evaluate((value) => {
-    const nav = /** @type {any} */ (globalThis).navigator;
-    nav.serviceWorker.controller.postMessage({ type: "artifact-config", config: value });
+    // Par le CANAL PRIVÉ : le worker n'accepte plus aucune commande ailleurs.
+    /** @type {any} */ (globalThis).__coquille.commander({
+      type: "artifact-config",
+      config: value,
+    });
   }, config);
   await page.waitForFunction(
     async (expected) => {
@@ -146,6 +152,7 @@ test.describe("Cache des artefacts immuables", () => {
     }
     page = await browser.newPage();
     await installWorker(page);
+    await installerCanalCoquille(page);
   });
 
   test.afterAll(async () => {
@@ -178,6 +185,9 @@ test.describe("Cache des artefacts immuables", () => {
     await rm(`${DISKS_DIR}e2e-temoin-0-4194304.ext2.zst`, { force: true });
 
     await page.goto(HOST_PATH); // rechargement complet, comme un visiteur qui revient
+    // Le rechargement a emporté le canal privé avec le document : la coquille
+    // le rétablit, exactement comme main.js au démarrage.
+    await installerCanalCoquille(page);
     await declareConfig(page, config);
 
     const seconde = await readFromPage(page, PART);
@@ -214,6 +224,7 @@ test.describe("Cache des artefacts immuables", () => {
 
     await rm(`${DISKS_DIR}e2e-cache-state.bin-0-4194304.gz`, { force: true });
     await page.goto(HOST_PATH); // le visiteur qui revient
+    await installerCanalCoquille(page);
     await declareConfig(page, config);
 
     const seconde = await readFromPage(page, STATE_PART);

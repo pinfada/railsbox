@@ -62,10 +62,12 @@ const STRIPPED_RESPONSE_HEADERS = new Set([
   "content-length",
 ]);
 
+/** @param {unknown} value */
 export function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
+/** @param {unknown} method */
 export function sanitizeMethod(method) {
   const upper = String(method).toUpperCase();
   if (!ALLOWED_METHODS.has(upper)) {
@@ -74,6 +76,7 @@ export function sanitizeMethod(method) {
   return upper;
 }
 
+/** @param {unknown} rawPath */
 export function sanitizeAppPath(rawPath) {
   if (typeof rawPath !== "string" || !rawPath.startsWith("/")) {
     throw new Error("Chemin invalide (doit commencer par /)");
@@ -90,6 +93,7 @@ export function sanitizeAppPath(rawPath) {
   return rawPath;
 }
 
+/** @param {unknown} host */
 export function sanitizeForwardHost(host) {
   if (typeof host !== "string" || host.length === 0) return null;
   return HOST_PATTERN.test(host) ? host : null;
@@ -117,7 +121,12 @@ export function sanitizeCookieHeader(value) {
   return value;
 }
 
+/**
+ * @param {Iterable<[unknown, unknown]> | null | undefined} entries
+ * @returns {Array<[string, string]>}
+ */
 export function filterRequestHeaders(entries) {
+  /** @type {Array<[string, string]>} */
   const kept = [];
   for (const [name, value] of entries ?? []) {
     const lowerName = String(name).toLowerCase();
@@ -134,6 +143,7 @@ export function filterRequestHeaders(entries) {
 }
 
 // Chemins (vus depuis la VM) des fichiers d'échange d'une requête donnée.
+/** @param {unknown} headText */
 export function parseCurlHeaders(headText) {
   const blocks = String(headText)
     .split(/\r?\n\r?\n/)

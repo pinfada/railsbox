@@ -83,13 +83,18 @@ de force :
 1. **Le gain est nul** — voir « Le facteur déterminant ». Le segment coûteux
    est `<depot>`, et il n'est pas négociable.
 2. **Le préfixe est une frontière de privilège, pas seulement du routage.**
-   `isShellClient()` (`proxy-logic.js:244-254`) décide qui a le droit de poster
-   `bridge-port` et `artifact-config` au worker, et son unique critère est
-   « sous le préfixe = application, hors du préfixe = coquille ». Le commentaire
-   l. 232-239 dit ce qui est en jeu : un client autorisé à tort reçoit chaque
-   descripteur de requête, `cookie:` en clair, **les cookies `HttpOnly`
-   compris**. Sans préfixe applicatif, ce critère n'existe plus — un document
+   `isShellClient()` (`proxy-logic.js`) décide quels documents peuvent seulement
+   PROPOSER le canal de commande du worker. Sans préfixe applicatif, un document
    servi par l'application deviendrait indiscernable de la coquille.
+
+   > Mise à jour du 20/08/2026 — ce point disait à l'origine que ce critère
+   > décidait « qui a le droit de poster `bridge-port` et `artifact-config` ».
+   > Ce n'est plus vrai, et ce n'était déjà pas suffisant : les commandes ne
+   > voyagent plus que sur un `MessagePort` privé, parce qu'un XSS applicatif
+   > s'exécute dans la coquille elle-même et qu'aucun critère d'adresse ne l'en
+   > distingue ([ADR 0008](0008-separation-origine-de-l-application.md)). Le
+   > préfixe reste une frontière — de routage, de CSP, et de qui peut proposer
+   > un canal — mais il n'est plus ce qui garde le pont.
    `appRequestRefusal()` (l. 193-224) repose sur la même frontière.
 3. **`/` est déjà pris, et ne peut pas être partagé.** Le document de chargement
    de la sandbox et la route racine de l'application se disputeraient la même
