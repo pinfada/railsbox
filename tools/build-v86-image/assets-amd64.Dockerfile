@@ -52,6 +52,13 @@ RUN set -eu; \
 # lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
 # une chaîne tierce dans une commande.
 #
+# LE PAQUET `nodejs` DE DEBIAN NE LIVRE PAS COREPACK : `corepack enable` y échoue
+# en « not found ». Le défaut était latent — la ligne existait pour pnpm sans
+# avoir jamais été exercée par une construction réelle — et il est apparu au
+# premier vrai build avec yarn, sur woofed-crm. On l'installe donc si besoin,
+# puis on VÉRIFIE le shim : sans cette vérification, l'échec surviendrait bien
+# plus loin, sur une commande d'installation introuvable.
+#
 # `corepack enable pnpm` (ou `yarn`) ne fait qu'installer un shim : rien n'est téléchargé
 # tant que pnpm n'est pas invoqué DANS le projet, où il provisionne alors la
 # version exacte demandée. C'est aussi ce shim que `jsbundling-rails`
@@ -61,8 +68,10 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN set -eu; \
     case "$PACKAGE_MANAGER" in \
       npm) : ;; \
-      pnpm) corepack enable pnpm ;; \
-      yarn) corepack enable yarn ;; \
+      pnpm|yarn) \
+        command -v corepack >/dev/null 2>&1 || npm install -g corepack; \
+        corepack enable "$PACKAGE_MANAGER"; \
+        command -v "$PACKAGE_MANAGER" >/dev/null ;; \
       *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
     esac
 
