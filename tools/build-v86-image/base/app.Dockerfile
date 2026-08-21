@@ -160,6 +160,18 @@ while IFS= read -r brut; do
   # et ce sont eux qui gonflent le plus vite un disque applicatif de 512 Mo.
   case "$brut" in
     /usr/share/doc/*|/usr/share/man/*|/usr/share/lintian/*|/usr/share/locale/*) continue ;;
+    # CE QUI NE SERT QU'À COMPILER ET À LIER n'a rien à faire dans la VM. Les
+    # paquets `-dev` sont installés parce que les gems natives en ont besoin AU
+    # BUILD ; leurs archives statiques et leurs en-têtes ne sont jamais chargés
+    # à l'exécution, où seul le `.so` compte.
+    #
+    # Mesuré le 21/08/2026 sur woofed-crm : surcouche de 230 Mo, dont 84 Mo
+    # d'archives `.a` et 21 Mo d'en-têtes. 105 Mo sur 230 — et l'application
+    # passait de 633 Mo à 528 Mo pour la seule géométrie de 512 Mo. Même classe
+    # de défaut que les résidus `.o` du bundle, sur l'autre arbre.
+    *.a|*.la) continue ;;
+    /usr/include/*) continue ;;
+    /usr/lib/*/pkgconfig/*|/usr/share/pkgconfig/*|/usr/share/aclocal/*) continue ;;
     /) continue ;;
   esac
   # Debian a fusionné /usr : /lib, /bin et /sbin sont des LIENS vers /usr/…, et
