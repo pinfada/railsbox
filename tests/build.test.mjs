@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { formatReport } from "../tools/detect/report.mjs";
 import {
   DB_PREPARE_MIGRATE,
@@ -789,6 +790,28 @@ test("le RÉSUMÉ et la COMMANDE ne peuvent pas diverger", () => {
       // par habitude : structure.sql se lit autrement.
       assert.ok(ligne.includes(manifest.schemaFile), trace);
     }
+  }
+});
+
+test("LES DEUX CHEMINS DE CONSTRUCTION portent le même défaut de préparation", () => {
+  // railsbox construit de deux façons : monolithique (build.sh + Dockerfile) et
+  // découplée (build-app-disk.sh + base/app.Dockerfile), cette dernière étant
+  // celle que la chaîne PUBLIQUE emploie. Le défaut du second était resté à
+  // `db:prepare` quand le premier a cessé de semer — invisible, parce que
+  // l'argument est toujours passé explicitement. Un défaut n'a pas le droit de
+  // contredire l'invariant qu'il est censé porter.
+  const dockerfiles = [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ];
+
+  for (const chemin of dockerfiles) {
+    const defaut = /^ARG DB_PREPARE_COMMAND="([^"]*)"/m.exec(readFileSync(chemin, "utf8"));
+
+    assert.ok(defaut, `${chemin} doit déclarer ARG DB_PREPARE_COMMAND`);
+    assert.equal(defaut[1], DB_PREPARE_SCHEMA, chemin);
+    assert.doesNotMatch(defaut[1], /db:prepare/, `${chemin} ne doit plus préparer-et-semer`);
+    assert.doesNotMatch(defaut[1], /db:seed/, `${chemin} ne doit pas semer`);
   }
 });
 
