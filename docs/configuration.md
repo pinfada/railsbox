@@ -294,6 +294,13 @@ peut échouer sur une vieille migration qui ne tourne plus sous Rails récent
 (sans repli — un choix explicite doit échouer bruyamment), et cela ne répare
 **que la sandbox** : l'application reste cassée partout ailleurs.
 
+Une précision qui compte : dès que la préparation **rejoue** les migrations —
+par cette clé, ou par l'un des deux replis automatiques — ce diagnostic
+s'INVERSE. Il devient `data-bearing-migration-rejouee`, informatif, et dit
+l'inverse : ces lignes **seront** insérées dans la sandbox, et le défaut ne
+reste entier qu'ailleurs. Son remède change avec lui : conseiller
+`database_prepare: migrate` à qui l'obtient déjà n'aurait aucun sens.
+
 #### Plusieurs bases déclarées : le repli est **automatique**
 
 Une application peut déclarer plusieurs bases sous une même clé

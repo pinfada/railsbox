@@ -1069,6 +1069,9 @@ test("detectApp relève la migration porteuse de données et l'annonce en averti
     ".ruby-version": "3.3.12\n",
     "db/migrate/20260514210000_create_currencies.rb": MIGRATION_INSERT,
     "db/migrate/20240101000000_ddl.rb": MIGRATION_DDL,
+    // Le schéma versionné est INDISPENSABLE à ce scénario : sans lui, la
+    // préparation rejoue les migrations et l'avertissement serait faux.
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
   });
   const { manifest, findings } = await detectApp(dir);
   assert.deepEqual(manifest.dataMigrations, ["20260514210000_create_currencies.rb"]);
@@ -1079,6 +1082,47 @@ test("detectApp relève la migration porteuse de données et l'annonce en averti
   assert.match(finding.message, /db\/migrate\/20260514210000_create_currencies\.rb/);
   assert.match(finding.message, /db\/schema\.rb/);
   assert.ok(REMEDIES["data-bearing-migration"]);
+});
+
+test("quand la préparation rejoue les migrations, le constat s'INVERSE", async () => {
+  // Le piège : garder l'avertissement tel quel ferait chercher au mainteneur une
+  // table vide qui sera pleine, et lui conseillerait `database_prepare: migrate`
+  // — exactement ce que railsbox vient de faire tout seul.
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": LOCK_MINIMAL,
+    ".ruby-version": "3.3.12\n",
+    "db/migrate/20260514210000_create_currencies.rb": MIGRATION_INSERT,
+  });
+
+  const { findings } = await detectApp(dir);
+  const finding = findByCode(findings, "data-bearing-migration-rejouee");
+
+  assert.equal(finding.severity, "info");
+  // Un code DISTINCT, parce que le remède l'est : conseiller
+  // `database_prepare: migrate` ici proposerait ce que railsbox fait déjà.
+  assert.equal(findings.filter((f) => f.code === "data-bearing-migration").length, 0);
+  assert.ok(REMEDIES["data-bearing-migration-rejouee"]);
+  assert.doesNotMatch(REMEDIES["data-bearing-migration-rejouee"], /database_prepare: migrate/);
+  assert.match(finding.message, /seront bien\s+insérées/);
+  assert.doesNotMatch(finding.message, /ne seront jamais insérées/);
+  // Le défaut applicatif, lui, reste dit : ailleurs, la table sera vide.
+  assert.match(finding.message, /db\/schema\.rb/);
+});
+
+test("un schéma secondaire manquant inverse aussi le constat", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": LOCK_MINIMAL,
+    ".ruby-version": "3.3.12\n",
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+    "db/migrate/20260514210000_create_currencies.rb": MIGRATION_INSERT,
+  });
+
+  const { findings } = await detectApp(dir);
+
+  assert.equal(findByCode(findings, "data-bearing-migration-rejouee").severity, "info");
 });
 
 test("une application sans db/migrate ne produit aucun diagnostic de migration", async () => {

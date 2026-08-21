@@ -735,7 +735,11 @@ export async function detectApp(appDir, options = {}) {
     )
   ).filter((chemin) => chemin !== null);
   const dataMigrations = scanDataMigrations(migrations);
-  findings.push(...dataMigrationFindings(dataMigrations));
+  // La réserve sur les migrations porteuses n'a de sens que si le schéma est
+  // RÉELLEMENT chargé : les deux replis de la préparation les font tourner.
+  findings.push(
+    ...dataMigrationFindings(dataMigrations, schemaFile !== null && schemasManquants.length === 0),
+  );
   const ssl = detectSsl(productionRb);
   findings.push(...ssl.findings);
   const assets = detectAssets(packageJson);

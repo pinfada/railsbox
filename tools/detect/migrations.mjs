@@ -11,7 +11,10 @@
 // d'une validation absurde (« attendu : » suivi du vide).
 //
 // Le constat ne tient pas au NOM de la tâche : il tient au chargement d'un
-// schéma, quelle que soit la commande qui le déclenche.
+// schéma, quelle que soit la commande qui le déclenche — et il TOMBE quand la
+// préparation rejoue les migrations au lieu de charger un schéma, ce que
+// railsbox fait dès qu'il n'y en a pas, ou qu'il en manque un pour une base
+// secondaire.
 //
 // Module PUR : il reçoit des textes, il rend des noms de fichiers et des
 // raisons. La lecture du disque appartient à detect.mjs.
@@ -157,18 +160,45 @@ function nameFiles(migrations) {
  *
  * Ce que railsbox doit, c'est le DIAGNOSTIC qui manquait : nommer les fichiers,
  * expliquer le mécanisme, et rappeler ce que Rails recommande.
+ *
+ * Il existe deux cas où la préparation ne CHARGE PAS le schéma : aucun schéma
+ * versionné, ou une déclaration de bases multiples dont un schéma manque. Ce
+ * n'est pas une bascule en douce — railsbox la dit — mais elle change le
+ * constat du tout au tout : les migrations tournent, donc les lignes arrivent.
+ * D'où `chargeLeSchema`.
  * @param {readonly DataMigration[]} migrations migrations porteuses de données
+ * @param {boolean} [chargeLeSchema] `false` si la préparation rejoue les migrations
  * @returns {Finding[]} diagnostics, vide si aucune migration n'écrit
  */
-export function dataMigrationFindings(migrations) {
+export function dataMigrationFindings(migrations, chargeLeSchema = true) {
   if (!Array.isArray(migrations) || migrations.length === 0) return [];
   const raisons = [...new Set(migrations.flatMap((entry) => entry.reasons))].join(", ");
+  const combien =
+    `${migrations.length} migration${migrations.length > 1 ? "s écrivent" : " écrit"} des ` +
+    `données (${raisons}) : ${nameFiles(migrations)}.`;
+  // Quand la préparation REJOUE les migrations — parce qu'aucun schéma n'est
+  // versionné, ou qu'une déclaration de bases multiples en réclame un qui
+  // manque — ces lignes SONT insérées. Annoncer le contraire ferait chercher
+  // au mainteneur une panne qui n'aura pas lieu, et lui conseiller
+  // `database_prepare: migrate` qui est déjà ce que railsbox fait.
+  if (!chargeLeSchema) {
+    return [
+      createFinding(
+        SEVERITY.INFO,
+        "data-bearing-migration-rejouee",
+        `${combien} La préparation rejouant tout l'historique ici, ces lignes seront bien ` +
+          "insérées dans la sandbox. Le défaut reste entier ailleurs : toute base recréée " +
+          "depuis db/schema.rb — rails db:setup, base de CI, review app — obtiendra la même " +
+          "table vide.",
+        { files: migrations.map((entry) => entry.file) },
+      ),
+    ];
+  }
   return [
     createFinding(
       SEVERITY.WARNING,
       "data-bearing-migration",
-      `${migrations.length} migration${migrations.length > 1 ? "s écrivent" : " écrit"} des ` +
-        `données (${raisons}) : ${nameFiles(migrations)}. railsbox prépare la base avec ` +
+      `${combien} railsbox prépare la base avec ` +
         "le chargement du schéma versionné, qui sur une base VIERGE pose db/schema.rb — la structure, " +
         "pas les données — et marque toutes les migrations comme appliquées sans en jouer " +
         "aucune : ces lignes ne seront jamais insérées, et une validation qui s'y réfère " +

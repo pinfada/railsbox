@@ -263,6 +263,13 @@ migration that no longer runs under a recent Rails (with no fallback — an
 explicit choice must fail loudly), and it fixes **the sandbox only**: the
 application stays broken everywhere else.
 
+One thing that matters: as soon as preparation **replays** migrations — through
+this key, or through either automatic fallback — this diagnostic INVERTS. It
+becomes `data-bearing-migration-rejouee`, informational, and says the opposite:
+those rows **will** be inserted in the sandbox, and the defect only remains
+elsewhere. Its remedy changes with it: recommending `database_prepare: migrate`
+to someone who already gets it would make no sense.
+
 #### Several declared databases: the fallback is **automatic**
 
 An application may declare several databases under one environment key. That is
