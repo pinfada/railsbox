@@ -313,6 +313,7 @@ if [ "${ASSETS_STAGE:-aucun}" = "amd64" ]; then
   docker build --platform linux/amd64 $NO_CACHE -f "$SCRIPT_DIR/assets-amd64.Dockerfile" \
     --build-arg "RUBY_VERSION=$RUBY_VERSION" \
     --build-arg "NPM_ASSETS=${NPM_ASSETS:-0}" \
+    --build-arg "EXTRA_PACKAGES=${EXTRA_PACKAGES:-}" \
     --build-arg "NPM_INSTALL_COMMAND=${NPM_INSTALL_COMMAND:-}" \
     --build-arg "PACKAGE_MANAGER=${PACKAGE_MANAGER:-npm}" \
     --build-arg "ASSET_SCRIPTS=${ASSET_SCRIPTS:-}" \

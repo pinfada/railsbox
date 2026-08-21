@@ -815,6 +815,37 @@ test("LES DEUX CHEMINS DE CONSTRUCTION portent le même défaut de préparation"
   }
 });
 
+test("TOUT étage qui compile des gems accepte EXTRA_PACKAGES, et on le lui passe", () => {
+  // Deuxième divergence du même genre : les en-têtes déduits du Gemfile.lock
+  // n'arrivaient qu'au disque i386. Or `bundle install` tourne AUSSI à l'étage
+  // amd64 de précompilation, et une gem sans variante binaire y compile —
+  // webp-ffi y a fait échouer la construction découplée, celle de la chaîne
+  // publique, alors que la monolithique passait.
+  const etages = [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+  ];
+  for (const chemin of etages) {
+    const texte = readFileSync(chemin, "utf8");
+
+    assert.match(texte, /^ARG EXTRA_PACKAGES=/m, `${chemin} doit déclarer l'ARG`);
+    assert.match(texte, /\$\{?EXTRA_PACKAGES\}?/, `${chemin} doit s'en servir`);
+  }
+
+  // Déclarer l'ARG ne suffit pas : sans --build-arg, il reste vide et le
+  // symptôme est le même. Les deux scripts de construction doivent le passer.
+  for (const chemin of [
+    "tools/build-v86-image/build.sh",
+    "tools/build-v86-image/build-app-disk.sh",
+  ]) {
+    assert.match(
+      readFileSync(chemin, "utf8"),
+      /--build-arg "EXTRA_PACKAGES=/,
+      `${chemin} doit transmettre EXTRA_PACKAGES`,
+    );
+  }
+});
+
 test("une valeur non reconnue retombe sur le chargement du schéma", () => {
   for (const strategy of ["auto", "", null, undefined, "Migrate"]) {
     assert.equal(

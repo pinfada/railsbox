@@ -30,11 +30,20 @@ ENV DEBIAN_FRONTEND=noninteractive
 # PLATFORM ici, contrairement au disque i386) ; ces paquets ne servent qu'aux
 # gems sans variante binaire. nodejs/npm n'est installé que si l'application a
 # une chaîne npm — l'économie est réelle sur une application Tailwind pure.
+#
+# EXTRA_PACKAGES porte les en-têtes que les gems natives DE CETTE APPLICATION
+# réclament, déduits de son Gemfile.lock (voir detect/gems.mjs et la table de
+# manifest-to-args.mjs). Il est INDISPENSABLE ici, et pas seulement au disque
+# i386 : `bundle install` tourne AUSSI à cet étage, et une gem sans variante
+# binaire y compile. webp-ffi l'a montré — « An error occurred while installing
+# webp-ffi (0.4.0) » faute de libwebp-dev, sur le seul chemin découplé.
 ARG NPM_ASSETS=0
+ARG EXTRA_PACKAGES=""
 RUN set -eu; \
     paquets="build-essential git curl ca-certificates openssl pkg-config \
       libyaml-dev zlib1g-dev libxml2-dev libxslt1-dev libsqlite3-dev libpq-dev"; \
     if [ "${NPM_ASSETS}" = 1 ]; then paquets="${paquets} nodejs npm"; fi; \
+    if [ -n "${EXTRA_PACKAGES}" ]; then paquets="${paquets} ${EXTRA_PACKAGES}"; fi; \
     apt-get update && apt-get install -y --no-install-recommends ${paquets} \
     && rm -rf /var/lib/apt/lists/*
 
