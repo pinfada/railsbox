@@ -6,10 +6,36 @@
 
 **railsbox turns a Rails application into a playable in-browser demo.** You drop
 a GitHub Actions workflow into your repository and get a public URL where Puma,
-your database and your native C gems run inside an emulated x86 Linux VM — no
+the database and your native C gems run inside an emulated x86 Linux VM — no
 server, no container, no bill.
 
-**See it right now → [pinfada.github.io/railsbox-demo](https://pinfada.github.io/railsbox-demo/)**
+**Try it now → [pinfada.github.io/railsbox-demo](https://pinfada.github.io/railsbox-demo/)**
+
+Real-world example: [Zealot 6.2.2 running in railsbox](https://pinfada.github.io/zealot/) —
+unofficial demonstration, application source unchanged.
+
+|                          |                                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| **Real Rails**           | your unmodified application: Puma, PostgreSQL or SQLite, your native gems, migrations and seeds        |
+| **In the browser**       | everything runs in the visitor's tab, and each visitor gets their own disposable instance              |
+| **No permanent server**  | static hosting is enough; the link never goes down and costs nothing                                   |
+
+---
+
+## I want to…
+
+| I want to…                                     | Go to                                                                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Try railsbox                                   | **[the demo](https://pinfada.github.io/railsbox-demo/)**                                                       |
+| Publish my open-source application             | **[Get started in 5 minutes](#get-started-in-5-minutes)** below                                                |
+| Publish from a private repository              | **[Private repository guide](docs/depot-prive.en.md)**                                                         |
+| Check whether my application is compatible     | **[Compatibility](docs/compatibilite.en.md)**                                                                  |
+| Configure PostgreSQL, seeds or assets          | **[Configuration](docs/configuration.en.md)**                                                                  |
+| Understand the limits and the security model   | **[Threat model](SECURITY.md)**                                                                                |
+| Know what loading costs                        | **[Performance](docs/performances.en.md)**                                                                     |
+| Ask a question                                 | **[Discussions · Q&A](https://github.com/pinfada/railsbox/discussions/categories/q-a)**                        |
+| Show my sandbox                                | **[Discussions · Show and tell](https://github.com/pinfada/railsbox/discussions/categories/show-and-tell)**    |
+| Contribute                                     | **[Contributing guide](CONTRIBUTING.md)**                                                                      |
 
 ---
 
@@ -19,14 +45,8 @@ server, no container, no bill.
 
 In your Rails repository, create `.github/workflows/sandbox.yml`:
 
-> **Is your repository private?** On a free account this block will build
-> without ever publishing anything visible — and without saying so. Read
-> "**[Private repository](#private-repository)**" before pasting: depending on
-> your plan it is either the same workflow or four more lines, with one
-> bootstrap command to run first.
-
 ```yaml
-name: Sandbox railsbox
+name: railsbox sandbox
 on:
   push:
     branches: [main, master] # ← your default branch
@@ -39,38 +59,31 @@ jobs:
       contents: write
 ```
 
+The railsbox repository is public: any repository can reference this workflow.
+
 > **Check the `branches:` line.** A filter that does not name your default
-> branch never triggers anything, and **GitHub does not tell you**: no error, no
-> run, nothing in the Actions tab — the workflow simply looks absent. Both names
-> are listed above so the copy-paste works on a `main` repository and on a
-> `master` one alike; keep yours and drop the other if you prefer. When in
-> doubt, trigger a first build by hand (`workflow_dispatch`, the *Run workflow*
-> button): if that works and a `push` does nothing, the filter is the culprit.
+> branch never triggers anything, and **GitHub does not tell you** — the workflow
+> simply looks absent. When in doubt, run the first build manually (_Run
+> workflow_ button).
 
-The railsbox repository is public, so any repository can reference this workflow
-directly.
+> **`@main` moves.** For a demo you show to other people, pin it:
+> `…/construire-sandbox.yml@v2.2.0`. The version in use is printed on the first
+> line of every sandbox boot log.
 
-> **`@main` moves. Pin a tag if your demo has to hold.**
-> `uses: pinfada/railsbox/.github/workflows/construire-sandbox.yml@v2.2.0`
-> gives you a frozen build chain; `@main` gives you fixes as they land, and the
-> risk that an upstream change alters your sandbox without warning. For a demo
-> you show to third parties, pin it. The version used is written on the first
-> line of every sandbox's boot log — it is the first thing you will be asked
-> for if you report a problem.
+> **Is your repository private?** This block will build without ever publishing
+> anything visible, and without saying so. Read the **[private repository
+> guide](docs/depot-prive.en.md)** before pasting.
 
 ### 2. Enable GitHub Pages on the `gh-pages` branch
 
-Push to `main` first: the first build is what **creates** the `gh-pages`
-branch — before that, GitHub will not offer it in the menu.
+Push first: the initial build is what **creates** `gh-pages`.
 
-*Settings → Pages → Source: Deploy from a branch → `gh-pages` / `(root)`.*
+_Settings → Pages → Source: Deploy from a branch → `gh-pages` / `(root)`._
 Every build republishes your demo at `https://<account>.github.io/<repo>/`.
 
-> **`gh-pages` is fully replaced on every build** (force-push, history reset:
-> the sandbox is regenerated from scratch, so keeping history would only pile
-> up dead binaries). If you already publish something else there — YARD docs, a
-> project site — **publish the sandbox elsewhere** using the `target-repo`
-> input (see "Workflow inputs").
+> **`gh-pages` is entirely replaced on every build.** If you already publish
+> something else there, publish the sandbox elsewhere with the `target-repo`
+> input (see "[Workflow inputs](docs/configuration.en.md)").
 
 ### 3. Paste the badge
 
@@ -78,383 +91,80 @@ Every build republishes your demo at `https://<account>.github.io/<repo>/`.
 [![Try with railsbox](https://<account>.github.io/<repo>/badge.svg)](https://<account>.github.io/<repo>/)
 ```
 
-The workflow prints this badge ready to paste, with your URLs, in every build
-summary. It is served by your own sandbox rather than by a third-party badge
-generator: nothing to maintain, and nothing that can go down without your demo
-going down too.
+The workflow prints this badge, filled in with your URLs, in the summary of
+every build. It is served by your own sandbox, not by a third-party generator.
 
-> **Pasting it is your job, and that is deliberate.** railsbox NEVER writes to
-> your default branch: it only pushes to `gh-pages`. Rewriting a repository's
-> README to slip a badge in would be an intrusion, and the day it goes wrong,
-> it goes wrong in your history. It does generate a full README **on the
-> `gh-pages` branch**, badge included — visible as such on a showcase
-> repository, whose default branch is `gh-pages`, but invisible on your source
-> repository, where it is not.
+> **You paste it yourself, and that is deliberate.** railsbox NEVER writes to
+> your default branch: it only pushes to `gh-pages`.
 
-> **The click opens the current tab.** GitHub strips `target="_blank"` from
-> READMEs whatever syntax you use — verified against its rendering API. No badge
-> in the ecosystem escapes this. Your readers still have middle-click.
-
-### Private repository
-
-On a public repository the three steps above are enough and everything is free:
-Actions and Pages both are. On a private repository they are not enough — and
-the failure is the kind you spend an evening on: the build passes, `gh-pages` is
-pushed, the Actions tab stays green, and **there is no page**. GitHub Pages does
-not serve a private repository on a free account, and it says so nowhere. That
-is exactly what happened to the first private repository installed with the
-public workflow: never a page, never a message.
-
-Two ways out, only one of them free:
-
-- **Pro, Team or Enterprise plan**: Pages does work from a private repository,
-  and the public workflow above works as is. Note what it publishes: **the site
-  itself is public** — only the code stays private. Actions minutes are still
-  billed.
-- **Any plan, free included**: the code stays private and the sandbox is
-  published to a dedicated **public showcase repository**. This is the
-  recommended path, and the only free one.
-
-The rest of this section describes the second one.
-
-#### 1. Bootstrap the showcase
-
-The workflow **creates nothing**: it pushes. Its token only has rights on the
-current repository, so it can neither create the showcase repository, nor add a
-key to it, nor write itself a secret. A script performs those steps from your
-machine, with your `gh` authentication — no extra token to create, and the
-private key it generates is wiped when it exits:
-
-```sh
-curl -fsSL -o amorcer-vitrine.sh https://raw.githubusercontent.com/pinfada/railsbox/main/tools/amorcer-vitrine.sh
-sh amorcer-vitrine.sh <account>/<source-repo> <account>/<showcase-repo>
-```
-
-Two lines, and no `curl … | sh`: the script asks you to confirm **on standard
-input**, which the pipe has already taken — it would either run without waiting
-for you or refuse to read. And on a project that spells out what it does not
-protect, swallowing a remote script sight unseen would be a poor signal on top.
-Download it, read it if you like, then run it.
-
-It creates the showcase **empty** (ticking "Add a README" at creation time would
-be enough to keep `main` as the default branch, and the repository page would
-stay blank to visitors), generates a dedicated key pair, installs the public one
-as a write deploy key on the showcase and the private one as the `PUBLISH_KEY`
-secret on your repository, pushes a placeholder `gh-pages` branch and **turns
-GitHub Pages on for it right away** — so there is nothing to enable after the
-first build. It **refuses rather than guesses**, and it refuses **before**
-creating anything: unauthenticated `gh`, a source repository that is unreachable
-or that you do not administer, a showcase aimed at someone else's personal
-account, an organisation that forbids public repositories, an existing showcase
-you do not administer or that is not public. An **already-bootstrapped**
-showcase, on the other hand, does not stop it: it resumes where it left off, and
-never touches an existing `gh-pages` branch — that would wipe a live demo.
-
-An existing bootstrap can be checked without changing anything:
-`sh amorcer-vitrine.sh --verifier <account>/<source-repo> <account>/<showcase-repo>`.
-
-#### 2. Paste this workflow
-
-```yaml
-name: Sandbox railsbox
-
-on:
-  workflow_dispatch: # ← on demand: see "The cost" below
-  # push:
-  #   branches: [main]
-
-jobs:
-  sandbox:
-    uses: pinfada/railsbox/.github/workflows/construire-sandbox.yml@main
-    permissions:
-      contents: write
-    with:
-      target-repo: <account>/<showcase-repo>
-    secrets:
-      publish-key: ${{ secrets.PUBLISH_KEY }}
-```
-
-`target-repo` says where to publish, `publish-key` is the write key the script
-installed: the workflow token is only valid for the current repository, it
-cannot write anywhere else. Without that secret, the build stops when it comes
-time to publish. The demo will be served at
-`https://<account>.github.io/<showcase-repo>/`, and that is the URL your badge
-points to.
-
-#### The cost
-
-On a private repository, Actions minutes are **billed**, and one railsbox build
-burns about **9** of them. With `on: push` that is nine minutes on every push to
-your default branch — including the commits that change nothing about what the
-demo shows. Hence the bare `workflow_dispatch` above: on a private repository,
-republish when you have something new to show, not on every `git push`.
-Uncomment the `push:` knowing what it costs.
-
-### What the workflow does, in ~9 minutes
-
-It reassembles the shared rootfs from the railsbox artifact repository, builds
-your application disk from the base image, runs your seeds, captures a
-post-boot memory snapshot, splits everything into compressed chunks and
-publishes the shell alongside it. **Your repository hosts about 130 MB** for the demo application — expect
-~150–350 MB for yours; the
-1.45 GB rootfs stays on the railsbox side.
-
-Tailwind, dart-sass and npm toolchains need no declaration: detection spots them
-and switches asset precompilation to an amd64 stage on its own. The build
-summary reports the stage it picked, the Ruby version and the detected database.
-
-### What your visitors get
-
-| What the visitor does | Measured |
-| --- | --- |
-| Application on screen | **~20–25 s** (snapshot restored) |
-| Downloaded to get there | ~32 MB from the artifact repository + the snapshot, in gzipped 4 MiB chunks (76 MB for the demo) |
-| Navigation, forms, POSTs | normal, served by the VM |
-
-While the visitor waits, a status bar names the current step and counts the
-seconds ("Step 5/5 · First page rendered by the VM · 31 s"). It exists because
-CPU-throttled measurement demanded it: the final phase — between all-green
-badges and the first painted page — takes 1 s on a desktop but up to 14 s on a
-slow device, with nothing to tell "almost there" from "stuck".
-
-The 1.45 GB shared rootfs is never downloaded whole: v86 reads only the chunks
-it touches, around thirty out of 363. And it reads them only once — the Service
-Worker keeps them in Cache Storage, so a returning visitor downloads nothing
-(see "[Artifact caching](docs/fonctionnement.en.md#artifact-caching)").
-
-**Browsers** — measured by the `npm run test:live` recipe against the published
-demo and a faithful local replica of the publication:
-
-| Engine | Shell | Service Worker | COI isolation | VM boot | App served | Artifact cache |
-| --- | --- | --- | --- | --- | --- | --- |
-| Chromium 151 | ok | ok | ok | 18–24 s | ok | ok |
-| Firefox 153 | ok | ok | ok | 21 s | ok | ok |
-| WebKit 26.5 | ok | ok | ok | 20 s | ok | ok |
-
-Only measured difference: the first request through the serial bridge costs
-about 6 s on Firefox versus 1 s elsewhere.
-
-**Mobile**: the shell is phone-ready — layout verified at 320, 390 and 393 px
-(`tests/e2e/coquille-mobile.e2e.spec.mjs`). The CPU is now measured for real.
-Playwright's mobile emulation only changes the viewport and the user agent;
-`npm run test:bridage` (`tests/bridage/`) **actually** slows the browser's
-execution thread through Chrome DevTools Protocol and replays the published
-sandbox boot at every rate. Two boots per rate, fresh context each time:
-
-| CPU throttling | App announced | App **visible** | 1st scaffold page | Next page |
-| --- | --- | --- | --- | --- |
-| 1× — desktop | 23.7 / 24.4 s | 24.7 / 25.5 s | 1.3 s | 0.3 s |
-| 4× — mid-range phone | 26.8 / 26.8 s | 30.4 / 31.2 s | 7.2 / 7.7 s | 1.6 / 2.2 s |
-| 6× — entry-level | 31.7 / 31.8 s | 39.0 / 39.4 s | 13.5 / 13.9 s | 3.1 / 4.4 s |
-| 8× — old device | 37.1 / 39.6 s | 49.7 / 54.0 s | 24.2 / 25.8 s | 5.3 / 8.0 s |
-
-**Boot does not break, it stretches**: never a failure, always two internal
-probes, and the slowest probe (1.3 s) stays eight times under the budget the
-shell gives it. Its growth (+60 % from 1× to 8×) barely comes from emulation
-either — the snapshot already did that work, and the "VM ready → app ready"
-phase only moves from 14.9 to 17.1 s — but from the loading path, snapshot
-decompression and caching included, which also runs on the throttled thread.
-
-**What really degrades is usage.** Every page served crosses Rails and then the
-serial bridge, both on the tab's CPU: the first scaffold page goes from 1.3 s to
-25 s, and later ones from 0.3 s to 5–8 s — slightly worse than proportional to
-the throttling. The practical threshold therefore sits **between 6× and 8×**: at
-4× the sandbox stays comfortable, at 6× it is slow but usable, at 8× expect a
-minute before the application shows up and a handful of seconds per click — good
-enough to show an application, not to work in it. That is also why the shell now
-displays the current boot step and elapsed time, all the way to the first
-**rendered** page: that last wait (1 s at 1×, but 12 to 15 s at 8×) happened
-under a row of already-green badges, with nothing to tell "it is coming" from
-"it is stuck".
-
-**What stays out of reach**: a **real**, physical phone. CDP throttling slows the
-execution thread; it reproduces neither a smaller CPU cache, nor mobile tab
-memory — reclaimed far sooner by the OS — nor thermal throttling after a few
-minutes of continuous emulation. Treat mobile as measured and workable, not
-guaranteed. Recipes run Chromium by default; `RAILSBOX_MOTEURS=tous` (or a list:
-`firefox,webkit`) widens `npm run test:live` and `npm run test:e2e` to all three
-— CPU throttling stays Chromium-only, for lack of a CDP equivalent elsewhere.
-Webviews that block Service Workers cannot work, by construction — the shell now
-tells the visitor so instead of failing silently.
-
-**Visitor CPU**: emulation runs on the tab's processor — that is the "server"
-each visitor brings. A tab hidden for more than 15 s suspends the VM and gives
-the CPU back; returning resumes it with the guest clock resynced. **Only one
-sandbox runs at a time per browser**: an exclusive lock (Web Locks) designates
-the active tab, and a second tab opened on the same sandbox boots no VM at all —
-it shows "already open in another tab" plus a button to take over here, at which
-point the other tab releases its own VM.
-
-**What the host must provide** — and GitHub Pages does: CORS `*`, `Range`
-requests, and nothing else. The `COOP`/`COEP` isolation headers that static
-hosting does not set are re-injected by the Service Worker.
+Budget **~9 minutes** per build and **~150–350 MB** hosted in your repository,
+depending on your application. Details in
+"[Performance](docs/performances.en.md)".
 
 ---
 
-## Who this is for
+## Compatibility at a glance
 
-**Ruby/Rails open source maintainers.** Your README shows code; it does not show
-your application. The "Try with railsbox" badge gives anyone reading your project
-a playable instance in one click — seeded with demo data, already signed in, with
-nothing to install and no account to create. The link never goes down and costs
-nothing, because there is no server behind it.
+|                        |                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------- |
+| **Ruby**               | 3.3.12 (provided by base `3.3-r2`, not configurable)                                                |
+| **Databases**          | SQLite and PostgreSQL; MySQL/MariaDB refused with an explicit report                                |
+| **Front-end managers** | npm, and pnpm through Corepack; yarn and bun are reported, not executed                             |
+| **Assets**             | importmap, Propshaft, Sprockets, Tailwind, dart-sass, npm chains (esbuild, cssbundling, jsbundling) |
+| **Not supported**      | outbound network, ActionCable and WebSockets                                                        |
 
-**B2B SaaS founders and product builders.** A permanent product demo with zero
-infrastructure: you choose what the visitor sees (`seed`), they land already
-authenticated (`auto_login` opens a session — a token-authenticated front end
-needs [the JWT
-recipe](docs/spa.en.md)), and the
-bill stays at zero on the day your link hits Hacker News. The non-negotiable trade-off: **nothing real may be shipped
-inside** — no live Stripe key, no OAuth credentials, no dump containing customer
-data. Everything that goes into a sandbox is public (see
-[`SECURITY.md`](SECURITY.md)).
-
-**Freelancers, job candidates, portfolios.** A recruiter clicks and sees the
-application running, not a screenshot. No paid cold start, no free tier that
-sleeps, no invoice arriving because the link worked too well.
-
-**Instructors, bootcamps, tutorial authors.** Thirty learners means thirty
-isolated environments: every learner is root in *their own* copy, nobody's
-mistakes leak into anybody else's, and there is nothing to install before
-starting. The isolation is the browser's, so it separates **visitors**, not
-tabs: two tabs of the same browser share one sandbox, and only one of them runs
-it at a time — the second one offers to take over. A refresh
-resets everything, and `?fresh=1` at the end of the URL ignores the snapshot
-and starts from a cold boot.
-
-Two more uses fall out of the same properties: **disposable pull request
-previews** (one sandbox per branch, published then forgotten) and **bug
-reproduction in an issue** (the exact broken state, attachable as a URL).
+The details, the base revisions, and what requires a change on your side:
+"[Compatibility](docs/compatibilite.en.md)".
 
 ---
 
-## What railsbox is NOT
+## Essential limits
 
-- **Not a production host.** railsbox exists to *show and let people try*, never
-  to *operate*. No live card payments, no database shared between your customers,
-  no state that outlives the tab: every visitor gets their own disposable copy.
-  An application that must take money, call third-party APIs or retain data does
-  not belong here.
-- **Not a VS Code replacement.** It is not a day-to-day development IDE, nor a
-  remote workspace: it is a **universal demo player**. You develop locally, as
-  before; railsbox publishes the result.
-- **Not a full Rails emulator.** ActionCable and WebSockets are out of scope,
-  outbound networking does not exist, and the speed is emulation speed — see
-  "[Known limits](#known-limits)".
-
-These refusals are **deliberate**. They are shortcomings if you compare railsbox
-to a hosting provider, and properties once you accept the framing: a sandbox has
-nothing to protect server-side, because there is no server.
+- **The whole artefact is public.** The disk image and the memory snapshot are
+  downloadable by anyone, and the visitor is root inside their VM. Never ship
+  real secrets or real data ([`SECURITY.md`](SECURITY.md)).
+- **Startup time varies.** Expect ~20–25 s on a desktop, more on a slow device
+  or a heavy application. Startup does not break, it stretches.
+- **No outbound network.** A gem that calls a remote service at boot will fail;
+  the analysis reports it before the build.
+- **No shared persistence.** Every visitor writes to their own copy, which
+  disappears with the tab. `F5` resets everything.
+- **This is not production hosting.** railsbox exists to _show and let people
+  try_, never to _operate_.
 
 ---
 
-## What is supported
+## Documentation and community
 
-| | Status |
-| --- | --- |
-| **SQLite** | validated end to end: `rails new` + Propshaft + importmap, published and booting online |
-| **PostgreSQL** | supported on the split base/app path, from base `3.3-r2` onward (the workflow default) |
-| **MySQL / MariaDB** | not supported: the build stops with an explicit report |
-| **importmap, Propshaft, Sprockets** | precompiled inside the i386 disk |
-| **Tailwind, dart-sass** | precompiled on an amd64 stage, copied into the i386 disk |
-| **npm toolchains** (esbuild, cssbundling, jsbundling) | same amd64 stage: `npm ci` then your build scripts |
-| **Redis, Sidekiq** | detected from `Gemfile.lock`, present in the base image |
+| Page                                                                                | What you will find                                                             |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| **[Configuration](docs/configuration.en.md)**                                          | `railsbox.yml`, workflow inputs, PostgreSQL, seeds, auto-login, system packages   |
+| **[Compatibility](docs/compatibilite.en.md)**                                          | what works, what is refused, the limits of the model                              |
+| **[Performance](docs/performances.en.md)**                                             | what a visitor downloads, per-engine and throttled-CPU measurements               |
+| **[Private repository](docs/depot-prive.en.md)**                                       | showcase repository, deploy key, cost of Actions minutes                          |
+| **[Who this is for](docs/usages.en.md)**                                               | the profiles railsbox answers, and what it is not                                 |
+| **[SPA applications](docs/spa.en.md)**                                                 | React/Vue/Vite under a URL prefix, token-based auto-login                          |
+| **[Assets](docs/assets.en.md)**                                                        | Tailwind, dart-sass, npm chains: why an amd64 stage                               |
+| **[How it works](docs/fonctionnement.en.md)**                                          | execution model, the path of a request, the artefact cache                        |
+| **[Development](docs/developpement.en.md)**                                            | testing locally, republishing the base, building by hand                          |
+| **[Field notes](docs/retour-experience.en.md)**                                        | the challenges solved — the project's memory                                      |
+| **[Decisions (ADR)](docs/decisions/)**                                                 | why the structural choices were made                                              |
+| **[Threat model](SECURITY.md)**                                                        | what is protected, what is not                                                    |
+| **[Contributing](CONTRIBUTING.md)**                                                    | how to help                                                                       |
 
-### Known limits
-
-| Limit | Status |
-| --- | --- |
-| **PostgreSQL** | **wired up** on the split path: the server lives in the base image (from revision `3.3-r2`), the data directory on the application disk, and the cluster only starts after that disk is mounted. Requires base `3.3-r2` or newer — the build explicitly refuses an older base. See "[PostgreSQL](docs/configuration.en.md#postgresql)". |
-| **Tailwind, dart-sass** | **supported**: precompiled on an amd64 stage, then copied into the i386 disk (the guest never runs those binaries). Tailwind is validated **end to end** — `demo-tailwind` variant, real v86 VM boot, compiled stylesheet served by the guest — and replayed by the [`valider-variantes.yml`](.github/workflows/valider-variantes.yml) workflow. dart-sass now has its own test bench (`demo-dartsass`), stricter still: `sass-embedded` ships no i386 binary at all, where `tailwindcss-ruby` still offers a `ruby` variant. |
-| **npm toolchains** (esbuild, cssbundling) | **supported** by the same stage (`npm ci` then build scripts). A yarn/pnpm/bun lockfile is not read: it falls back to `npm install`, with a warning. |
-| **Client-side SPA** (React, Vue, Svelte) | **needs an adaptation in your code** — the one railsbox cannot make for you. The application is served under `/<repo>/app/`; Rails helpers follow that prefix, your JavaScript cannot guess it. Recommended pattern, with copy-pasteable code: "[Does your app ship a SPA?](docs/spa.en.md)". |
-| **ActionCable / WebSockets** | out of scope: incompatible with a request/response bridge. Possible route: long-polling or a dedicated stream. |
-| **Outbound networking** | nonexistent. That is also a property of the demo model — see [`SECURITY.md`](SECURITY.md). |
-| **Bridge throughput** | a narrow, shared pipe; fine for Turbo/HTML. Precompiled assets do not use it: extracted from the image, they are served statically by the Service Worker. |
-| **Persistence** | none, by design. Every visitor writes to their own copy, which disappears with the tab. |
-
-### Security, in one line
-
-Everything runs client-side: the disk image and the memory snapshot are
-**downloadable by anyone**, and the visitor is root inside their VM. Never ship
-real secrets or real data. What is defended, what is not, and why:
-[`SECURITY.md`](SECURITY.md).
-
----
-
----
-
-## Who uses it
-
-**They use it, and said so** — this list is hand-kept, through pull requests.
-It is the **only** way to appear here from a private repository: no automatic
-detection will ever see one.
-
-The list lives in **[docs/utilisateurs.md](docs/utilisateurs.md)** — one line,
-alphabetical order, through a pull request. It is echoed in
-[docs/adoption.md](docs/adoption.md) at every measurement.
-
-_Nobody yet. If railsbox is useful to you, add yourself: it is the only
-feedback this project gets._
-
-**Public** sandboxes are detected automatically and listed in
-[docs/adoption.md](docs/adoption.md), regenerated weekly alongside traffic
-figures *(French)*. That page also states, explicitly, what it cannot measure:
-a private repository using railsbox is invisible — no server, no account, no
-telemetry. That is the model, not a tooling gap.
-
----
-
-## Going further
-
-The rest of the documentation is split by topic — each page reads on its own.
-
-| Page | What you'll find |
-| --- | --- |
-| **[Configuration](docs/configuration.en.md)** | `railsbox.yml`, workflow inputs, PostgreSQL, seeds, auto-login, system packages |
-| **[SPA applications](docs/spa.en.md)** | React/Vue/Vite under a URL prefix, token auto-login |
-| **[Assets](docs/assets.en.md)** | Tailwind, dart-sass, npm chains: why an amd64 stage |
-| **[How it works](docs/fonctionnement.en.md)** | execution model, request path, artifact cache, repositories |
-| **[Development](docs/developpement.en.md)** | testing locally, republishing the base, building by hand, layout |
-| **[War stories](docs/retour-experience.en.md)** | the problems that cost the most — the project's memory |
-| **[Code architecture](docs/architecture.md)** | where to start reading the 17,000 lines *(French)* |
-| **[Decisions (ADR)](docs/decisions/)** | why the structural choices were made *(French)* |
-| **[Threat model](SECURITY.md)** | what is protected, what is not *(French)* |
-| **[Contributing](CONTRIBUTING.md)** · **[Open work](docs/chantiers.md)** | how to help *(French)* |
+**[Q&A](https://github.com/pinfada/railsbox/discussions/categories/q-a)** for a
+question,
+**[Show and tell](https://github.com/pinfada/railsbox/discussions/categories/show-and-tell)**
+to show a sandbox. Report a vulnerability privately (Security tab), never
+through a public issue — see [`SECURITY.md`](SECURITY.md).
 
 ---
 
 ## Third-party licences
 
-railsbox is MIT licensed ([`LICENSE`](LICENSE)). It vendors the
+railsbox is MIT-licensed ([`LICENSE`](LICENSE)). It vendors the
 [v86](https://github.com/copy/v86) emulator (BSD 2-Clause,
 [`public/vendor/v86/LICENSE`](public/vendor/v86/LICENSE)) and the firmware it
-embeds: SeaBIOS (`seabios.bin`, LGPLv3) and the Bochs VGABIOS (`vgabios.bin`,
+ships: SeaBIOS (`seabios.bin`, LGPLv3) and the Bochs VGABIOS (`vgabios.bin`,
 LGPL). The rootfs images published in `railsbox-assets` contain free software
 (Linux, Ruby, Rails…) under their respective licences.
-
-## Contributing
-
-railsbox has a single maintainer. Three doors exist to change that — read them
-in this order:
-
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — setting up an environment (three tiers,
-  from lightest to costliest), which tests to run for what you touch, where the
-  decisions live, conventions and process.
-- [`docs/architecture.md`](docs/architecture.md) — the code map: the six files
-  that carry the substance, and an HTTP request's full trip from the visitor's
-  click to Puma and back.
-- [`docs/chantiers.md`](docs/chantiers.md) — eight open work items, each with
-  its context, the files involved and a verifiable success criterion.
-
-All three are **in French**, as are the ADRs, the code comments and the commit
-messages. This is a deliberate choice, not an oversight: most of this
-repository's reasoning lives in its comments, and a translation diverges at the
-first fix. Code identifiers are in English. **Issue templates and pull requests
-accept English** — answer in English if you prefer. Making the entry practicable
-without reading French is [work item 7](docs/chantiers.md).
-
-To report something, the issue templates ask for what makes a diagnosis
-possible: a sandbox runs entirely in the visitor's tab, there is no server log
-to consult. Report a vulnerability privately (the repository's Security tab),
-never through a public issue — see [`SECURITY.md`](SECURITY.md) (in French).
