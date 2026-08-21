@@ -17,6 +17,7 @@ import {
   cheminArtefact,
   ecrasementAutorise,
   INSTANTANE,
+  scellerInstantane,
   verifierInstantane,
   nomConfiguration,
   nomInstantane,
@@ -26,6 +27,47 @@ const DISQUES = join("/srv", "railsbox", "public", "disks");
 
 // --- L'appel historique ne bouge pas -------------------------------------
 
+test("le scellement rend un instantané ACCORDÉ, quelle que soit la capture", () => {
+  // Les DEUX captures passent par ici : monolithique et par delta. La seconde
+  // écrivait sa configuration à la main et OUBLIAIT `stateFor` — or c'est elle
+  // que la chaîne publique emploie, donc le garde n'existait nulle part où il
+  // servait. Une seule fonction, un seul test.
+  const formes = [
+    { name: "zealot", builtAt: "2026-08-21T10:20:09Z", disk: "/disks/base.ext2" },
+    {
+      name: "zealot",
+      builtAt: "2026-08-21T10:20:09Z",
+      disk: "disks/base.ext2",
+      appDisk: "disks/z-app.ext2",
+    },
+  ];
+
+  for (const config of formes) {
+    const scellee = scellerInstantane(config, "/disks/zealot-state.bin");
+
+    assert.equal(scellee.stateFor, config.builtAt);
+    assert.equal(scellee.state, "/disks/zealot-state.bin");
+    assert.equal(verifierInstantane(scellee).verdict, "accorde", JSON.stringify(config));
+  }
+});
+
+test("sceller SANS builtAt échoue, au lieu de produire une sandbox sans garde", () => {
+  // Le piège évité : un `stateFor` undefined que JSON.stringify ôte. La
+  // configuration partirait sans marque, `verifierInstantane` la classerait
+  // SANS_MARQUE — tolérée — et le défaut serait invisible.
+  for (const config of [{}, { builtAt: "" }, { builtAt: 12 }, null]) {
+    const entree = /** @type {{ builtAt?: unknown }} */ (config);
+    assert.throws(
+      () => scellerInstantane(entree, "/disks/z-state.bin"),
+      TypeError,
+      JSON.stringify(config),
+    );
+  }
+  assert.throws(() => scellerInstantane({ builtAt: "2026-01-01T00:00:00Z" }, ""), TypeError);
+
+  // Ce que l'échec évite, dit explicitement.
+  assert.equal(verifierInstantane({ state: "/disks/z.bin" }).verdict, "sans-marque");
+});
 test("sans argument, la configuration reste celle de la page d'accueil", () => {
   assert.equal(nomConfiguration(undefined), CONFIG_PAR_DEFAUT);
   assert.equal(nomConfiguration(""), CONFIG_PAR_DEFAUT);

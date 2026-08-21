@@ -105,3 +105,39 @@ export function ecrasementAutorise({ existe, etatDeclare, nomInstantane: vise })
       `l'instantané d'une autre image. Renommez-le, ou supprimez-le sciemment.`,
   };
 }
+
+/**
+ * SCELLE une configuration sur l'instantané qu'on vient de capturer.
+ *
+ * Deux captures existent — monolithique (make-snapshot.mjs) et par delta
+ * (make-delta-snapshot.mjs, celle de la chaîne PUBLIQUE) — et seule la
+ * première écrivait `stateFor`. La seconde produisait donc des sandboxes que
+ * `verifierInstantane` classe SANS_MARQUE : tolérées, jamais vérifiées. Le
+ * garde n'existait pas là où il servait.
+ *
+ * `stateFor` lie l'instantané à la construction qu'il a figée (ADR 0007) : si
+ * la configuration est réécrite sans recapture, le lien se voit ROMPU au lieu
+ * de se deviner — un état mémoire posé sur un système de fichiers qu'il ne
+ * connaît pas ne rend jamais la main, et rien ne le dirait.
+ *
+ * L'absence de `builtAt` est une ERREUR, pas un cas à tolérer : sceller sans
+ * lui écrirait un `stateFor` vide, que JSON.stringify ôte, et la sandbox
+ * repartirait silencieusement sans garde.
+ * @param {{ builtAt?: unknown }} config configuration à sceller
+ * @param {string} etat référence de l'instantané, telle qu'elle sera servie
+ * @returns {Record<string, unknown> & { state: string, stateFor: string }} configuration scellée
+ * @throws {TypeError} si la configuration ne porte pas de `builtAt`
+ */
+export function scellerInstantane(config, etat) {
+  const builtAt = config?.builtAt;
+  if (typeof builtAt !== "string" || builtAt === "") {
+    throw new TypeError(
+      "scellerInstantane exige un builtAt : sans lui, l'instantané ne peut être lié " +
+        "à sa construction, et la sandbox repartirait sans garde.",
+    );
+  }
+  if (typeof etat !== "string" || etat === "") {
+    throw new TypeError("scellerInstantane exige la référence de l'instantané");
+  }
+  return { ...config, state: etat, stateFor: builtAt };
+}

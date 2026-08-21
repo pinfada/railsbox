@@ -29,6 +29,7 @@ import {
   ecrasementAutorise,
   nomConfiguration,
   nomInstantane,
+  scellerInstantane,
 } from "./snapshot-cibles.mjs";
 import {
   buildRequestFrames,
@@ -202,12 +203,11 @@ async function main() {
   const compressed = await stat(`${statePath}.gz`);
   log(`écrit ${stateName}.gz (${Math.round(compressed.size / 1048576)} Mo)`);
 
+  // Le scellement vit dans snapshot-cibles.mjs : les DEUX captures doivent
+  // écrire `stateFor`, et seule celle-ci le faisait.
   await writeFile(
     configPath,
-    // `stateFor` LIE l'instantané à la construction qu'il a figée : une
-    // reconstruction change `builtAt`, et le lien se voit rompu au lieu de se
-    // deviner (ADR 0007).
-    `${JSON.stringify({ ...config, state: `/disks/${stateName}`, stateFor: config.builtAt }, null, 2)}\n`,
+    `${JSON.stringify(scellerInstantane(config, `/disks/${stateName}`), null, 2)}\n`,
   );
   log(`${configName} référence désormais l'instantané pré-calculé`);
   process.exit(0);

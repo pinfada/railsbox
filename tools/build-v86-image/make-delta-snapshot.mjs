@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { bootHarness } from "../vm-harness.mjs";
 import { buildSplitConfig } from "./split-config.mjs";
+import { scellerInstantane } from "./snapshot-cibles.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(HERE, "../..");
@@ -190,10 +191,18 @@ async function main() {
             baseChunkBytes: options.baseChunkBytes,
             appChunkBytes: options.appChunkBytes,
           }),
-          state: `disks/${stateName}${options.stateSuffix}`,
         }
-      : { ...configNoState, state: `/disks/${stateName}${options.stateSuffix}` };
-    await writeFile(configPath, `${JSON.stringify(finalConfig, null, 2)}\n`);
+      : configNoState;
+    // Scellée comme la capture monolithique : sans `stateFor`, la coquille
+    // classe la sandbox SANS_MARQUE et ne vérifie plus rien — or c'est CE
+    // chemin que la chaîne publique emploie.
+    const configScellee = scellerInstantane(
+      finalConfig,
+      options.baseUrl
+        ? `disks/${stateName}${options.stateSuffix}`
+        : `/disks/${stateName}${options.stateSuffix}`,
+    );
+    await writeFile(configPath, `${JSON.stringify(configScellee, null, 2)}\n`);
     log(`${configName} référence désormais le delta pré-calculé`);
 
     const totalSeconds = Math.round((Date.now() - startedAt) / 1000);
