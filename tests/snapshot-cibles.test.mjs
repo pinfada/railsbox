@@ -251,3 +251,73 @@ test("une configuration sans instantané le dit, sans se plaindre", () => {
 
   assert.equal(verdict, INSTANTANE.AUCUN);
 });
+
+// --- L'empreinte du disque, posée par la capture (ADR 0009) --------------
+
+test("sceller avec l'empreinte du disque inscrit la marque de contenu", () => {
+  const empreinte = "c".repeat(64);
+  const scellee = scellerInstantane(
+    { name: "zealot", builtAt: "2026-08-21T10:34:15Z", appDisk: "disks/zealot-app.ext2.zst" },
+    "disks/zealot-split-state.bin.gz",
+    { appDiskSha256: empreinte },
+  );
+
+  assert.equal(scellee.stateForAppDiskSha256, empreinte);
+  // La date RESTE écrite : elle sert au diagnostic, à l'invalidation de cache,
+  // et de repli tant que le découpage n'a pas posé son `appDiskSha256`.
+  assert.equal(scellee.stateFor, "2026-08-21T10:34:15Z");
+});
+
+test("la capture n'écrit PAS `appDiskSha256` — ce serait sa propre lecture", () => {
+  // TOUT L'INTÉRÊT DE L'ADR 0009 EST LÀ. Si le même acteur écrivait les deux
+  // empreintes, elles seraient égales par construction — exactement le défaut
+  // de `stateFor`/`builtAt` que l'issue #4 a démonté. La seconde valeur doit
+  // venir d'une SECONDE lecture, faite par le découpage, sur le disque qu'il
+  // publie réellement.
+  const scellee = scellerInstantane(
+    { name: "zealot", builtAt: "2026-08-21T10:34:15Z" },
+    "disks/zealot-split-state.bin.gz",
+    { appDiskSha256: "c".repeat(64) },
+  );
+
+  assert.equal("appDiskSha256" in scellee, false);
+  // Seule, la marque de capture ne tranche rien : on juge sur la date.
+  assert.equal(verifierInstantane(scellee).verdict, "accorde");
+});
+
+test("sceller sans empreinte reste possible, et ne ment pas", () => {
+  // Le chemin monolithique et les constructions à la main n'en fournissent pas
+  // (arbitrage (c) de l'ADR 0009). Le scellement ne doit pas inventer un champ
+  // vide que `verifierInstantane` aurait à démêler.
+  const scellee = scellerInstantane(
+    { name: "demo", builtAt: "2026-08-16T00:00:00Z" },
+    "/disks/demo-state.bin",
+  );
+
+  assert.equal("stateForAppDiskSha256" in scellee, false);
+  assert.equal(verifierInstantane(scellee).verdict, "accorde");
+});
+
+test("une empreinte qui n'en est pas une est REFUSÉE, jamais écrite telle quelle", () => {
+  // Une valeur tronquée, majuscule ou vide inscrite sans contrôle produirait
+  // une configuration que le lecteur écarte en silence — le garde disparaîtrait
+  // là où on croit l'avoir posé.
+  //
+  // L'OBJET COERCIBLE EST LE CAS TRAÎTRE, et il n'est pas théorique : valider
+  // `String(valeur)` puis écrire la valeur d'origine laissait passer tout objet
+  // dont `toString()` rend 64 caractères hexadécimaux. La configuration partait
+  // alors avec `"stateForAppDiskSha256": {}` — que le lecteur écarte, faute de
+  // forme, pour retomber en silence sur la date. Exactement le contraire du
+  // contrat annoncé : une marque présente, mais sans effet.
+  const coercible = { toString: () => "c".repeat(64) };
+  for (const valeur of ["", "C".repeat(64), "c".repeat(63), "zz", 42, null, coercible]) {
+    assert.throws(
+      () =>
+        scellerInstantane({ builtAt: "2026-08-21T10:34:15Z" }, "/disks/z.bin", {
+          appDiskSha256: /** @type {string} */ (/** @type {unknown} */ (valeur)),
+        }),
+      /empreinte/i,
+      JSON.stringify(valeur),
+    );
+  }
+});

@@ -124,15 +124,29 @@ export function ecrasementAutorise({ existe, etatDeclare, nomInstantane: vise })
  * configuration, jamais des octets du disque. La portée exacte du verdict, et
  * ce qu'il laisse passer, sont détaillées dans instantane-lien.js.
  *
+ * D'où `appDiskSha256`, l'empreinte du disque applicatif RÉELLEMENT attaché à
+ * la capture, inscrite ici sous le nom `stateForAppDiskSha256` (ADR 0009).
+ *
+ * CE SCELLEMENT N'ÉCRIT QUE LA MOITIÉ DU LIEN, et c'est délibéré. La seconde
+ * empreinte — `appDiskSha256`, celle du disque que la configuration NOMME — est
+ * posée par le découpage, qui la calcule sur les octets qu'il publie
+ * (split-artifact.mjs). Écrire les deux ici les rendrait égales par
+ * construction : exactement le défaut de `stateFor`/`builtAt` que l'issue #4 a
+ * démonté. Le lien ne vaut que parce que DEUX lectures indépendantes peuvent
+ * diverger.
+ *
  * L'absence de `builtAt` est une ERREUR, pas un cas à tolérer : sceller sans
  * lui écrirait un `stateFor` vide, que JSON.stringify ôte, et la sandbox
- * repartirait silencieusement sans garde.
- * @param {{ builtAt?: unknown }} config configuration à sceller
+ * repartirait silencieusement sans garde. Une empreinte MAL FORMÉE l'est tout
+ * autant : le lecteur l'écarterait en silence, et le garde disparaîtrait là où
+ * on croit l'avoir posé.
+ * @param {{ builtAt?: unknown, [champ: string]: unknown }} config configuration à sceller
  * @param {string} etat référence de l'instantané, telle qu'elle sera servie
+ * @param {{ appDiskSha256?: string }} [marques] empreinte du disque attaché à la capture
  * @returns {Record<string, unknown> & { state: string, stateFor: string }} configuration scellée
- * @throws {TypeError} si la configuration ne porte pas de `builtAt`
+ * @throws {TypeError} si `builtAt`, la référence d'état ou l'empreinte est invalide
  */
-export function scellerInstantane(config, etat) {
+export function scellerInstantane(config, etat, marques = {}) {
   const builtAt = config?.builtAt;
   if (typeof builtAt !== "string" || builtAt === "") {
     throw new TypeError(
@@ -143,5 +157,36 @@ export function scellerInstantane(config, etat) {
   if (typeof etat !== "string" || etat === "") {
     throw new TypeError("scellerInstantane exige la référence de l'instantané");
   }
-  return { ...config, state: etat, stateFor: builtAt };
+  const { appDiskSha256 } = marques;
+  // LE CONTRÔLE PORTE SUR LA VALEUR REÇUE, PAS SUR SA COERCITION EN CHAÎNE.
+  // Valider `String(appDiskSha256)` acceptait tout objet dont `toString()` rend
+  // 64 caractères hexadécimaux — et c'est la valeur D'ORIGINE qui partait dans
+  // la configuration, sous la forme `"stateForAppDiskSha256": {}`. Le lecteur
+  // écarte cette marque, faute de forme, et retombe en silence sur la date :
+  // une marque présente et sans effet, soit le contraire du contrat annoncé.
+  if (appDiskSha256 !== undefined) {
+    if (typeof appDiskSha256 !== "string" || !SHA256_COMPLET.test(appDiskSha256)) {
+      throw new TypeError(
+        "scellerInstantane exige une empreinte SHA-256 complète (64 caractères " +
+          `hexadécimaux minuscules), reçu : ${JSON.stringify(appDiskSha256)}`,
+      );
+    }
+  }
+  return {
+    ...config,
+    state: etat,
+    stateFor: builtAt,
+    ...(appDiskSha256 ? { stateForAppDiskSha256: appDiskSha256 } : {}),
+  };
 }
+
+/**
+ * Forme exigée d'une empreinte à l'ÉCRITURE : un SHA-256 complet.
+ *
+ * Le lecteur (instantane-lien.js) est plus tolérant — de 12 à 64 caractères —
+ * pour ne pas se lier à un choix de troncature. Ce qu'on ÉCRIT, en revanche, ne
+ * doit avoir qu'une seule forme : une empreinte tronquée face à une complète
+ * est un désaccord, donc un boot à froid, donc une panne silencieuse déguisée
+ * en prudence.
+ */
+const SHA256_COMPLET = /^[0-9a-f]{64}$/;

@@ -8,6 +8,7 @@
 //   node tools/build-v86-image/make-delta-snapshot.mjs --name demo --base base-3.3
 //
 // Cible ADR : delta capturé en < 3 min (contre ~12 min pour l'image monolithique).
+import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { createGzip } from "node:zlib";
@@ -80,6 +81,26 @@ async function readDiskCard(path) {
   }
 }
 
+/**
+ * Empreinte SHA-256 du disque applicatif, lue sur ses OCTETS (ADR 0009).
+ *
+ * POURQUOI AVANT LE BOOT. v86 attache le disque par URL de fichier et garde ses
+ * écritures en mémoire : le fichier ne bouge pas de la capture. Le hacher
+ * d'abord ne change donc rien au résultat, mais fait échouer tôt — un disque
+ * illisible se découvre en trois secondes plutôt qu'après trois minutes de VM.
+ *
+ * POURQUOI EN FLUX. Le disque fait 512 Mo ; le charger en mémoire à côté d'une
+ * VM à laquelle on vient d'allouer 1 Go n'a aucune raison d'être. Le coût
+ * mesuré est consigné dans l'ADR 0009.
+ * @param {string} path chemin du disque applicatif
+ * @returns {Promise<string>} empreinte hexadécimale complète, 64 caractères
+ */
+async function empreinteDisque(path) {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
+}
+
 async function gzipFile(source, destination) {
   await pipeline(
     createReadStream(source),
@@ -104,6 +125,20 @@ async function main() {
 
   const baseDiskBytes = (await stat(baseDiskPath)).size;
   const appDiskBytes = (await stat(appDiskPath)).size;
+
+  // La PREMIÈRE des deux lectures indépendantes qui lient l'instantané au
+  // disque (ADR 0009). La seconde est celle du découpage, sur le disque qu'il
+  // publie réellement : c'est leur divergence, et elle seule, qui trahit un
+  // disque échangé entre la capture et la publication. La date ne le pouvait
+  // pas — `builtAt` naît ici même, donc `stateFor === builtAt` est vrai par
+  // construction.
+  const hachageDebut = Date.now();
+  const appDiskSha256 = await empreinteDisque(appDiskPath);
+  const hachageSecondes = ((Date.now() - hachageDebut) / 1000).toFixed(1);
+  log(
+    `empreinte du disque applicatif : ${appDiskSha256.slice(0, 12)}… ` +
+      `(${Math.round(appDiskBytes / 1048576)} Mo lus en ${hachageSecondes} s)`,
+  );
   const stateName = `${name}-split-state.bin`;
   const configName = `${name}-split-config.json`;
   const configPath = join(DISKS_DIR, configName);
@@ -201,6 +236,7 @@ async function main() {
       options.baseUrl
         ? `disks/${stateName}${options.stateSuffix}`
         : `/disks/${stateName}${options.stateSuffix}`,
+      { appDiskSha256 },
     );
     await writeFile(configPath, `${JSON.stringify(configScellee, null, 2)}\n`);
     log(`${configName} référence désormais le delta pré-calculé`);
