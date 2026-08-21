@@ -1,0 +1,42 @@
+# FINS DE LIGNE DES FICHIERS EXÉCUTÉS SOUS LINUX.
+#
+# Git pour Windows extrait par défaut avec `core.autocrlf=true`, donc en CRLF.
+# Un `\r` en fin de ligne ne gêne personne dans un fichier lu par un éditeur —
+# il est FATAL dans un script que bash interprète :
+#
+#     tools/build-v86-image/build.sh: line 27:
+#     set: pipefail: invalid option name
+#
+# `set -euo pipefail\r` donne à bash un nom d'option qui n'existe pas, et le
+# message ne nomme jamais la vraie cause. Trouvé sur un clone neuf pendant une
+# reconstruction en salle blanche : le dépôt stocke pourtant du LF, et c'est
+# l'EXTRACTION qui cassait — donc invisible depuis une copie de travail déjà
+# configurée, et invisible en CI, où les runners sont sous Linux.
+#
+# Ce fichier vise ce qui est réellement exécuté par un interpréteur Unix. Il ne
+# renormalise rien : les blobs sont déjà en LF, la règle ne pilote que
+# l'extraction. La construction depuis Windows via WSL est un chemin documenté
+# (`wsl -u root -e bash tools/build-v86-image/build.sh`) : elle doit marcher sur
+# un clone neuf, sans réglage préalable.
+*.sh            text eol=lf
+*.py            text eol=lf
+*.env           text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+
+# Les exécutables sans extension : `bin/rails` d'une application porte un
+# shebang, et un `\r` y produit « bad interpreter ».
+**/bin/*        text eol=lf
+
+# Ce que Git ne doit NI convertir NI traiter comme du texte : artefacts de la
+# VM, images, et le BIOS de v86 — dont le contenu binaire comporte des octets
+# 0x0D qu'une conversion corromprait.
+*.wasm          binary
+*.bin           binary
+*.ext2          binary
+*.zst           binary
+*.gz            binary
+*.png           binary
+*.jpg           binary
+*.ico           binary
+*.svg           text eol=lf
