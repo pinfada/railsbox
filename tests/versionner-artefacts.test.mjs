@@ -17,6 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +31,8 @@ import {
   versionedArtifactName,
 } from "../tools/build-v86-image/artifact-parts.mjs";
 import { replacePublishedArtifact } from "../tools/build-v86-image/split-config.mjs";
+import { scellerInstantane } from "../tools/build-v86-image/snapshot-cibles.mjs";
+import { verifierInstantane } from "../public/shared/instantane-lien.js";
 import { artifactUrlOfPart } from "../public/shared/artifact-cache.js";
 import {
   manifestUrlFor,
@@ -425,4 +428,131 @@ test("le workflow publie des artefacts versionnés et accorde la configuration",
     assert.match(decoupage, /--fingerprint/, "les noms publiés doivent porter l'empreinte");
     assert.match(decoupage, /--config/, "la configuration doit être accordée aux morceaux publiés");
   }
+});
+
+// --- L'empreinte que le découpage rend à la configuration (ADR 0009) --------
+
+/**
+ * Découpe un artefact en accordant une configuration, et rend les deux.
+ * @param {{ contenu: Buffer, nomSource: string, config: Record<string, unknown> }} scene
+ * @returns {Promise<{ config: any, manifest: any }>}
+ */
+async function decouperAvecConfig({ contenu, nomSource, config }) {
+  const dir = await mkdtemp(join(tmpdir(), "railsbox-empreinte-0009-"));
+  try {
+    const source = join(dir, nomSource);
+    await writeFile(source, contenu);
+    const configPath = join(dir, "demo-split-config.json");
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const out = join(dir, "publication");
+    await run(process.execPath, [
+      join(TOOLS, "split-artifact.mjs"),
+      source,
+      "--zstd",
+      "--fingerprint",
+      "--config",
+      configPath,
+      "--out",
+      out,
+    ]);
+    const publies = await readdir(out);
+    const inventaire = publies.find((nom) => nom.endsWith("-parts.json"));
+    assert.ok(inventaire, `aucun inventaire parmi ${publies.join(", ")}`);
+    return {
+      config: JSON.parse(await readFile(configPath, "utf8")),
+      manifest: JSON.parse(await readFile(join(out, inventaire), "utf8")),
+    };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("le découpage du DISQUE APPLICATIF inscrit son empreinte dans la configuration", async () => {
+  // La seconde des deux lectures indépendantes. Le découpeur hache déjà les
+  // octets pendant la lecture qui les découpe — il ne relit rien, il cesse
+  // seulement de jeter ce qu'il sait.
+  const contenu = syntheticDisk(4 * MIB);
+  const { config, manifest } = await decouperAvecConfig({
+    contenu,
+    nomSource: "demo-app.ext2",
+    config: { name: "demo", appDisk: "disks/demo-app.ext2.zst" },
+  });
+
+  const attendu = createHash("sha256").update(contenu).digest("hex");
+  assert.equal(config.appDiskSha256, attendu, "l'empreinte porte sur les octets du fichier");
+  assert.equal(config.appDiskSha256.length, 64, "SHA-256 complet, pas tronqué");
+  // Le nom publié en garde les douze premiers : une seule et même empreinte.
+  assert.equal(manifest.digest, attendu.slice(0, DIGEST_HEX_LENGTH));
+  assert.equal(manifest.sha256, attendu, "l'inventaire porte l'empreinte complète");
+});
+
+test("le découpage de l'INSTANTANÉ n'inscrit aucune empreinte de disque", async () => {
+  // Le même outil découpe les deux artefacts, l'un après l'autre, avec la même
+  // ligne de commande à un nom près. Écrire `appDiskSha256` sur le second
+  // remplacerait l'empreinte du disque par celle de l'instantané : les deux
+  // valeurs cesseraient d'être comparables, et le garde prononcerait un
+  // désaccord sur une sandbox parfaitement saine.
+  const { config } = await decouperAvecConfig({
+    contenu: syntheticDisk(4 * MIB, 7),
+    nomSource: "demo-split-state.bin",
+    config: { name: "demo", state: "disks/demo-split-state.bin.zst" },
+  });
+
+  assert.equal("appDiskSha256" in config, false);
+});
+
+test("découper l'instantané ne PIÉTINE pas l'empreinte que le disque a posée", async () => {
+  // L'ordre réel de construire-sandbox.yml : disque d'abord, instantané
+  // ensuite, sur LA MÊME configuration. La valeur du premier passage doit
+  // survivre au second.
+  const disque = "d".repeat(64);
+  const { config } = await decouperAvecConfig({
+    contenu: syntheticDisk(4 * MIB, 9),
+    nomSource: "demo-split-state.bin",
+    config: {
+      name: "demo",
+      state: "disks/demo-split-state.bin.zst",
+      appDiskSha256: disque,
+    },
+  });
+
+  assert.equal(config.appDiskSha256, disque);
+});
+
+test("capture puis découpage s'accordent — et un disque échangé entre eux non", async () => {
+  // LA PROPRIÉTÉ VISÉE PAR L'ADR 0009, en miniature : deux lectures
+  // indépendantes du même disque produisent la même empreinte, donc un
+  // instantané ACCORDÉ ; deux lectures de disques différents divergent, donc un
+  // DÉSACCORD — là où la date, elle, n'aurait rien vu.
+  const contenu = syntheticDisk(4 * MIB, 3);
+  const empreinteCapture = createHash("sha256").update(contenu).digest("hex");
+
+  // Ce que la capture écrit, avec le disque qu'elle vient d'attacher.
+  const scellee = scellerInstantane(
+    {
+      name: "demo",
+      appDisk: "disks/demo-app.ext2.zst",
+      builtAt: "2026-08-21T10:34:15Z",
+    },
+    "disks/demo-split-state.bin.gz",
+    { appDiskSha256: empreinteCapture },
+  );
+
+  // Ce que le découpage écrit, sur le disque qu'il publie réellement.
+  const accord = await decouperAvecConfig({
+    contenu,
+    nomSource: "demo-app.ext2",
+    config: scellee,
+  });
+  assert.equal(verifierInstantane(accord.config).verdict, "accorde");
+
+  // Le même scellement, mais un disque REMPLACÉ avant la publication. Les dates
+  // sont intactes et parfaitement cohérentes : seule l'empreinte le voit.
+  const panachage = await decouperAvecConfig({
+    contenu: syntheticDisk(4 * MIB, 4),
+    nomSource: "demo-app.ext2",
+    config: scellee,
+  });
+  assert.equal(panachage.config.stateFor, panachage.config.builtAt, "la date ne voit rien");
+  assert.equal(verifierInstantane(panachage.config).verdict, "desaccorde");
 });

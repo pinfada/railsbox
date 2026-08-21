@@ -110,12 +110,26 @@ export function parseArgs(argv) {
  * réconciliation est donc faite ici plutôt que de faire relire l'artefact à qui
  * que ce soit. La forme de la configuration, elle, reste la propriété de
  * split-config.mjs.
+ *
+ * ELLE POSE AUSSI LA MOITIÉ DU LIEN INSTANTANÉ/DISQUE (ADR 0009). Quand
+ * l'artefact publié est le DISQUE APPLICATIF, son empreinte complète est
+ * inscrite dans `appDiskSha256` : la capture a déjà écrit `stateForAppDiskSha256`
+ * en lisant le disque qu'elle attachait, et c'est la divergence entre ces deux
+ * lectures INDÉPENDANTES qui trahit un disque échangé entre les deux étapes.
+ * Écrire les deux au même endroit les rendrait égales par construction, comme
+ * l'étaient `stateFor` et `builtAt` — le défaut que l'issue #4 a démonté.
+ *
+ * SEUL LE CHAMP `appDisk` DÉCLENCHE L'ÉCRITURE. Le même outil découpe ensuite
+ * l'instantané, avec la même ligne de commande à un nom près ; y inscrire
+ * l'empreinte remplacerait celle du disque par celle de l'état, et le garde
+ * prononcerait un désaccord sur une sandbox parfaitement saine.
  * @param {string} path chemin de la configuration à réécrire
  * @param {string} oldName nom publié jusque-là
  * @param {string} newName nom réellement publié
+ * @param {string|null} sha256 empreinte complète de l'artefact, si versionné
  * @throws {Error} si la configuration ne nomme pas cet artefact
  */
-async function reconcileConfig(path, oldName, newName) {
+async function reconcileConfig(path, oldName, newName, sha256) {
   const original = JSON.parse(await readFile(path, "utf8"));
   const { config, fields } = replacePublishedArtifact(original, oldName, newName);
   if (fields.length === 0) {
@@ -124,8 +138,10 @@ async function reconcileConfig(path, oldName, newName) {
         "désignerait des morceaux qui n'existent pas.",
     );
   }
-  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`);
+  const marque = sha256 && fields.includes("appDisk") ? { appDiskSha256: sha256 } : {};
+  await writeFile(path, `${JSON.stringify({ ...config, ...marque }, null, 2)}\n`);
   log(`${basename(path)} : ${fields.join(", ")} → ${newName}`);
+  if (marque.appDiskSha256) log(`${basename(path)} : appDiskSha256 → ${sha256}`);
 }
 
 async function main() {
@@ -200,7 +216,11 @@ async function main() {
     await handle.close();
   }
 
-  const digest = hash.digest("hex").slice(0, DIGEST_HEX_LENGTH);
+  // L'empreinte COMPLÈTE est conservée, pas seulement les douze caractères qui
+  // nomment l'artefact : un nom doit rester court, une identité de contenu n'a
+  // aucune raison de l'être (ADR 0009). Les deux sortent de la même lecture.
+  const sha256 = hash.digest("hex");
+  const digest = sha256.slice(0, DIGEST_HEX_LENGTH);
   const artifactName = options.fingerprint
     ? versionedArtifactName(basename(sourcePath), digest) + suffix
     : plainName;
@@ -210,7 +230,7 @@ async function main() {
 
   const manifest = {
     artifact: artifactName,
-    ...(options.fingerprint ? { digest } : {}),
+    ...(options.fingerprint ? { digest, sha256 } : {}),
     totalBytes: size,
     chunkBytes: options.chunkBytes,
     compression: options.compression,
@@ -227,7 +247,14 @@ async function main() {
   );
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  if (options.config) await reconcileConfig(options.config, plainName, artifactName);
+  if (options.config) {
+    await reconcileConfig(
+      options.config,
+      plainName,
+      artifactName,
+      options.fingerprint ? sha256 : null,
+    );
+  }
 
   const ratio = size === 0 ? 0 : Math.round((writtenBytes / size) * 100);
   log(`publié ${Math.round(writtenBytes / 1048576)} Mo (${ratio} % de l'original)`);
