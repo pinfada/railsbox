@@ -184,6 +184,23 @@ COPY Gemfile* ./
 # plateforme i386 (x86-linux) + ruby pour que les gems natives compilent.
 RUN bundle lock --add-platform x86-linux ruby && bundle install
 
+# Résidus de compilation des gems natives. Le disque applicatif est figé à
+# 512 Mo (ADR 0002) et peuplé par un `docker export`, donc par TOUT ce qui vit
+# sous /app. Une gem compilée depuis les sources — et railsbox les compile
+# TOUTES, BUNDLE_FORCE_RUBY_PLATFORM oblige — y laisse ses objets
+# intermédiaires, dont plus rien n'a besoin une fois le `.so` produit et
+# installé.
+#
+# Mesuré le 21/08/2026 sur woofed-crm : 1 604 Mo d'objets .o/.a sur 1 895 Mo de
+# gems, dont 1 677 Mo pour grpc seul, qui retombe à 55 Mo. L'application ne
+# tenait pas dans 512 Mo à cause de cela seul.
+#
+# JAMAIS LES `.so` : ce sont eux que Ruby charge. En supprimer un ne casse rien
+# à la construction — l'erreur surgit au boot de la VM, chez le visiteur.
+# Le chemin monolithique ne fixe pas BUNDLE_PATH : les gems vont dans le
+# répertoire système, que `gem env home` donne sans avoir à le deviner.
+RUN find "$(gem env home)" \( -name '*.o' -o -name '*.a' \) -type f -delete 2>/dev/null || true
+
 COPY . .
 COPY --from=assets /app/public/assets ./public/assets
 COPY --from=assets /app/app/assets/builds ./app/assets/builds
