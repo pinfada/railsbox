@@ -115,10 +115,14 @@ export function ecrasementAutorise({ existe, etatDeclare, nomInstantane: vise })
  * `verifierInstantane` classe SANS_MARQUE : tolérées, jamais vérifiées. Le
  * garde n'existait pas là où il servait.
  *
- * `stateFor` lie l'instantané à la construction qu'il a figée (ADR 0007) : si
- * la configuration est réécrite sans recapture, le lien se voit ROMPU au lieu
- * de se deviner — un état mémoire posé sur un système de fichiers qu'il ne
- * connaît pas ne rend jamais la main, et rien ne le dirait.
+ * `stateFor` lie l'instantané à la construction DÉCLARÉE qu'il a figée (ADR
+ * 0007) : si la configuration est réécrite sans recapture, le lien se voit
+ * ROMPU au lieu de se deviner — un état mémoire posé sur un système de
+ * fichiers qu'il ne connaît pas ne rend jamais la main, et rien ne le dirait.
+ *
+ * Ce n'est PAS une identité de contenu : les deux valeurs viennent de la
+ * configuration, jamais des octets du disque. La portée exacte du verdict, et
+ * ce qu'il laisse passer, sont détaillées dans instantane-lien.js.
  *
  * L'absence de `builtAt` est une ERREUR, pas un cas à tolérer : sceller sans
  * lui écrirait un `stateFor` vide, que JSON.stringify ôte, et la sandbox
