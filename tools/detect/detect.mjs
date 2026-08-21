@@ -748,10 +748,18 @@ export async function detectApp(appDir, options = {}) {
   // à la fois du package.json (chaîne npm) et du Gemfile.lock (gems à binaire).
   const outputs = detectOutputDirs({ specs, viteJson, shakapackerYml, webpackerYml });
   findings.push(...outputs.findings);
+  // Le CONTENU du verrou yarn, pas seulement son nom : Yarn Classic et Yarn
+  // moderne écrivent tous deux « yarn.lock » et n'ont pas la même option
+  // d'installation verrouillée. La lecture se fait ici — le module de
+  // planification reste pur — et c'est `yarnGeneration` qui décide.
+  const yarnLock = lockfiles.includes("yarn.lock")
+    ? await readOptionalFile(join(appDir, "yarn.lock"))
+    : null;
   const assetPlan = planAssets({
     assets: assets.assets,
     specs,
     lockfiles,
+    yarnLock,
     outputDirs: outputs.dirs,
   });
   findings.push(...assetPlan.findings);

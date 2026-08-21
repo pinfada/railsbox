@@ -52,7 +52,7 @@ RUN set -eu; \
 # lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
 # une chaîne tierce dans une commande.
 #
-# `corepack enable pnpm` ne fait qu'installer un shim : rien n'est téléchargé
+# `corepack enable pnpm` (ou `yarn`) ne fait qu'installer un shim : rien n'est téléchargé
 # tant que pnpm n'est pas invoqué DANS le projet, où il provisionne alors la
 # version exacte demandée. C'est aussi ce shim que `jsbundling-rails`
 # retrouvera pour son `javascript:install`.
@@ -62,6 +62,7 @@ RUN set -eu; \
     case "$PACKAGE_MANAGER" in \
       npm) : ;; \
       pnpm) corepack enable pnpm ;; \
+      yarn) corepack enable yarn ;; \
       *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
     esac
 
