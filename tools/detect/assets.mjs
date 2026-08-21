@@ -62,9 +62,22 @@ export const BINARY_ASSET_GEMS = Object.freeze([
 
 /**
  * Verrous de dépendances front reconnus, et gestionnaire correspondant.
- * railsbox n'installe qu'avec npm : les autres verrous sont signalés, pas
- * exécutés (embarquer trois gestionnaires de paquets dans l'étage amd64
- * coûterait plus que ce que cela rapporte).
+ *
+ * railsbox exécute npm et pnpm. Yarn et Bun sont SIGNALÉS, pas exécutés, et
+ * l'installation retombe alors sur npm.
+ *
+ * Cette note disait auparavant que railsbox n'installait qu'avec npm, au
+ * motif qu'embarquer trois gestionnaires coûterait plus que cela ne
+ * rapporterait. L'argument portait sur des gestionnaires EMBARQUÉS : Corepack,
+ * livré avec Node dans l'image d'assets, ne coûte qu'un shim et provisionne la
+ * version exacte que le projet DÉCLARE. Une application qui épingle
+ * `packageManager: "pnpm@10.22.0"` a fait un choix reproductible, et le
+ * respecter est moins cher que de le contourner — mesuré sur tryzealot/zealot,
+ * dont `jsbundling-rails` exige pnpm quoi que railsbox installe.
+ *
+ * Yarn reste dehors À DESSEIN : Yarn Classic et Yarn moderne n'ont pas la même
+ * convention d'installation verrouillée, et les mêler ici produirait une
+ * commande fausse pour l'un des deux.
  */
 export const NPM_LOCKFILES = Object.freeze({
   "package-lock.json": "npm",
@@ -83,6 +96,49 @@ const NPM_CI = "npm ci --no-audit --no-fund";
 
 /** Installation de repli : résolution depuis package.json seul. */
 const NPM_INSTALL = "npm install --no-audit --no-fund";
+
+/**
+ * Installation pnpm. `--frozen-lockfile` est le point entier : un verrou
+ * périmé doit ARRÊTER la construction, jamais être réécrit en silence — c'est
+ * la contrepartie de « respecter le gestionnaire du projet ».
+ */
+const PNPM_INSTALL = "pnpm install --frozen-lockfile";
+
+/**
+ * Gestionnaires que railsbox sait EXÉCUTER. Liste fermée, et c'est une
+ * frontière de sécurité : seul un identifiant de cette liste finit dans un
+ * argument de build, donc dans une commande. La version, elle, n'y entre
+ * jamais — Corepack la lit lui-même dans le `package.json` du projet.
+ */
+export const PACKAGE_MANAGERS = Object.freeze(["npm", "pnpm"]);
+
+/** Gestionnaire retenu quand rien n'impose autre chose. */
+export const DEFAULT_PACKAGE_MANAGER = "npm";
+
+/**
+ * Forme du champ `packageManager` (convention Corepack) : `nom@X.Y.Z`, avec
+ * une pré-version et une empreinte facultatives. Volontairement STRICTE — la
+ * valeur vient d'un `package.json` tiers, et tout ce qui n'est pas exactement
+ * cette forme est rejeté plutôt qu'assaini.
+ */
+const PACKAGE_MANAGER_FIELD =
+  /^([a-z][a-z0-9-]{0,19})@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)(?:\+[0-9A-Za-z._-]{4,128})?$/;
+
+/**
+ * Lit le champ `packageManager` d'un package.json.
+ *
+ * NE REND QUE DES DONNÉES VALIDÉES, et surtout jamais la chaîne d'origine : une
+ * valeur hostile (`pnpm@1.0.0; rm -rf /`) ne satisfait pas la forme, donc elle
+ * ne ressort pas — elle ne peut pas atteindre de shell.
+ * @param {unknown} value valeur brute du champ
+ * @returns {{ name: string, version: string } | null} null si absent ou invalide
+ */
+export function parsePackageManager(value) {
+  if (typeof value !== "string") return null;
+  const match = PACKAGE_MANAGER_FIELD.exec(value.trim());
+  if (!match) return null;
+  return { name: match[1], version: match[2] };
+}
 
 /**
  * Gems à outillage binaire présentes dans le verrou.
@@ -105,13 +161,85 @@ export function npmInstallCommand(lockfiles) {
 }
 
 /**
+ * Choisit le gestionnaire de paquets front, sa commande d'installation, et
+ * dit ce qui a été refusé.
+ *
+ * TROIS RÈGLES, ET AUCUNE N'INVENTE RIEN.
+ *
+ * 1. Deux verrous de gestionnaires DIFFÉRENTS sont contradictoires : rien ne
+ *    permet de trancher lequel décrit l'état réel des dépendances, et se
+ *    tromper produit une installation qui n'est celle de personne. C'est
+ *    bloquant.
+ * 2. Un verrou pnpm SANS `packageManager` ne donne aucune version. Corepack ne
+ *    peut alors rien provisionner, et en choisir une au hasard reviendrait à
+ *    installer avec un pnpm que le dépôt n'a jamais utilisé. On avertit
+ *    fortement et on retombe sur npm — le comportement d'avant.
+ * 3. Un gestionnaire hors liste (yarn, bun) est signalé, pas exécuté. Le repli
+ *    npm est, là aussi, le comportement d'avant.
+ * @param {{ lockfiles?: readonly string[], packageManager?: unknown }} input
+ * @returns {{ manager: string, install: string, findings: Finding[] }}
+ */
+export function planPackageManager({ lockfiles = [], packageManager } = {}) {
+  const verrous = Array.isArray(lockfiles) ? lockfiles : [];
+  /** @type {Finding[]} */
+  const findings = [];
+
+  const familles = [...new Set(verrous.map((nom) => NPM_LOCKFILES[nom]).filter(Boolean))];
+  if (familles.length > 1) {
+    findings.push(
+      createFinding(
+        SEVERITY.BLOCKING,
+        "verrous-front-contradictoires",
+        `Verrous front contradictoires (${familles.sort().join(", ")}) : railsbox ne peut pas ` +
+          "deviner lequel décrit vos dépendances. N'en gardez qu'un.",
+        { lockfiles: [...verrous] },
+      ),
+    );
+    return { manager: DEFAULT_PACKAGE_MANAGER, install: npmInstallCommand(verrous), findings };
+  }
+
+  const declare = parsePackageManager(packageManager);
+  const aVerrouPnpm = verrous.includes("pnpm-lock.yaml");
+
+  if (declare && declare.name === "pnpm" && aVerrouPnpm) {
+    return { manager: "pnpm", install: PNPM_INSTALL, findings };
+  }
+
+  if (aVerrouPnpm) {
+    findings.push(
+      createFinding(
+        SEVERITY.WARNING,
+        "pnpm-sans-package-manager",
+        'Verrou pnpm présent, mais aucun `packageManager: "pnpm@X.Y.Z"` exploitable dans ' +
+          "package.json : railsbox n'invente pas de version et installe avec npm. Déclarez-le " +
+          "pour que vos dépendances soient installées à l'identique du dépôt.",
+        { packageManagerDeclare: declare?.name ?? null },
+      ),
+    );
+  } else if (declare && !PACKAGE_MANAGERS.includes(declare.name)) {
+    findings.push(
+      createFinding(
+        SEVERITY.WARNING,
+        "package-manager-non-execute",
+        `Gestionnaire « ${declare.name} » déclaré : railsbox ne l'exécute pas et installe avec ` +
+          "npm. Seuls npm et pnpm sont pris en charge.",
+        { packageManagerDeclare: declare.name },
+      ),
+    );
+  }
+
+  return { manager: DEFAULT_PACKAGE_MANAGER, install: npmInstallCommand(verrous), findings };
+}
+
+/**
  * @typedef {object} AssetPlan
  * @property {string} stage une des valeurs de {@link ASSET_STAGE}
  * @property {boolean} npm l'application a un package.json
  * @property {readonly string[]} scripts scripts npm de build à déclencher
  * @property {readonly string[]} tools outils front déclarés dans package.json
  * @property {readonly string[]} binaryGems gems d'assets à binaire précompilé
- * @property {string} install commande d'installation npm, vide sans package.json
+ * @property {string} install commande d'installation, vide sans package.json
+ * @property {string} manager gestionnaire de paquets front (`npm` ou `pnpm`)
  * @property {readonly string[]} output répertoires remontés de l'étage amd64 vers le disque
  */
 
@@ -122,7 +250,7 @@ export function npmInstallCommand(lockfiles) {
  * fusion d'un railsbox.yml, par exemple), elle conserve la commande
  * d'installation déjà déduite des verrous — que le manifeste ne transporte pas
  * — ainsi que les répertoires de sortie déjà retenus.
- * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[]}} input contexte d'analyse
+ * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, manager?: string, packageManager?: unknown, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[]}} input contexte d'analyse
  * @returns {{plan: AssetPlan, findings: Finding[]}} plan gelé et diagnostics
  */
 export function planAssets({ assets, specs, lockfiles = [], outputDirs = [] } = {}) {
@@ -136,10 +264,15 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [] } = 
   const binaryGems = binaryAssetGems(resolved);
   const pipeline = ASSET_PIPELINE_GEMS.some((gem) => resolved.has(gem));
   const stage = chooseStage({ npm, binaryGems, pipeline });
-  const install = npm ? assets?.install || npmInstallCommand(lockfiles) : "";
+  const gestionnaire = planPackageManager({
+    lockfiles,
+    packageManager: assets?.packageManager,
+  });
+  const install = npm ? assets?.install || gestionnaire.install : "";
+  const manager = npm ? (assets?.manager ?? gestionnaire.manager) : DEFAULT_PACKAGE_MANAGER;
 
   /** @type {Finding[]} */
-  const findings = [];
+  const findings = npm ? [...gestionnaire.findings] : [];
   if (stage === ASSET_STAGE.HOST) {
     findings.push(
       createFinding(
@@ -151,7 +284,7 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [] } = 
       ),
     );
   }
-  if (npm && !lockfileIsNpm(lockfiles)) {
+  if (npm && manager === DEFAULT_PACKAGE_MANAGER && !lockfileIsNpm(lockfiles)) {
     findings.push(
       createFinding(SEVERITY.WARNING, "npm-lockfile-absent", describeMissingLock(lockfiles), {
         lockfiles: [...lockfiles],
@@ -166,6 +299,7 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [] } = 
       tools: Object.freeze(tools),
       binaryGems: Object.freeze(binaryGems),
       install,
+      manager,
       output: Object.freeze(output),
     }),
     findings,

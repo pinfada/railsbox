@@ -43,6 +43,13 @@ export const NATIVE_GEMS = Object.freeze({
   sassc: Object.freeze(["libsass"]),
   sqlite3: Object.freeze(["libsqlite3"]),
   vips: Object.freeze(["libvips"]),
+  // webp-ffi porte bien son nom à moitié : c'est une liaison FFI, mais elle
+  // COMPILE une extension (jpegdec.c, pngdec.c, tiffdec.c) qui inclut
+  // `webp/encode.h` et `webp/decode.h`. Sans les en-têtes, `bundle install`
+  // échoue en « fatal error: webp/encode.h: No such file or directory ».
+  // Manque trouvé à la première construction de tryzealot/zealot, dont
+  // l'Aptfile déclarait `libwebp-dev` — que rien ici ne lisait.
+  "webp-ffi": Object.freeze(["libwebp"]),
 });
 
 /** Gems dont la compilation i386 est si longue qu'elle mérite un avertissement. */

@@ -16,6 +16,8 @@ import { detectApp, readOptionalFile } from "../detect/detect.mjs";
 import { sandboxSansDonneesFindings } from "../detect/donnees-demo.mjs";
 import { planExclusions } from "../detect/exclusions.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
+
+/** @typedef {import("../detect/findings.mjs").Finding} Finding */
 import { parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
 import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "../detect/ssl.mjs";
@@ -153,6 +155,14 @@ const SYSTEM_LIB_PACKAGES = Object.freeze({
   // toute la pile GLib/GTK n'achèteraient rien. libvips-tools apporte `vips`,
   // qui rend la présence vérifiable — et ne coûte rien de plus.
   libvips: Object.freeze(["libvips42", "libvips-tools"]),
+  // webp-ffi compile jpegdec.c, pngdec.c et tiffdec.c : elle a besoin des
+  // en-têtes des TROIS formats d'entrée en plus de ceux de libwebp.
+  // Découvert en trois passages successifs sur tryzealot/zealot — chaque
+  // ajout révélait l'inclusion suivante. L'Aptfile de l'application ne
+  // nommait que `libwebp-dev` : sur la pile Heroku, les autres sont déjà là.
+  // `libjpeg62-turbo-dev` plutôt que le virtuel `libjpeg-dev` : apt refuse
+  // d'installer un paquet virtuel dès qu'il a plusieurs fournisseurs.
+  libwebp: Object.freeze(["libwebp-dev", "libjpeg62-turbo-dev", "libpng-dev", "libtiff-dev"]),
   libxml2: Object.freeze(["libxml2-dev"]),
   libxslt: Object.freeze(["libxslt1-dev"]),
   // libsass : sassc compile sa copie embarquée, aucun paquet système utile.
@@ -173,13 +183,24 @@ const DATABASE_PACKAGES = Object.freeze({
 export { binaryAssetGems };
 
 /**
- * Préparation par CHARGEMENT DU SCHÉMA : `db:prepare` sur une base vierge crée
- * la base, charge db/schema.rb et marque toutes les migrations comme
- * appliquées — sans en jouer une seule. Rapide, insensible aux vieilles
- * migrations qui ne tournent plus, mais aveugle aux données qu'une migration
- * amorce.
+ * INVARIANT : LA PRÉPARATION NE SÈME JAMAIS.
+ *
+ * `db:prepare` a longtemps tenu ce rôle. C'était une erreur : sur une base
+ * qu'il vient d'initialiser, Rails y charge AUSSI `db/seeds.rb`
+ * (guides.rubyonrails.org, « Preparing the Database »). Or railsbox rejoue
+ * ensuite `SEED_COMMAND` — les seeds tournaient donc DEUX FOIS. Sur un jeu
+ * idempotent cela ne coûtait que du temps ; ailleurs, cela duplique les
+ * données, en silence.
+ *
+ * La préparation se limite désormais à la STRUCTURE, et le chargement des
+ * données de démonstration n'a plus qu'un seul endroit : `SEED_COMMAND`.
+ *
+ * `db:migrate` reste nécessaire APRÈS `db:schema:load` : une migration plus
+ * récente que le schéma versionné ne serait sinon jamais appliquée.
+ * `db:schema:load` respecte `schema.rb` ou `structure.sql` selon
+ * `config.active_record.schema_format` — railsbox n'a pas à choisir.
  */
-export const DB_PREPARE_SCHEMA = "bundle exec rails db:prepare";
+export const DB_PREPARE_SCHEMA = "bundle exec rails db:create db:schema:load db:migrate";
 
 /**
  * Préparation par REJEU DES MIGRATIONS : tout l'historique est rejoué depuis
@@ -202,14 +223,56 @@ export const DB_PREPARE_MIGRATE = "bundle exec rails db:create db:migrate";
  *
  * `database_prepare: migrate` reste disponible en opt-in explicite, sans repli
  * silencieux : un choix explicite doit échouer bruyamment.
- * @param {{strategy?: string, dataMigrations?: readonly string[]}} [input] stratégie déclarée
+ * @param {{strategy?: string, schemaFile?: string|null, schemasManquants?: readonly string[], dataMigrations?: readonly string[]}} [input] stratégie déclarée
  *   dans railsbox.yml ; `dataMigrations` est accepté et volontairement IGNORÉ —
  *   c'est là que vit l'arbitrage, et un lecteur doit pouvoir le vérifier ici.
- * @returns {{strategy: string, command: string}} stratégie retenue et commande shell
+ * @returns {{strategy: string, command: string, findings: Finding[]}} stratégie retenue,
+ *   commande shell, et le diagnostic du repli s'il a eu lieu
  */
 export function dbPrepareCommand(input = {}) {
-  if (input.strategy === "migrate") return { strategy: "migrate", command: DB_PREPARE_MIGRATE };
-  return { strategy: "schema", command: DB_PREPARE_SCHEMA };
+  if (input.strategy === "migrate") {
+    return { strategy: "migrate", command: DB_PREPARE_MIGRATE, findings: [] };
+  }
+  // Sans schéma versionné, `db:schema:load` échouerait sur un fichier absent —
+  // et le message de Rails ne dirait pas que railsbox a choisi cette voie. Le
+  // repli est donc EXPLICITE, et il se dit.
+  if (input.schemaFile === null || input.schemaFile === undefined) {
+    return {
+      strategy: "migrate",
+      command: DB_PREPARE_MIGRATE,
+      findings: [
+        createFinding(
+          SEVERITY.INFO,
+          "prepare-sans-schema",
+          "Ni db/schema.rb ni db/structure.sql : la base sera préparée en rejouant " +
+            "toutes les migrations (db:create db:migrate) au lieu de charger le schéma. " +
+            "Plus lent, et sensible à une migration ancienne qui ne tournerait plus.",
+        ),
+      ],
+    };
+  }
+  // Bases MULTIPLES dont un schéma n'est pas versionné. `db:schema:load`
+  // s'arrête sur le premier fichier absent — « db/cache_schema.rb doesn't
+  // exist yet » — et ce message ne dit ni que railsbox a choisi cette voie, ni
+  // que l'application, elle, est parfaitement saine : ses migrations créent ces
+  // bases, et Rails conseille lui-même `db:migrate`. On le fait, et on le dit.
+  if (input.schemasManquants !== undefined && input.schemasManquants.length > 0) {
+    return {
+      strategy: "migrate",
+      command: DB_PREPARE_MIGRATE,
+      findings: [
+        createFinding(
+          SEVERITY.INFO,
+          "prepare-schemas-incomplets",
+          "config/database.yml déclare plusieurs bases, et il manque un schéma versionné " +
+            `(${input.schemasManquants.join(", ")}) : la base sera préparée en rejouant toutes les migrations ` +
+            "(db:create db:migrate) au lieu de charger le schéma. Plus lent, et c'est la voie " +
+            "que Rails conseille lui-même dans ce cas.",
+        ),
+      ],
+    };
+  }
+  return { strategy: "schema", command: DB_PREPARE_SCHEMA, findings: [] };
 }
 
 /** Commande de seed par défaut, utilisée quand `db/seeds.rb` existe. */
@@ -293,7 +356,7 @@ export function splitPackages(manifest, baseRevision) {
  * `public/assets` — il ne relance rien.
  * @param {Manifest} manifest manifeste fusionné
  * @param {Map<string, string>} specs gems résolues du Gemfile.lock
- * @returns {{npm: boolean, scripts: string[], stage: string, install: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
+ * @returns {{npm: boolean, scripts: string[], stage: string, install: string, manager: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
  */
 export function assetsPlan(manifest, specs) {
   const { plan } = planAssets({ assets: manifest.assets, specs });
@@ -302,6 +365,7 @@ export function assetsPlan(manifest, specs) {
     scripts: [...plan.scripts],
     stage: plan.stage,
     install: plan.install,
+    manager: plan.manager,
     binaryGems: [...plan.binaryGems],
     precompile: plan.stage === ASSET_STAGE.GUEST,
     output: [...plan.output],
@@ -342,7 +406,11 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
   const postgres = postgresSettings(appName);
   const keepForceSsl = manifest.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE;
   const paquets = splitPackages(manifest, baseRevision);
-  const dbPrepare = dbPrepareCommand({ strategy: manifest.databasePrepare });
+  const dbPrepare = dbPrepareCommand({
+    strategy: manifest.databasePrepare,
+    schemaFile: manifest.schemaFile,
+    schemasManquants: manifest.schemasManquants,
+  });
   // Ce qui n'entrera PAS dans le contexte de construction. Calculé ici parce
   // que la décision dépend du plan d'assets : un répertoire de sortie n'est
   // écarté que si la construction le régénère (voir detect/exclusions.mjs).
@@ -384,6 +452,12 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
     ASSETS_STAGE: assets.stage,
     HOST_ASSETS: assets.stage === ASSET_STAGE.HOST ? "1" : "0",
     NPM_INSTALL_COMMAND: assets.install,
+    // Gestionnaire de paquets front, sous forme d'IDENTIFIANT SEUL (`npm` ou
+    // `pnpm`). La version déclarée par l'application n'entre jamais ici : elle
+    // vient d'un package.json tiers, et c'est Corepack qui la lit lui-même
+    // dans le projet. Ce qui traverse est donc une valeur d'une liste fermée,
+    // jamais une chaîne d'origine tierce.
+    PACKAGE_MANAGER: assets.manager,
     // Répertoires que l'étage amd64 remonte vers le disque applicatif. Les
     // deux premiers sont structurels ; les suivants viennent de la détection
     // (vite_rails, Shakapacker) ou de `assets.output` du railsbox.yml, et sont
@@ -481,6 +555,19 @@ export async function analyzeApp(appDir, appName, options = {}) {
     readOptionalFile(join(appDir, "db", "seeds.rb")),
   ]);
   const specs = parseLockSpecs(lock);
+
+  // Le repli de préparation, quand aucun schéma versionné n'est disponible :
+  // la commande change, et le taire laisserait le mainteneur devant un temps
+  // de construction inexpliqué. Recalculé ici plutôt que porté depuis
+  // buildArgs — la décision est pure, donc rejouable, et l'assemblage du
+  // rapport reste le seul endroit où les diagnostics se rassemblent.
+  findings.push(
+    ...dbPrepareCommand({
+      strategy: manifest.databasePrepare,
+      schemaFile: manifest.schemaFile,
+      schemasManquants: manifest.schemasManquants,
+    }).findings,
+  );
 
   // Une sandbox sans données démarre parfaitement et ne montre rien : le
   // contrôle a lieu après la fusion, une commande de seed déclarée le faisant

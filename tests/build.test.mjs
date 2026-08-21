@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { formatReport } from "../tools/detect/report.mjs";
 import {
   DB_PREPARE_MIGRATE,
   DB_PREPARE_SCHEMA,
@@ -129,6 +131,30 @@ test("extraPackages n'installe ni PostgreSQL ni Redis pour une application sqlit
 
   // Assert
   assert.deepEqual(packages, ["libsqlite3-dev"]);
+});
+
+test("extraPackages fournit les en-têtes libwebp que webp-ffi compile", () => {
+  // webp-ffi est une liaison FFI qui compile POURTANT une extension : sans
+  // `libwebp-dev`, `bundle install` s'arrête sur « fatal error:
+  // webp/encode.h ». Le cas vient de tryzealot/zealot, première application
+  // tierce à l'avoir exigé — et la contre-épreuve compte autant : ruby-vips,
+  // liaison FFI qui ne compile rien, ne doit toujours PAS tirer d'en-têtes.
+  const packages = extraPackages({
+    database: "postgresql",
+    nativeGems: [
+      { name: "webp-ffi", systemLibs: ["libwebp"] },
+      { name: "ruby-vips", systemLibs: ["libvips"] },
+    ],
+    services: { redis: false },
+  });
+
+  // Les trois formats d'entrée comptent autant que libwebp : la gem compile
+  // jpegdec.c, pngdec.c et tiffdec.c, et chaque en-tête manquant arrête
+  // `bundle install` — un par passage, jusqu'à ce qu'ils y soient tous.
+  for (const paquet of ["libwebp-dev", "libjpeg62-turbo-dev", "libpng-dev", "libtiff-dev"]) {
+    assert.ok(packages.includes(paquet), `${paquet} doit être installé`);
+  }
+  assert.ok(!packages.includes("libvips-dev"), "ceux de libvips ne le doivent pas");
 });
 
 test("extraPackages traduit libvips en paquets de RUNTIME, sans les en-têtes", () => {
@@ -605,29 +631,250 @@ BUNDLED WITH
 
 // --- Préparation de la base --------------------------------------------------
 
-test("la préparation par défaut charge le schéma, migrations porteuses ou non", () => {
-  assert.deepEqual(dbPrepareCommand(), { strategy: "schema", command: DB_PREPARE_SCHEMA });
+test("la préparation charge le schéma PUIS les migrations plus récentes que lui", () => {
+  // `db:migrate` après `db:schema:load` n'est pas une ceinture-bretelles : une
+  // migration plus récente que le schéma versionné ne serait sinon jamais
+  // appliquée, et la table manquerait sans que rien ne le dise.
+  const prepare = dbPrepareCommand({ schemaFile: "db/schema.rb" });
+
+  assert.equal(prepare.strategy, "schema");
+  assert.equal(prepare.command, DB_PREPARE_SCHEMA);
+  assert.match(prepare.command, /db:create .*db:schema:load .*db:migrate/);
+  assert.deepEqual(prepare.findings, []);
+});
+
+test("LA PRÉPARATION NE SÈME JAMAIS — c'est l'invariant, et il tient pour les deux stratégies", () => {
+  // `db:prepare` chargeait aussi db/seeds.rb sur une base qu'il venait
+  // d'initialiser (guides Rails, « Preparing the Database »). railsbox rejouant
+  // ensuite SEED_COMMAND, les seeds tournaient DEUX FOIS : du temps perdu sur
+  // un jeu idempotent, des doublons silencieux ailleurs.
+  for (const entree of [
+    { schemaFile: "db/schema.rb" },
+    { schemaFile: "db/structure.sql" },
+    { schemaFile: null },
+    { strategy: "migrate" },
+  ]) {
+    const { command } = dbPrepareCommand(entree);
+    assert.doesNotMatch(command, /db:seed/, `${JSON.stringify(entree)} ne doit pas semer`);
+    assert.doesNotMatch(command, /db:prepare/, `${JSON.stringify(entree)} ne doit plus prépare`);
+  }
+});
+
+test("structure.sql est traité comme schema.rb : Rails choisit le format, pas railsbox", () => {
+  // `db:schema:load` suit `config.active_record.schema_format`. Distinguer les
+  // deux ici reviendrait à décider à la place de l'application.
+  assert.equal(dbPrepareCommand({ schemaFile: "db/structure.sql" }).command, DB_PREPARE_SCHEMA);
+  assert.equal(dbPrepareCommand({ schemaFile: "db/schema.rb" }).command, DB_PREPARE_SCHEMA);
+});
+
+test("sans schéma versionné, le repli est EXPLICITE et se dit", () => {
+  // Laisser `db:schema:load` échouer sur un fichier absent donnerait un message
+  // de Rails qui ne nomme pas le choix de railsbox.
+  const prepare = dbPrepareCommand({ schemaFile: null });
+
+  assert.equal(prepare.strategy, "migrate");
+  assert.equal(prepare.command, DB_PREPARE_MIGRATE);
+  assert.equal(prepare.findings.length, 1);
+  assert.equal(prepare.findings[0].code, "prepare-sans-schema");
+  assert.match(prepare.findings[0].message, /db:create db:migrate/);
+});
+
+test("la préparation par défaut ne change pas face à des migrations porteuses", () => {
   // Le point de l'arbitrage : relever des migrations porteuses de données ne
   // change PAS la commande. railsbox signale un défaut applicatif, il ne le
   // masque pas en rejouant l'historique dans le dos du mainteneur.
-  assert.deepEqual(dbPrepareCommand({ dataMigrations: ["20260514210000_create_currencies.rb"] }), {
-    strategy: "schema",
-    command: DB_PREPARE_SCHEMA,
+  const prepare = dbPrepareCommand({
+    schemaFile: "db/schema.rb",
+    dataMigrations: ["20260514210000_create_currencies.rb"],
   });
+
+  assert.equal(prepare.strategy, "schema");
+  assert.equal(prepare.command, DB_PREPARE_SCHEMA);
 });
 
-test("database_prepare: migrate produit db:create db:migrate, sans repli silencieux", () => {
-  const prepare = dbPrepareCommand({ strategy: "migrate" });
-  assert.deepEqual(prepare, { strategy: "migrate", command: DB_PREPARE_MIGRATE });
+test("database_prepare: migrate rejoue tout l'historique, sans repli silencieux", () => {
+  const prepare = dbPrepareCommand({ strategy: "migrate", schemaFile: "db/schema.rb" });
+
+  assert.equal(prepare.strategy, "migrate");
+  assert.equal(prepare.command, DB_PREPARE_MIGRATE);
+  assert.doesNotMatch(prepare.command, /db:schema:load/, "un choix explicite est respecté");
   // Aucun « || » : un choix explicite doit échouer bruyamment, pas se faire
   // rattraper par un chargement de schéma qui remettrait la table à vide.
   assert.ok(!prepare.command.includes("||"));
 });
 
+test("un schéma secondaire manquant fait basculer sur les migrations, EN LE DISANT", () => {
+  // Sans cette bascule, `db:schema:load` s'arrête sur « db/cache_schema.rb
+  // doesn't exist yet » — la construction échoue sur une application saine,
+  // dont les migrations créent justement cette base. Rails conseille
+  // lui-même db:migrate dans ce cas.
+  const prepare = dbPrepareCommand({
+    schemaFile: "db/schema.rb",
+    schemasManquants: ["db/cache_schema.rb", "db/cable_schema.rb"],
+  });
+
+  assert.equal(prepare.strategy, "migrate");
+  assert.equal(prepare.command, DB_PREPARE_MIGRATE);
+  assert.doesNotMatch(prepare.command, /db:schema:load/);
+  assert.equal(prepare.findings.length, 1);
+  assert.equal(prepare.findings[0].code, "prepare-schemas-incomplets");
+  // Le diagnostic doit NOMMER les fichiers : « plusieurs bases » sans les
+  // nommer laisserait le mainteneur chercher lequel manque.
+  assert.match(prepare.findings[0].message, /db\/cache_schema\.rb/);
+  assert.match(prepare.findings[0].message, /db\/cable_schema\.rb/);
+});
+
+test("des schémas secondaires tous présents laissent le chargement du schéma", () => {
+  for (const schemasManquants of [[], undefined]) {
+    const prepare = dbPrepareCommand({ schemaFile: "db/schema.rb", schemasManquants });
+
+    assert.equal(prepare.strategy, "schema", String(schemasManquants));
+    assert.equal(prepare.command, DB_PREPARE_SCHEMA);
+    assert.deepEqual(prepare.findings, []);
+  }
+});
+
+test("le relevé de schémas manquants ne sème pas davantage", () => {
+  // L'invariant du huitième commit vaut pour TOUTES les branches, celle-ci
+  // comprise : la préparation ne charge jamais db/seeds.rb.
+  const { command } = dbPrepareCommand({
+    schemaFile: "db/schema.rb",
+    schemasManquants: ["db/cache_schema.rb"],
+  });
+
+  assert.doesNotMatch(command, /db:seed/);
+  assert.doesNotMatch(command, /db:prepare/);
+});
+
+test("le RÉSUMÉ et la COMMANDE ne peuvent pas diverger", () => {
+  // Deux endroits décident du même fait : dbPrepareCommand fabrique la
+  // commande, describeDatabasePrepare la raconte. Rien dans le langage ne les
+  // relie — ce test est le lien. Un résumé annonçant « chargement de
+  // db/schema.rb » pendant que la construction rejoue les migrations enverrait
+  // le mainteneur chercher une panne au mauvais endroit.
+  const manifestes = [
+    { schemaFile: "db/schema.rb" },
+    { schemaFile: "db/structure.sql" },
+    { schemaFile: null },
+    { schemaFile: undefined },
+    { schemaFile: "db/schema.rb", schemasManquants: [] },
+    { schemaFile: "db/schema.rb", schemasManquants: ["db/cache_schema.rb"] },
+    { schemaFile: "db/structure.sql", schemasManquants: ["db/cache_structure.sql"] },
+    { schemaFile: "db/schema.rb", databasePrepare: "migrate" },
+    { schemaFile: null, databasePrepare: "migrate" },
+    { schemaFile: "db/schema.rb", dataMigrations: ["20260514210000_create_currencies.rb"] },
+  ];
+
+  for (const manifest of manifestes) {
+    const { strategy, command } = dbPrepareCommand({
+      strategy: manifest.databasePrepare,
+      schemaFile: manifest.schemaFile,
+      schemasManquants: manifest.schemasManquants,
+    });
+    const ligne = formatReport({ manifest })
+      .split("\n")
+      .find((l) => l.startsWith("Préparation base"));
+    const trace = `${JSON.stringify(manifest)} → ${ligne}`;
+
+    if (strategy === "migrate") {
+      assert.match(ligne, /rejeu des migrations/, trace);
+      assert.doesNotMatch(ligne, /chargement de/, trace);
+      // La réserve sur les migrations porteuses n'a plus lieu d'être : elles
+      // tournent.
+      assert.doesNotMatch(ligne, /ne seront donc pas insérées/, trace);
+    } else {
+      assert.match(ligne, /chargement de/, trace);
+      assert.match(ligne, /db:schema:load/, trace);
+      assert.equal(command, DB_PREPARE_SCHEMA, trace);
+      // Le résumé doit nommer le fichier RÉELLEMENT chargé, pas db/schema.rb
+      // par habitude : structure.sql se lit autrement.
+      assert.ok(ligne.includes(manifest.schemaFile), trace);
+    }
+  }
+});
+
+test("LES DEUX CHEMINS DE CONSTRUCTION portent le même défaut de préparation", () => {
+  // railsbox construit de deux façons : monolithique (build.sh + Dockerfile) et
+  // découplée (build-app-disk.sh + base/app.Dockerfile), cette dernière étant
+  // celle que la chaîne PUBLIQUE emploie. Le défaut du second était resté à
+  // `db:prepare` quand le premier a cessé de semer — invisible, parce que
+  // l'argument est toujours passé explicitement. Un défaut n'a pas le droit de
+  // contredire l'invariant qu'il est censé porter.
+  const dockerfiles = [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ];
+
+  for (const chemin of dockerfiles) {
+    const defaut = /^ARG DB_PREPARE_COMMAND="([^"]*)"/m.exec(readFileSync(chemin, "utf8"));
+
+    assert.ok(defaut, `${chemin} doit déclarer ARG DB_PREPARE_COMMAND`);
+    assert.equal(defaut[1], DB_PREPARE_SCHEMA, chemin);
+    assert.doesNotMatch(defaut[1], /db:prepare/, `${chemin} ne doit plus préparer-et-semer`);
+    assert.doesNotMatch(defaut[1], /db:seed/, `${chemin} ne doit pas semer`);
+  }
+});
+
+test("TOUT étage qui compile des gems accepte EXTRA_PACKAGES, et on le lui passe", () => {
+  // Deuxième divergence du même genre : les en-têtes déduits du Gemfile.lock
+  // n'arrivaient qu'au disque i386. Or `bundle install` tourne AUSSI à l'étage
+  // amd64 de précompilation, et une gem sans variante binaire y compile —
+  // webp-ffi y a fait échouer la construction découplée, celle de la chaîne
+  // publique, alors que la monolithique passait.
+  const etages = [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+  ];
+  for (const chemin of etages) {
+    const texte = readFileSync(chemin, "utf8");
+
+    assert.match(texte, /^ARG EXTRA_PACKAGES=/m, `${chemin} doit déclarer l'ARG`);
+    assert.match(texte, /\$\{?EXTRA_PACKAGES\}?/, `${chemin} doit s'en servir`);
+  }
+
+  // Déclarer l'ARG ne suffit pas : sans --build-arg, il reste vide et le
+  // symptôme est le même. Les deux scripts de construction doivent le passer.
+  for (const chemin of [
+    "tools/build-v86-image/build.sh",
+    "tools/build-v86-image/build-app-disk.sh",
+  ]) {
+    assert.match(
+      readFileSync(chemin, "utf8"),
+      /--build-arg "EXTRA_PACKAGES=/,
+      `${chemin} doit transmettre EXTRA_PACKAGES`,
+    );
+  }
+});
+
 test("une valeur non reconnue retombe sur le chargement du schéma", () => {
   for (const strategy of ["auto", "", null, undefined, "Migrate"]) {
-    assert.equal(dbPrepareCommand({ strategy }).command, DB_PREPARE_SCHEMA, String(strategy));
+    assert.equal(
+      dbPrepareCommand({ strategy, schemaFile: "db/schema.rb" }).command,
+      DB_PREPARE_SCHEMA,
+      String(strategy),
+    );
   }
+});
+
+test("les seeds n'ont qu'UN seul endroit, y compris quand la commande est personnalisée", () => {
+  // La régression que l'invariant existe pour empêcher : une commande de seed
+  // déclarée dans railsbox.yml ne doit pas être doublée par la préparation.
+  const args = buildArgs({
+    manifest: {
+      ruby: "3.3.12",
+      database: "sqlite3",
+      services: {},
+      schemaFile: "db/schema.rb",
+      seed: { command: "bin/rails runner db/seeds/demo.rb" },
+    },
+    specs: new Map(),
+    hasSeeds: true,
+    appName: "demo",
+  });
+
+  assert.equal(args.SEED_COMMAND, "bin/rails runner db/seeds/demo.rb");
+  assert.doesNotMatch(args.DB_PREPARE_COMMAND, /seed/, "la préparation ne sème pas");
+  assert.match(args.DB_PREPARE_COMMAND, /db:schema:load/);
 });
 
 test("la clé railsbox.yml pilote bien DB_PREPARE_COMMAND de bout en bout", async () => {

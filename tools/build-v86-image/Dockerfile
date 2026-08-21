@@ -33,6 +33,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates openssl nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
+# Gestionnaire de paquets front : `npm` ou `pnpm`, IDENTIFIANT SEUL. La
+# version déclarée par l'application n'arrive jamais jusqu'ici — Corepack la
+# lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
+# une chaîne tierce dans une commande.
+#
+# `corepack enable pnpm` ne fait qu'installer un shim : rien n'est téléchargé
+# tant que pnpm n'est pas invoqué DANS le projet, où il provisionne alors la
+# version exacte demandée. C'est aussi ce shim que `jsbundling-rails`
+# retrouvera pour son `javascript:install`.
+ARG PACKAGE_MANAGER="npm"
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN set -eu; \
+    case "$PACKAGE_MANAGER" in \
+      npm) : ;; \
+      pnpm) corepack enable pnpm ;; \
+      *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
+    esac
+
+# LES MÊMES PAQUETS QUE LE ROOTFS, et pour la même raison : cet étage fait lui
+# aussi un `bundle install` complet, donc il compile les mêmes gems natives.
+# La liste ci-dessus était figée, si bien qu'une application dont une gem
+# exigeait des en-têtes supplémentaires échouait ICI, après que le rootfs, lui,
+# avait été correctement servi. Trouvé sur tryzealot/zealot : corriger
+# `webp-ffi` dans la table gem → bibliothèques n'a fait que déplacer l'échec
+# d'un étage.
+#
+# La liste entière est passée telle quelle, paquets de RUNTIME compris
+# (redis-server, libvips-tools…) : cet étage est jetable — seul `public/assets`
+# en sort — et le trier coûterait plus en complexité qu'il n'économiserait.
+ARG EXTRA_PACKAGES=""
+RUN set -eu; \
+    if [ -n "$EXTRA_PACKAGES" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends $EXTRA_PACKAGES \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 WORKDIR /app
 ENV BUNDLE_WITHOUT="development:test" BUNDLE_JOBS=4 BUNDLE_FROZEN=false
 COPY Gemfile* ./
@@ -75,7 +111,7 @@ ARG APP_ENV_TRUSTED=""
 RUN printf '%s\n' "$APP_ENV_MANIFEST" > /tmp/app-env.sh \
     && printf '%s\n' "$APP_ENV_TRUSTED" >> /tmp/app-env.sh \
     && set -a && . /tmp/app-env.sh && set +a \
-    && for script in $ASSET_SCRIPTS; do npm run "$script"; done \
+    && for script in $ASSET_SCRIPTS; do "$PACKAGE_MANAGER" run "$script"; done \
     && bundle exec rails assets:precompile \
     && rm -f /tmp/app-env.sh
 
@@ -656,7 +692,10 @@ RIB_ASSETS
 # Préparation de la base PENDANT la construction (schéma + seeds) : le premier
 # boot dans le navigateur n'a ainsi ni migration ni amorçage à faire, et
 # l'instantané mémoire capture une base déjà peuplée.
-ARG DB_PREPARE_COMMAND="bundle exec rails db:prepare"
+# La préparation ne SÈME jamais : `db:prepare` chargeait aussi db/seeds.rb
+# sur une base qu'il venait d'initialiser, et railsbox rejouait ensuite
+# SEED_COMMAND — les seeds tournaient deux fois.
+ARG DB_PREPARE_COMMAND="bundle exec rails db:create db:schema:load db:migrate"
 ARG SEED_COMMAND=""
 # 1 : un seed en échec n'arrête pas la construction (validations métier qui
 # refusent des données de démo sur une application réelle).

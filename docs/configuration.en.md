@@ -222,7 +222,8 @@ version](#pinning-a-ruby-version-what-base-allows-and-what-it-does-not)".
 
 #### Data seeded by a **migration** will not arrive
 
-railsbox prepares the database with `rails db:prepare`. On an **empty**
+railsbox prepares the database by LOADING ITS SCHEMA (`db:create db:schema:load
+db:migrate`), then seeds in a **separate process**. On an **empty**
 database — every build — that task loads `db/schema.rb`, i.e. the
 **structure**, then marks every migration as applied **without running a single
 one**. A migration that inserts reference data (currencies, roles, categories,
@@ -253,7 +254,7 @@ That leaves the maintainer who wants to publish a demo **now**, without touching
 the application. One key, explicit opt-in:
 
 ```yaml
-database_prepare: migrate # instead of db:prepare: db:create db:migrate
+database_prepare: migrate # instead of loading the schema: db:create db:migrate
 ```
 
 It replays the **whole** migration history on every build. What it costs, and
@@ -261,6 +262,52 @@ what analysis restates as a warning: it is slower, it can fail on an old
 migration that no longer runs under a recent Rails (with no fallback — an
 explicit choice must fail loudly), and it fixes **the sandbox only**: the
 application stays broken everywhere else.
+
+One thing that matters: as soon as preparation **replays** migrations — through
+this key, or through either automatic fallback — this diagnostic INVERTS. It
+becomes `data-bearing-migration-rejouee`, informational, and says the opposite:
+those rows **will** be inserted in the sandbox, and the defect only remains
+elsewhere. Its remedy changes with it: recommending `database_prepare: migrate`
+to someone who already gets it would make no sense.
+
+#### Several declared databases: the fallback is **automatic**
+
+An application may declare several databases under one environment key. That is
+the shape `solid_cache` and `solid_cable` produce, hence the shape of many
+Rails 8 applications:
+
+```yaml
+production:
+  primary: &primary_production
+    <<: *default
+  cache:
+    <<: *primary_production
+  cable:
+    <<: *primary_production
+```
+
+`db:schema:load` then demands one schema file **per database**: `db/schema.rb`
+for `primary`, then `db/cache_schema.rb` and `db/cable_schema.rb`. Those schemas
+are almost never versioned — migrations are what create those tables. So the
+build used to stop on a Rails message that never names railsbox, and that reads
+like a defect in the application:
+
+```
+/app/db/cache_schema.rb doesn't exist yet. Run `bin/rails db:migrate` to create it, then try again.
+```
+
+railsbox now records the missing schemas and takes, by itself, the route Rails
+recommends — naming it:
+
+```
+- [prepare-schemas-incomplets] config/database.yml declares several databases, and
+  one versioned schema is missing (db/cache_schema.rb, db/cable_schema.rb): […]
+```
+
+Nothing to write in `railsbox.yml`. A database carrying `schema_dump: false` is
+not counted — Rails expects no file for it. And when every secondary schema is
+versioned, loading the schema stays the normal route: this fallback only costs
+build time to those who need it.
 
 ### Demo data and auto-login
 

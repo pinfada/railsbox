@@ -69,6 +69,15 @@ export const REMEDIES = Object.freeze({
     "rails db:setup, une base de CI, une review app et railsbox. Dépannage immédiat sans " +
     "toucher à l'application : database_prepare: migrate dans railsbox.yml (voir son propre " +
     "diagnostic — il ne corrige que la sandbox).",
+  // MÊME constat, remède DIFFÉRENT : quand la préparation rejoue déjà les
+  // migrations, conseiller `database_prepare: migrate` reviendrait à proposer
+  // ce que railsbox vient de faire tout seul.
+  "data-bearing-migration-rejouee":
+    "Rien à faire pour la sandbox : ces lignes y seront insérées. La correction reste " +
+    "utile ailleurs — déplacez l'amorçage de ces données dans db/seeds.rb, c'est ce que " +
+    "Rails prévoit pour les données de référence, et une migration ne les fournit qu'aux " +
+    "bases construites migration par migration, jamais à celles recréées depuis " +
+    "db/schema.rb (rails db:setup, base de CI, review app).",
   "database-prepare-migrate":
     "Rien à faire si le dépannage vous suffit. Mais la correction durable reste de déplacer " +
     "ces données dans db/seeds.rb : railsbox rejouera alors l'historique pour rien, et " +
@@ -290,13 +299,27 @@ function describeDatabasePrepare(manifest) {
   if (manifest.databasePrepare === "migrate") {
     return "rejeu des migrations, db:create db:migrate (demandé par railsbox.yml)";
   }
+  // Les deux REPLIS de dbPrepareCommand. Les taire ici ferait mentir le
+  // résumé : il annoncerait un chargement de schéma là où la construction
+  // rejoue les migrations, et la réserve sur les migrations porteuses de
+  // données serait fausse — elles TOURNENT, dans ce cas.
+  if (manifest.schemaFile === null || manifest.schemaFile === undefined) {
+    return "rejeu des migrations, db:create db:migrate (aucun schéma versionné)";
+  }
+  const manquants = manifest.schemasManquants ?? [];
+  if (manquants.length > 0) {
+    return (
+      "rejeu des migrations, db:create db:migrate " +
+      `(bases multiples, schéma absent : ${manquants.join(", ")})`
+    );
+  }
   const pluriel = migrations.length > 1;
   const reserve =
     migrations.length > 0
       ? ` — ATTENTION : ${migrations.length} migration${pluriel ? "s" : ""} ` +
         `y amorce${pluriel ? "nt" : ""} des données qui ne seront donc pas insérées`
       : "";
-  return `chargement de db/schema.rb, db:prepare${reserve}`;
+  return `chargement de ${manifest.schemaFile}, db:create db:schema:load db:migrate${reserve}`;
 }
 
 /** Libellés français des états de `config.force_ssl`. */

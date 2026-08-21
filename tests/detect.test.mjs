@@ -7,6 +7,8 @@ import {
   detectApp,
   normalizeRubyVersion,
   parseDatabaseAdapters,
+  parseDatabaseNames,
+  schemaDeBase,
   readOptionalFile,
 } from "../tools/detect/detect.mjs";
 import { collectNativeGems, detectServices, parseLockSpecs } from "../tools/detect/gems.mjs";
@@ -228,6 +230,121 @@ test("database.yml truffé d'ERB donne quand même postgresql", async () => {
 
   assert.equal(manifest.database, "postgresql");
   assert.equal(hasBlocking(findings), false);
+});
+
+// --- Bases MULTIPLES ---------------------------------------------------------
+
+const YML_BASES_MULTIPLES = [
+  "default: &default",
+  "  adapter: postgresql",
+  "  pool: 5",
+  "",
+  "test:",
+  "  <<: *default",
+  "",
+  "production:",
+  "  primary: &primary_production",
+  "    <<: *default",
+  "  cache:",
+  "    <<: *primary_production",
+  "  cable:",
+  "    <<: *primary_production",
+  "",
+].join("\n");
+
+test("une connexion unique ne nomme AUCUNE base", () => {
+  // Le piège à éviter : prendre `adapter`, `pool`, `url` pour des noms de
+  // bases et réclamer un db/adapter_schema.rb.
+  assert.deepEqual(parseDatabaseNames(YML_BASES_MULTIPLES, "test"), []);
+  assert.deepEqual(parseDatabaseNames("production:\n  adapter: postgresql\n  pool: 5\n"), []);
+  assert.deepEqual(parseDatabaseNames("production:\n  <<: *default\n"), []);
+  assert.deepEqual(parseDatabaseNames(null), []);
+  assert.deepEqual(parseDatabaseNames("development:\n  <<: *default\n"), []);
+});
+
+test("un dictionnaire de bases nommées les nomme toutes, ancre comprise", () => {
+  assert.deepEqual(parseDatabaseNames(YML_BASES_MULTIPLES), ["primary", "cache", "cable"]);
+  assert.deepEqual(parseDatabaseNames(YML_BASES_MULTIPLES, "development"), []);
+});
+
+test("une base marquée schema_dump: false n'attend aucun fichier", () => {
+  // Rails ne dumpe pas ces bases : en réclamer le schéma ferait basculer la
+  // préparation sur les migrations pour rien.
+  const yml = [
+    "production:",
+    "  primary:",
+    "    <<: *default",
+    "  cache:",
+    "    <<: *default",
+    "    schema_dump: false",
+    "",
+  ].join("\n");
+
+  assert.deepEqual(parseDatabaseNames(yml), ["primary"]);
+});
+
+test("le schéma d'une base suit son nom, et le format du schéma primaire", () => {
+  assert.equal(schemaDeBase("primary", "db/schema.rb"), "db/schema.rb");
+  assert.equal(schemaDeBase("cache", "db/schema.rb"), "db/cache_schema.rb");
+  assert.equal(schemaDeBase("primary", "db/structure.sql"), "db/structure.sql");
+  assert.equal(schemaDeBase("cable", "db/structure.sql"), "db/cable_structure.sql");
+});
+
+test("un schéma secondaire absent est RELEVÉ NOMMÉMENT", async () => {
+  // La panne d'origine, en salle blanche : `db:schema:load` s'arrêtait sur
+  // « /app/db/cache_schema.rb doesn't exist yet » — un message de Rails qui ne
+  // nomme pas railsbox et laisse croire à un défaut de l'application.
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.schemaFile, "db/schema.rb");
+  assert.deepEqual(manifest.schemasManquants, ["db/cache_schema.rb", "db/cable_schema.rb"]);
+});
+
+test("des schémas secondaires tous présents ne relèvent rien", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+    "db/cache_schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+    "db/cable_schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.deepEqual(manifest.schemasManquants, []);
+});
+
+test("en format SQL, ce sont les structure.sql secondaires qui sont attendus", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/structure.sql": "CREATE TABLE things (id bigserial primary key);\n",
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.schemaFile, "db/structure.sql");
+  assert.deepEqual(manifest.schemasManquants, ["db/cache_structure.sql", "db/cable_structure.sql"]);
+});
+
+test("sans schéma primaire, rien n'est relevé : le repli existe déjà", async () => {
+  // Cumuler les deux diagnostics dirait deux fois la même chose, et
+  // `prepare-sans-schema` couvre déjà ce cas.
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.schemaFile, null);
+  assert.deepEqual(manifest.schemasManquants, []);
 });
 
 test("mysql2 dans database.yml bloque l'analyse avec le bon message", async () => {
@@ -952,6 +1069,9 @@ test("detectApp relève la migration porteuse de données et l'annonce en averti
     ".ruby-version": "3.3.12\n",
     "db/migrate/20260514210000_create_currencies.rb": MIGRATION_INSERT,
     "db/migrate/20240101000000_ddl.rb": MIGRATION_DDL,
+    // Le schéma versionné est INDISPENSABLE à ce scénario : sans lui, la
+    // préparation rejoue les migrations et l'avertissement serait faux.
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
   });
   const { manifest, findings } = await detectApp(dir);
   assert.deepEqual(manifest.dataMigrations, ["20260514210000_create_currencies.rb"]);
@@ -962,6 +1082,47 @@ test("detectApp relève la migration porteuse de données et l'annonce en averti
   assert.match(finding.message, /db\/migrate\/20260514210000_create_currencies\.rb/);
   assert.match(finding.message, /db\/schema\.rb/);
   assert.ok(REMEDIES["data-bearing-migration"]);
+});
+
+test("quand la préparation rejoue les migrations, le constat s'INVERSE", async () => {
+  // Le piège : garder l'avertissement tel quel ferait chercher au mainteneur une
+  // table vide qui sera pleine, et lui conseillerait `database_prepare: migrate`
+  // — exactement ce que railsbox vient de faire tout seul.
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": LOCK_MINIMAL,
+    ".ruby-version": "3.3.12\n",
+    "db/migrate/20260514210000_create_currencies.rb": MIGRATION_INSERT,
+  });
+
+  const { findings } = await detectApp(dir);
+  const finding = findByCode(findings, "data-bearing-migration-rejouee");
+
+  assert.equal(finding.severity, "info");
+  // Un code DISTINCT, parce que le remède l'est : conseiller
+  // `database_prepare: migrate` ici proposerait ce que railsbox fait déjà.
+  assert.equal(findings.filter((f) => f.code === "data-bearing-migration").length, 0);
+  assert.ok(REMEDIES["data-bearing-migration-rejouee"]);
+  assert.doesNotMatch(REMEDIES["data-bearing-migration-rejouee"], /database_prepare: migrate/);
+  assert.match(finding.message, /seront bien\s+insérées/);
+  assert.doesNotMatch(finding.message, /ne seront jamais insérées/);
+  // Le défaut applicatif, lui, reste dit : ailleurs, la table sera vide.
+  assert.match(finding.message, /db\/schema\.rb/);
+});
+
+test("un schéma secondaire manquant inverse aussi le constat", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": LOCK_MINIMAL,
+    ".ruby-version": "3.3.12\n",
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+    "db/migrate/20260514210000_create_currencies.rb": MIGRATION_INSERT,
+  });
+
+  const { findings } = await detectApp(dir);
+
+  assert.equal(findByCode(findings, "data-bearing-migration-rejouee").severity, "info");
 });
 
 test("une application sans db/migrate ne produit aucun diagnostic de migration", async () => {

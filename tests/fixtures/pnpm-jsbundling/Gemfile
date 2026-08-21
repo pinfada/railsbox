@@ -1,0 +1,12 @@
+# Fixture de RÉGRESSION, pas une application vivante : les versions y sont
+# figées à dessein. Elle prouve qu'une combinaison connue fonctionne, et n'a
+# aucune vocation à suivre les dernières dépendances.
+source "https://rubygems.org"
+
+gem "rails", "~> 8.0.0"
+gem "propshaft", "~> 1.1"
+gem "jsbundling-rails", "~> 1.3"
+# Aucune base n'est créée ni démarrée par cette épreuve : l'adaptateur n'est là
+# que pour que l'auto-détection reconnaisse une application Rails complète et
+# ne s'arrête pas sur un diagnostic bloquant sans rapport avec le sujet.
+gem "sqlite3", "~> 2.6"

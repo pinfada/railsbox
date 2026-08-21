@@ -257,7 +257,8 @@ COPY --from=railsbox-assets . ./
 ARG ASSET_PRECOMPILE=1
 ARG HOST_ASSETS=0
 # Le bloc `env:` du railsbox.yml vaut aussi PENDANT la construction. Toute
-# étape qui DÉMARRE l'application — assets:precompile, db:prepare, les seeds —
+# étape qui DÉMARRE l'application — assets:precompile, la préparation de la base,
+# les seeds —
 # charge ses initialiseurs, et un initialiseur qui exige une variable (clé de
 # chiffrement, hôte autorisé) fait échouer la construction alors que le guest,
 # lui, aurait eu la variable. L'étage amd64 le fait déjà (assets-amd64.Dockerfile) ;
@@ -307,7 +308,12 @@ ARG PG_VERSION=15
 ARG PG_DATA_DIR=""
 ARG PG_DATABASE_URL=""
 ARG SQLITE_DATABASE_URL=""
-ARG DB_PREPARE_COMMAND="bundle exec rails db:prepare"
+# La préparation ne SÈME jamais : `db:prepare` chargeait aussi db/seeds.rb
+# sur une base qu'il venait d'initialiser, et railsbox rejouait ensuite
+# SEED_COMMAND — les seeds tournaient deux fois. Ce défaut n'est atteint que
+# si l'argument arrive vide : build-app-disk.sh le passe toujours, calculé
+# par manifest-to-args.mjs. Il doit quand même dire la même chose que lui.
+ARG DB_PREPARE_COMMAND="bundle exec rails db:create db:schema:load db:migrate"
 ARG SEED_COMMAND=""
 ARG SEED_OPTIONAL=0
 # Voir le bloc « env: pendant la construction » de l'étage assets ci-dessus.

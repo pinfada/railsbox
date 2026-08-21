@@ -249,7 +249,8 @@ Ruby](#épingler-une-version-de-ruby--ce-que-base-permet-et-ce-quil-ne-permet-pa
 
 #### Les données amorcées par une **migration** n'arriveront pas
 
-railsbox prépare la base avec `rails db:prepare`. Sur une base **vierge** — le
+railsbox prépare la base en CHARGEANT SON SCHÉMA (`db:create db:schema:load
+db:migrate`), puis sème dans un **second processus**. Sur une base **vierge** — le
 cas de toute construction — cette tâche charge `db/schema.rb`, c'est-à-dire la
 **structure**, puis marque toutes les migrations comme appliquées **sans en
 jouer une seule**. Une migration qui insère des données de référence (devises,
@@ -267,7 +268,7 @@ fichiers :
 ```
 - [data-bearing-migration] 1 migration écrit des données (execute d'un INSERT SQL) :
   db/migrate/20260514210000_create_currencies.rb. railsbox prépare la base avec
-  `rails db:prepare`, qui sur une base VIERGE charge db/schema.rb — la structure,
+  le chargement du schéma versionné, qui sur une base VIERGE pose db/schema.rb — la structure,
   pas les données — […]
   Remède : Déplacez l'amorçage de ces données dans db/seeds.rb […]
 ```
@@ -284,7 +285,7 @@ Reste le cas du mainteneur qui veut publier sa démonstration **maintenant**,
 sans toucher à son application. Une clé, en opt-in explicite :
 
 ```yaml
-database_prepare: migrate # au lieu de db:prepare : db:create db:migrate
+database_prepare: migrate # au lieu du chargement du schéma : db:create db:migrate
 ```
 
 Elle rejoue **tout** l'historique des migrations à chaque construction. Ce que
@@ -292,6 +293,55 @@ cela coûte, et que l'analyse répète en avertissement : c'est plus lent, cela
 peut échouer sur une vieille migration qui ne tourne plus sous Rails récent
 (sans repli — un choix explicite doit échouer bruyamment), et cela ne répare
 **que la sandbox** : l'application reste cassée partout ailleurs.
+
+Une précision qui compte : dès que la préparation **rejoue** les migrations —
+par cette clé, ou par l'un des deux replis automatiques — ce diagnostic
+s'INVERSE. Il devient `data-bearing-migration-rejouee`, informatif, et dit
+l'inverse : ces lignes **seront** insérées dans la sandbox, et le défaut ne
+reste entier qu'ailleurs. Son remède change avec lui : conseiller
+`database_prepare: migrate` à qui l'obtient déjà n'aurait aucun sens.
+
+#### Plusieurs bases déclarées : le repli est **automatique**
+
+Une application peut déclarer plusieurs bases sous une même clé
+d'environnement. C'est la forme que produisent `solid_cache` et `solid_cable`,
+donc celle de beaucoup d'applications Rails 8 :
+
+```yaml
+production:
+  primary: &primary_production
+    <<: *default
+  cache:
+    <<: *primary_production
+  cable:
+    <<: *primary_production
+```
+
+`db:schema:load` réclame alors un fichier de schéma **par base** :
+`db/schema.rb` pour `primary`, puis `db/cache_schema.rb` et
+`db/cable_schema.rb`. Or ces schémas-là ne sont presque jamais versionnés —
+ce sont les migrations qui créent ces tables. La construction s'arrêtait donc
+sur un message de Rails qui ne nomme pas railsbox, et qui laisse croire à un
+défaut de l'application :
+
+```
+/app/db/cache_schema.rb doesn't exist yet. Run `bin/rails db:migrate` to create it, then try again.
+```
+
+railsbox relève désormais ces schémas manquants et prend d'office la voie que
+Rails conseille lui-même, en la nommant :
+
+```
+- [prepare-schemas-incomplets] config/database.yml déclare plusieurs bases, et il
+  manque un schéma versionné (db/cache_schema.rb, db/cable_schema.rb) : la base
+  sera préparée en rejouant toutes les migrations (db:create db:migrate) au lieu
+  de charger le schéma. […]
+```
+
+Rien à écrire dans `railsbox.yml`. Une base portant `schema_dump: false` n'est
+pas comptée — Rails n'en attend aucun fichier. Et si tous les schémas
+secondaires sont bien versionnés, le chargement du schéma reste la voie
+normale : ce repli ne coûte du temps de construction qu'à qui en a besoin.
 
 ### Bibliothèques système
 

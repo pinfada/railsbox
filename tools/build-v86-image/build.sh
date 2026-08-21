@@ -148,6 +148,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMA
   --build-arg "NPM_ASSETS=$NPM_ASSETS" \
   --build-arg "HOST_ASSETS=$HOST_ASSETS" \
   --build-arg "NPM_INSTALL_COMMAND=$NPM_INSTALL_COMMAND" \
+  --build-arg "PACKAGE_MANAGER=${PACKAGE_MANAGER:-npm}" \
   --build-arg "ASSET_SCRIPTS=$ASSET_SCRIPTS" \
   --build-arg "ASSET_PRECOMPILE=$ASSET_PRECOMPILE" \
   --build-arg "EXTRA_PACKAGES=$EXTRA_PACKAGES" \

@@ -30,13 +30,40 @@ ENV DEBIAN_FRONTEND=noninteractive
 # PLATFORM ici, contrairement au disque i386) ; ces paquets ne servent qu'aux
 # gems sans variante binaire. nodejs/npm n'est installé que si l'application a
 # une chaîne npm — l'économie est réelle sur une application Tailwind pure.
+#
+# EXTRA_PACKAGES porte les en-têtes que les gems natives DE CETTE APPLICATION
+# réclament, déduits de son Gemfile.lock (voir detect/gems.mjs et la table de
+# manifest-to-args.mjs). Il est INDISPENSABLE ici, et pas seulement au disque
+# i386 : `bundle install` tourne AUSSI à cet étage, et une gem sans variante
+# binaire y compile. webp-ffi l'a montré — « An error occurred while installing
+# webp-ffi (0.4.0) » faute de libwebp-dev, sur le seul chemin découplé.
 ARG NPM_ASSETS=0
+ARG EXTRA_PACKAGES=""
 RUN set -eu; \
     paquets="build-essential git curl ca-certificates openssl pkg-config \
       libyaml-dev zlib1g-dev libxml2-dev libxslt1-dev libsqlite3-dev libpq-dev"; \
     if [ "${NPM_ASSETS}" = 1 ]; then paquets="${paquets} nodejs npm"; fi; \
+    if [ -n "${EXTRA_PACKAGES}" ]; then paquets="${paquets} ${EXTRA_PACKAGES}"; fi; \
     apt-get update && apt-get install -y --no-install-recommends ${paquets} \
     && rm -rf /var/lib/apt/lists/*
+
+# Gestionnaire de paquets front : `npm` ou `pnpm`, IDENTIFIANT SEUL. La
+# version déclarée par l'application n'arrive jamais jusqu'ici — Corepack la
+# lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
+# une chaîne tierce dans une commande.
+#
+# `corepack enable pnpm` ne fait qu'installer un shim : rien n'est téléchargé
+# tant que pnpm n'est pas invoqué DANS le projet, où il provisionne alors la
+# version exacte demandée. C'est aussi ce shim que `jsbundling-rails`
+# retrouvera pour son `javascript:install`.
+ARG PACKAGE_MANAGER="npm"
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN set -eu; \
+    case "$PACKAGE_MANAGER" in \
+      npm) : ;; \
+      pnpm) corepack enable pnpm ;; \
+      *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
+    esac
 
 WORKDIR /app
 
@@ -94,7 +121,7 @@ rm -f /tmp/app-env.sh
 # lui a été écrit ici, et nulle part ailleurs. C'est ce qui permet, plus bas,
 # de nommer les répertoires produits qui ne seront pas exportés.
 touch /tmp/rib-repere
-for script in ${ASSET_SCRIPTS}; do npm run "$script"; done
+for script in ${ASSET_SCRIPTS}; do "${PACKAGE_MANAGER}" run "$script"; done
 bundle exec rails assets:precompile
 RIB_ASSETS
 

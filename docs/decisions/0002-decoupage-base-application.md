@@ -32,7 +32,7 @@ Deux disques v86 :
 ## Cycle de build par application (cible < 5 min)
 
 1. Docker : étage app uniquement (bundle install avec cache, assets,
-   db:prepare + `seed.command` du railsbox.yml) → mkfs du petit `app.ext2`.
+   chargement du schéma + `seed.command` du railsbox.yml) → mkfs du petit `app.ext2`.
 2. Restaurer l'instantané de base sous Node (secondes), attacher
    `app.ext2`, monter, lancer Puma, attendre la sonde, capturer le
    **delta d'instantané** (~2–3 min au lieu de 12).

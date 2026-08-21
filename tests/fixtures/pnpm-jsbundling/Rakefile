@@ -1,0 +1,5 @@
+# `rails assets:precompile` passe par rake : sans ce fichier, la commande
+# s'arrête sur « No Rakefile found » avant même d'atteindre jsbundling.
+require_relative "config/application"
+
+Rails.application.load_tasks

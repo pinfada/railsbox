@@ -123,7 +123,7 @@ export const REMEDES = Object.freeze({
     "Vérifiez la base déclarée (clé database: de railsbox.yml) et que la base railsbox utilisée " +
     "fournit PostgreSQL (3.3-r2 au minimum) : le cluster est initialisé pendant la construction.",
   "db-migration":
-    "Rejouez `bin/rails db:prepare` sur une base VIERGE hors railsbox : la construction part " +
+    "Rejouez `bin/rails db:create db:schema:load db:migrate` sur une base VIERGE hors railsbox : la construction part " +
     "toujours d'une base vide, une migration qui suppose des données existantes échoue ici.",
   "db-donnees-de-migration-absentes":
     "Vos données de référence (devises, rôles, catégories…) sont amorcées par une MIGRATION : " +
