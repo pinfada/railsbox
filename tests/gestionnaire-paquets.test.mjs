@@ -17,6 +17,7 @@
 //  3. rien de tiers n'atteint un shell.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   DEFAULT_PACKAGE_MANAGER,
@@ -254,4 +255,27 @@ test("yarnGeneration reconnaît les deux générations, et rien d'autre", () => 
   assert.equal(yarnGeneration("# yarn lockfile v1"), "classic");
   assert.equal(yarnGeneration("n'importe quoi"), null);
   assert.equal(yarnGeneration(/** @type {*} */ (null)), null);
+});
+
+test("les étages rendent corepack DISPONIBLE avant de l'invoquer", () => {
+  // Trouvé par la première construction réelle avec yarn, sur woofed-crm :
+  // « /bin/sh: 1: corepack: not found ». Le paquet `nodejs` de Debian ne le
+  // livre pas. Le défaut était LATENT depuis l'ajout de pnpm — la ligne
+  // existait, aucune construction ne l'avait exercée.
+  for (const chemin of [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+  ]) {
+    const source = readFileSync(chemin, "utf8");
+    assert.match(
+      source,
+      /command -v corepack >\/dev\/null 2>&1 \|\| npm install -g corepack/,
+      `${chemin} doit installer corepack s'il manque`,
+    );
+    assert.match(
+      source,
+      /command -v "\$PACKAGE_MANAGER" >\/dev\/null/,
+      `${chemin} doit vérifier le shim : sans quoi l'échec surgit bien plus loin`,
+    );
+  }
 });

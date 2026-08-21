@@ -47,8 +47,10 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN set -eu; \
     case "$PACKAGE_MANAGER" in \
       npm) : ;; \
-      pnpm) corepack enable pnpm ;; \
-      yarn) corepack enable yarn ;; \
+      pnpm|yarn) \
+        command -v corepack >/dev/null 2>&1 || npm install -g corepack; \
+        corepack enable "$PACKAGE_MANAGER"; \
+        command -v "$PACKAGE_MANAGER" >/dev/null ;; \
       *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
     esac
 
