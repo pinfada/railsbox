@@ -63,7 +63,7 @@ export const BINARY_ASSET_GEMS = Object.freeze([
 /**
  * Verrous de dépendances front reconnus, et gestionnaire correspondant.
  *
- * railsbox exécute npm et pnpm. Yarn et Bun sont SIGNALÉS, pas exécutés, et
+ * railsbox exécute npm, pnpm et yarn. Bun est SIGNALÉ, pas exécuté, et
  * l'installation retombe alors sur npm.
  *
  * Cette note disait auparavant que railsbox n'installait qu'avec npm, au
@@ -75,9 +75,16 @@ export const BINARY_ASSET_GEMS = Object.freeze([
  * respecter est moins cher que de le contourner — mesuré sur tryzealot/zealot,
  * dont `jsbundling-rails` exige pnpm quoi que railsbox installe.
  *
- * Yarn reste dehors À DESSEIN : Yarn Classic et Yarn moderne n'ont pas la même
- * convention d'installation verrouillée, et les mêler ici produirait une
- * commande fausse pour l'un des deux.
+ * Yarn est resté dehors tant que ses DEUX GÉNÉRATIONS n'étaient pas
+ * distinguées : Classic verrouille avec `--frozen-lockfile`, Berry avec
+ * `--immutable`, et les mêler produirait une commande fausse pour l'un des
+ * deux. Le verrou le dit lui-même — c'est `yarnGeneration` qui le lit, et rien
+ * n'est deviné quand il se tait.
+ *
+ * Ce qui a fait bouger la ligne : woofed-crm, deuxième application tierce
+ * candidate, dont npm REFUSE l'arbre (ERESOLVE — `trix@^1.2.0` contre le pair
+ * `trix@^2.0.0` de `@rails/actiontext`). Le repli npm n'était plus une
+ * dégradation, c'était un échec de construction.
  */
 export const NPM_LOCKFILES = Object.freeze({
   "package-lock.json": "npm",
@@ -105,12 +112,49 @@ const NPM_INSTALL = "npm install --no-audit --no-fund";
 const PNPM_INSTALL = "pnpm install --frozen-lockfile";
 
 /**
+ * Installation Yarn Classic (1.x). Même exigence que pnpm : un verrou périmé
+ * doit ARRÊTER la construction, jamais être réécrit en silence.
+ */
+const YARN_CLASSIC_INSTALL = "yarn install --frozen-lockfile";
+
+/**
+ * Installation Yarn moderne (Berry, 2+). `--immutable` y remplace
+ * `--frozen-lockfile`, que Berry ne connaît pas : c'est exactement la
+ * confusion qui tenait yarn dehors.
+ */
+const YARN_BERRY_INSTALL = "yarn install --immutable";
+
+/** Première ligne d'un verrou Yarn Classic. */
+const YARN_CLASSIC_MARQUEUR = /^#\s*yarn lockfile v1\s*$/m;
+
+/** Bloc que Berry écrit en tête de son verrou. */
+const YARN_BERRY_MARQUEUR = /^__metadata:\s*$/m;
+
+/**
+ * Génération d'un verrou yarn, lue sur SON CONTENU.
+ *
+ * Ni le nom du fichier ni la version déclarée ne tranchent : les deux
+ * générations écrivent `yarn.lock`, et `packageManager` est souvent absent.
+ * Le verrou, lui, porte sa marque. Rendre `null` quand elle manque est la
+ * seule issue honnête — installer avec la mauvaise option échouerait au
+ * milieu d'une construction, pas ici.
+ * @param {unknown} contenu contenu du fichier yarn.lock
+ * @returns {"classic"|"berry"|null} génération reconnue, ou null
+ */
+export function yarnGeneration(contenu) {
+  if (typeof contenu !== "string" || contenu === "") return null;
+  if (YARN_BERRY_MARQUEUR.test(contenu)) return "berry";
+  if (YARN_CLASSIC_MARQUEUR.test(contenu)) return "classic";
+  return null;
+}
+
+/**
  * Gestionnaires que railsbox sait EXÉCUTER. Liste fermée, et c'est une
  * frontière de sécurité : seul un identifiant de cette liste finit dans un
  * argument de build, donc dans une commande. La version, elle, n'y entre
  * jamais — Corepack la lit lui-même dans le `package.json` du projet.
  */
-export const PACKAGE_MANAGERS = Object.freeze(["npm", "pnpm"]);
+export const PACKAGE_MANAGERS = Object.freeze(["npm", "pnpm", "yarn"]);
 
 /** Gestionnaire retenu quand rien n'impose autre chose. */
 export const DEFAULT_PACKAGE_MANAGER = "npm";
@@ -174,12 +218,16 @@ export function npmInstallCommand(lockfiles) {
  *    peut alors rien provisionner, et en choisir une au hasard reviendrait à
  *    installer avec un pnpm que le dépôt n'a jamais utilisé. On avertit
  *    fortement et on retombe sur npm — le comportement d'avant.
- * 3. Un gestionnaire hors liste (yarn, bun) est signalé, pas exécuté. Le repli
- *    npm est, là aussi, le comportement d'avant.
- * @param {{ lockfiles?: readonly string[], packageManager?: unknown }} input
+ * 3. Un verrou yarn est exécuté SI sa génération est certaine. Classic se
+ *    reconnaît seul (`# yarn lockfile v1`) et Corepack en provisionne un par
+ *    défaut. Berry exige un `packageManager` déclaré, pour la même raison que
+ *    pnpm : sans version, Corepack retomberait sur Yarn 1, qui refuserait ce
+ *    verrou. Génération indéterminée : repli npm, jamais de devinette.
+ * 4. Un gestionnaire hors liste (bun) est signalé, pas exécuté.
+ * @param {{ lockfiles?: readonly string[], packageManager?: unknown, yarnLock?: unknown }} input
  * @returns {{ manager: string, install: string, findings: Finding[] }}
  */
-export function planPackageManager({ lockfiles = [], packageManager } = {}) {
+export function planPackageManager({ lockfiles = [], packageManager, yarnLock } = {}) {
   const verrous = Array.isArray(lockfiles) ? lockfiles : [];
   /** @type {Finding[]} */
   const findings = [];
@@ -205,6 +253,37 @@ export function planPackageManager({ lockfiles = [], packageManager } = {}) {
     return { manager: "pnpm", install: PNPM_INSTALL, findings };
   }
 
+  if (verrous.includes("yarn.lock")) {
+    const generation = yarnGeneration(yarnLock);
+    if (generation === "classic") {
+      return { manager: "yarn", install: YARN_CLASSIC_INSTALL, findings };
+    }
+    if (generation === "berry" && declare && declare.name === "yarn") {
+      return { manager: "yarn", install: YARN_BERRY_INSTALL, findings };
+    }
+    findings.push(
+      generation === "berry"
+        ? createFinding(
+            SEVERITY.WARNING,
+            "yarn-sans-package-manager",
+            'Verrou Yarn moderne (Berry) présent, mais aucun `packageManager: "yarn@X.Y.Z"` ' +
+              "dans package.json : Corepack retomberait sur Yarn 1, qui refuse ce verrou. " +
+              "railsbox installe donc avec npm. Déclarez-le pour installer à l'identique du dépôt.",
+            { packageManagerDeclare: declare?.name ?? null },
+          )
+        : createFinding(
+            SEVERITY.WARNING,
+            "yarn-generation-indeterminee",
+            "Verrou « yarn.lock » présent mais illisible : ni la marque Classic " +
+              "(`# yarn lockfile v1`) ni celle de Berry (`__metadata:`) n'y figurent. " +
+              "Classic et Berry n'ont pas la même option d'installation verrouillée : " +
+              "railsbox n'en devine aucune et installe avec npm.",
+            { lockfiles: [...verrous] },
+          ),
+    );
+    return { manager: DEFAULT_PACKAGE_MANAGER, install: npmInstallCommand(verrous), findings };
+  }
+
   if (aVerrouPnpm) {
     findings.push(
       createFinding(
@@ -222,7 +301,7 @@ export function planPackageManager({ lockfiles = [], packageManager } = {}) {
         SEVERITY.WARNING,
         "package-manager-non-execute",
         `Gestionnaire « ${declare.name} » déclaré : railsbox ne l'exécute pas et installe avec ` +
-          "npm. Seuls npm et pnpm sont pris en charge.",
+          "npm. Seuls npm, pnpm et yarn sont pris en charge.",
         { packageManagerDeclare: declare.name },
       ),
     );
@@ -250,10 +329,10 @@ export function planPackageManager({ lockfiles = [], packageManager } = {}) {
  * fusion d'un railsbox.yml, par exemple), elle conserve la commande
  * d'installation déjà déduite des verrous — que le manifeste ne transporte pas
  * — ainsi que les répertoires de sortie déjà retenus.
- * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, manager?: string, packageManager?: unknown, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[]}} input contexte d'analyse
+ * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, manager?: string, packageManager?: unknown, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[], yarnLock?: unknown}} input contexte d'analyse
  * @returns {{plan: AssetPlan, findings: Finding[]}} plan gelé et diagnostics
  */
-export function planAssets({ assets, specs, lockfiles = [], outputDirs = [] } = {}) {
+export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yarnLock } = {}) {
   const resolved = specs instanceof Map ? specs : new Map();
   const npm = Boolean(assets?.npm);
   const scripts = [...(assets?.scripts ?? [])];
@@ -266,6 +345,7 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [] } = 
   const stage = chooseStage({ npm, binaryGems, pipeline });
   const gestionnaire = planPackageManager({
     lockfiles,
+    yarnLock,
     packageManager: assets?.packageManager,
   });
   const install = npm ? assets?.install || gestionnaire.install : "";
