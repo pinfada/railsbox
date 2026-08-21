@@ -66,9 +66,9 @@ The railsbox repository is public: any repository can reference this workflow.
 > simply looks absent. When in doubt, run the first build manually (_Run
 > workflow_ button).
 
-> **`@main` moves.** For a demo you show to other people, pin the **[latest
-> release](https://github.com/pinfada/railsbox/releases)**:
-> `…/construire-sandbox.yml@vX.Y.Z`. The version in use is printed on the first
+> **`@main` moves.** For a demo you show to other people, pin a release:
+> `…/construire-sandbox.yml@v2.3.0`
+> ([all releases](https://github.com/pinfada/railsbox/releases)). The version in use is printed on the first
 > line of every sandbox boot log — it is the first thing you will be asked for if
 > you report a problem.
 

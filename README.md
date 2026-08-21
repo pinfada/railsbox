@@ -67,9 +67,9 @@ Le dépôt railsbox est public : n'importe quel dépôt peut référencer ce wor
 > semble simplement absent. Dans le doute, lancez une première construction à la
 > main (bouton _Run workflow_).
 
-> **`@main` bouge.** Sur une démonstration montrée à des tiers, épinglez la
-> **[dernière version publiée](https://github.com/pinfada/railsbox/releases)** :
-> `…/construire-sandbox.yml@vX.Y.Z`. La version employée est écrite en première
+> **`@main` bouge.** Sur une démonstration montrée à des tiers, épinglez une
+> version : `…/construire-sandbox.yml@v2.3.0`
+> ([toutes les versions](https://github.com/pinfada/railsbox/releases)). La version employée est écrite en première
 > ligne du journal de boot de chaque sandbox — c'est ce qu'on vous demandera si
 > vous signalez un problème.
 
