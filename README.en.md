@@ -154,7 +154,8 @@ The details, the base revisions, and what requires a change on your side:
 | **[Field notes](docs/retour-experience.en.md)**                                        | the challenges solved — the project's memory                                      |
 | **[Decisions (ADR)](docs/decisions/)**                                                 | why the structural choices were made                                              |
 | **[Threat model](SECURITY.md)**                                                        | what is protected, what is not                                                    |
-| **[Contributing](CONTRIBUTING.md)**                                                    | how to help                                                                       |
+| **[Contributing](CONTRIBUTING.md)**                                                    | how to help
+| **[Code of Conduct](CODE_OF_CONDUCT.en.md)**                                            | what is expected of everyone in the project's spaces                                                                       |
 
 **[Q&A](https://github.com/pinfada/railsbox/discussions/categories/q-a)** for a
 question,
