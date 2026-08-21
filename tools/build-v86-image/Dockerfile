@@ -692,7 +692,10 @@ RIB_ASSETS
 # Préparation de la base PENDANT la construction (schéma + seeds) : le premier
 # boot dans le navigateur n'a ainsi ni migration ni amorçage à faire, et
 # l'instantané mémoire capture une base déjà peuplée.
-ARG DB_PREPARE_COMMAND="bundle exec rails db:prepare"
+# La préparation ne SÈME jamais : `db:prepare` chargeait aussi db/seeds.rb
+# sur une base qu'il venait d'initialiser, et railsbox rejouait ensuite
+# SEED_COMMAND — les seeds tournaient deux fois.
+ARG DB_PREPARE_COMMAND="bundle exec rails db:create db:schema:load db:migrate"
 ARG SEED_COMMAND=""
 # 1 : un seed en échec n'arrête pas la construction (validations métier qui
 # refusent des données de démo sur une application réelle).

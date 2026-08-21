@@ -553,6 +553,8 @@ export async function detectApp(appDir, options = {}) {
     webpackerYml,
     migrations,
     javascriptFiles,
+    schemaRb,
+    structureSql,
     seedsRb,
     sourcesAuth,
     nomsModeles,
@@ -571,13 +573,19 @@ export async function detectApp(appDir, options = {}) {
     readOptionalFile(join(appDir, "config", "shakapacker.yml")),
     readOptionalFile(join(appDir, "config", "webpacker.yml")),
     // Les migrations elles-mêmes : railsbox doit savoir si certaines AMORCENT
-    // des données, car `db:prepare` sur une base vierge charge db/schema.rb et
-    // n'en joue aucune (voir migrations.mjs).
+    // des données, car le chargement du schéma sur une base vierge pose
+    // db/schema.rb et n'en joue aucune (voir migrations.mjs).
     readMigrations(appDir),
     // Le JavaScript de l'application : railsbox doit savoir si des appels
     // réseau visent la racine du DOMAINE, ce qu'aucun test GET ne révèle —
     // la page s'affiche, et c'est le premier clic qui casse (chemins-absolus-js).
     readJavaScriptFiles(appDir),
+    // Le schéma versionné : c'est LUI que la préparation charge. Son absence
+    // n'est pas une anomalie — une application peut n'avoir que ses migrations
+    // — mais elle change la commande, et le taire ferait échouer
+    // `db:schema:load` sans que rien n'explique pourquoi.
+    readOptionalFile(join(appDir, "db", "schema.rb")),
+    readOptionalFile(join(appDir, "db", "structure.sql")),
     // Le jeu de démonstration : lu ici, jugé après la fusion de railsbox.yml —
     // une commande de seed déclarée l'emporte sur ce fichier (donnees-demo.mjs).
     readOptionalFile(join(appDir, "db", "seeds.rb")),
@@ -634,6 +642,12 @@ export async function detectApp(appDir, options = {}) {
   findings.push(...sqliteDriverFindings({ state: sqlite, database: database.database, adapters }));
   findings.push(...externalServiceFindings(specs.keys()));
   findings.push(...absolutePathFindings(scanAbsolutePaths(javascriptFiles)));
+  // `structure.sql` et `schema.rb` ne coexistent qu'au prix d'une
+  // configuration explicite : `db:schema:load` suit `config.active_record
+  // .schema_format`, et railsbox n'a pas à trancher à sa place. On retient
+  // seulement QU'UN schéma existe, et lequel, pour le diagnostic.
+  const schemaFile =
+    schemaRb !== null ? "db/schema.rb" : structureSql !== null ? "db/structure.sql" : null;
   const dataMigrations = scanDataMigrations(migrations);
   findings.push(...dataMigrationFindings(dataMigrations));
   const ssl = detectSsl(productionRb);
@@ -697,6 +711,7 @@ export async function detectApp(appDir, options = {}) {
     // Noms des migrations qui écrivent des lignes : ce sont eux qui décident,
     // en mode « auto », de préparer la base en jouant les migrations.
     dataMigrations: Object.freeze(dataMigrations.map((entry) => entry.file)),
+    schemaFile,
     // État du db/seeds.rb (absent, vide, utile). Aucun diagnostic ici : le
     // verdict dépend aussi de `seed.command`, qui n'arrive qu'à la fusion.
     seedsFile: etatFichierSeeds(seedsRb),

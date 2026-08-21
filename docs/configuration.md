@@ -249,7 +249,8 @@ Ruby](#épingler-une-version-de-ruby--ce-que-base-permet-et-ce-quil-ne-permet-pa
 
 #### Les données amorcées par une **migration** n'arriveront pas
 
-railsbox prépare la base avec `rails db:prepare`. Sur une base **vierge** — le
+railsbox prépare la base en CHARGEANT SON SCHÉMA (`db:create db:schema:load
+db:migrate`), puis sème dans un **second processus**. Sur une base **vierge** — le
 cas de toute construction — cette tâche charge `db/schema.rb`, c'est-à-dire la
 **structure**, puis marque toutes les migrations comme appliquées **sans en
 jouer une seule**. Une migration qui insère des données de référence (devises,
@@ -267,7 +268,7 @@ fichiers :
 ```
 - [data-bearing-migration] 1 migration écrit des données (execute d'un INSERT SQL) :
   db/migrate/20260514210000_create_currencies.rb. railsbox prépare la base avec
-  `rails db:prepare`, qui sur une base VIERGE charge db/schema.rb — la structure,
+  le chargement du schéma versionné, qui sur une base VIERGE pose db/schema.rb — la structure,
   pas les données — […]
   Remède : Déplacez l'amorçage de ces données dans db/seeds.rb […]
 ```
@@ -284,7 +285,7 @@ Reste le cas du mainteneur qui veut publier sa démonstration **maintenant**,
 sans toucher à son application. Une clé, en opt-in explicite :
 
 ```yaml
-database_prepare: migrate # au lieu de db:prepare : db:create db:migrate
+database_prepare: migrate # au lieu du chargement du schéma : db:create db:migrate
 ```
 
 Elle rejoue **tout** l'historique des migrations à chaque construction. Ce que

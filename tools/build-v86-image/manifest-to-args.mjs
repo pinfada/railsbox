@@ -16,6 +16,8 @@ import { detectApp, readOptionalFile } from "../detect/detect.mjs";
 import { sandboxSansDonneesFindings } from "../detect/donnees-demo.mjs";
 import { planExclusions } from "../detect/exclusions.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
+
+/** @typedef {import("../detect/findings.mjs").Finding} Finding */
 import { parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
 import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "../detect/ssl.mjs";
@@ -181,13 +183,24 @@ const DATABASE_PACKAGES = Object.freeze({
 export { binaryAssetGems };
 
 /**
- * Préparation par CHARGEMENT DU SCHÉMA : `db:prepare` sur une base vierge crée
- * la base, charge db/schema.rb et marque toutes les migrations comme
- * appliquées — sans en jouer une seule. Rapide, insensible aux vieilles
- * migrations qui ne tournent plus, mais aveugle aux données qu'une migration
- * amorce.
+ * INVARIANT : LA PRÉPARATION NE SÈME JAMAIS.
+ *
+ * `db:prepare` a longtemps tenu ce rôle. C'était une erreur : sur une base
+ * qu'il vient d'initialiser, Rails y charge AUSSI `db/seeds.rb`
+ * (guides.rubyonrails.org, « Preparing the Database »). Or railsbox rejoue
+ * ensuite `SEED_COMMAND` — les seeds tournaient donc DEUX FOIS. Sur un jeu
+ * idempotent cela ne coûtait que du temps ; ailleurs, cela duplique les
+ * données, en silence.
+ *
+ * La préparation se limite désormais à la STRUCTURE, et le chargement des
+ * données de démonstration n'a plus qu'un seul endroit : `SEED_COMMAND`.
+ *
+ * `db:migrate` reste nécessaire APRÈS `db:schema:load` : une migration plus
+ * récente que le schéma versionné ne serait sinon jamais appliquée.
+ * `db:schema:load` respecte `schema.rb` ou `structure.sql` selon
+ * `config.active_record.schema_format` — railsbox n'a pas à choisir.
  */
-export const DB_PREPARE_SCHEMA = "bundle exec rails db:prepare";
+export const DB_PREPARE_SCHEMA = "bundle exec rails db:create db:schema:load db:migrate";
 
 /**
  * Préparation par REJEU DES MIGRATIONS : tout l'historique est rejoué depuis
@@ -210,14 +223,35 @@ export const DB_PREPARE_MIGRATE = "bundle exec rails db:create db:migrate";
  *
  * `database_prepare: migrate` reste disponible en opt-in explicite, sans repli
  * silencieux : un choix explicite doit échouer bruyamment.
- * @param {{strategy?: string, dataMigrations?: readonly string[]}} [input] stratégie déclarée
+ * @param {{strategy?: string, schemaFile?: string|null, dataMigrations?: readonly string[]}} [input] stratégie déclarée
  *   dans railsbox.yml ; `dataMigrations` est accepté et volontairement IGNORÉ —
  *   c'est là que vit l'arbitrage, et un lecteur doit pouvoir le vérifier ici.
- * @returns {{strategy: string, command: string}} stratégie retenue et commande shell
+ * @returns {{strategy: string, command: string, findings: Finding[]}} stratégie retenue,
+ *   commande shell, et le diagnostic du repli s'il a eu lieu
  */
 export function dbPrepareCommand(input = {}) {
-  if (input.strategy === "migrate") return { strategy: "migrate", command: DB_PREPARE_MIGRATE };
-  return { strategy: "schema", command: DB_PREPARE_SCHEMA };
+  if (input.strategy === "migrate") {
+    return { strategy: "migrate", command: DB_PREPARE_MIGRATE, findings: [] };
+  }
+  // Sans schéma versionné, `db:schema:load` échouerait sur un fichier absent —
+  // et le message de Rails ne dirait pas que railsbox a choisi cette voie. Le
+  // repli est donc EXPLICITE, et il se dit.
+  if (input.schemaFile === null || input.schemaFile === undefined) {
+    return {
+      strategy: "migrate",
+      command: DB_PREPARE_MIGRATE,
+      findings: [
+        createFinding(
+          SEVERITY.INFO,
+          "prepare-sans-schema",
+          "Ni db/schema.rb ni db/structure.sql : la base sera préparée en rejouant " +
+            "toutes les migrations (db:create db:migrate) au lieu de charger le schéma. " +
+            "Plus lent, et sensible à une migration ancienne qui ne tournerait plus.",
+        ),
+      ],
+    };
+  }
+  return { strategy: "schema", command: DB_PREPARE_SCHEMA, findings: [] };
 }
 
 /** Commande de seed par défaut, utilisée quand `db/seeds.rb` existe. */
@@ -351,7 +385,10 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
   const postgres = postgresSettings(appName);
   const keepForceSsl = manifest.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE;
   const paquets = splitPackages(manifest, baseRevision);
-  const dbPrepare = dbPrepareCommand({ strategy: manifest.databasePrepare });
+  const dbPrepare = dbPrepareCommand({
+    strategy: manifest.databasePrepare,
+    schemaFile: manifest.schemaFile,
+  });
   // Ce qui n'entrera PAS dans le contexte de construction. Calculé ici parce
   // que la décision dépend du plan d'assets : un répertoire de sortie n'est
   // écarté que si la construction le régénère (voir detect/exclusions.mjs).
@@ -496,6 +533,18 @@ export async function analyzeApp(appDir, appName, options = {}) {
     readOptionalFile(join(appDir, "db", "seeds.rb")),
   ]);
   const specs = parseLockSpecs(lock);
+
+  // Le repli de préparation, quand aucun schéma versionné n'est disponible :
+  // la commande change, et le taire laisserait le mainteneur devant un temps
+  // de construction inexpliqué. Recalculé ici plutôt que porté depuis
+  // buildArgs — la décision est pure, donc rejouable, et l'assemblage du
+  // rapport reste le seul endroit où les diagnostics se rassemblent.
+  findings.push(
+    ...dbPrepareCommand({
+      strategy: manifest.databasePrepare,
+      schemaFile: manifest.schemaFile,
+    }).findings,
+  );
 
   // Une sandbox sans données démarre parfaitement et ne montre rien : le
   // contrôle a lieu après la fusion, une commande de seed déclarée le faisant

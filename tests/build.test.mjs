@@ -629,20 +629,73 @@ BUNDLED WITH
 
 // --- Préparation de la base --------------------------------------------------
 
-test("la préparation par défaut charge le schéma, migrations porteuses ou non", () => {
-  assert.deepEqual(dbPrepareCommand(), { strategy: "schema", command: DB_PREPARE_SCHEMA });
+test("la préparation charge le schéma PUIS les migrations plus récentes que lui", () => {
+  // `db:migrate` après `db:schema:load` n'est pas une ceinture-bretelles : une
+  // migration plus récente que le schéma versionné ne serait sinon jamais
+  // appliquée, et la table manquerait sans que rien ne le dise.
+  const prepare = dbPrepareCommand({ schemaFile: "db/schema.rb" });
+
+  assert.equal(prepare.strategy, "schema");
+  assert.equal(prepare.command, DB_PREPARE_SCHEMA);
+  assert.match(prepare.command, /db:create .*db:schema:load .*db:migrate/);
+  assert.deepEqual(prepare.findings, []);
+});
+
+test("LA PRÉPARATION NE SÈME JAMAIS — c'est l'invariant, et il tient pour les deux stratégies", () => {
+  // `db:prepare` chargeait aussi db/seeds.rb sur une base qu'il venait
+  // d'initialiser (guides Rails, « Preparing the Database »). railsbox rejouant
+  // ensuite SEED_COMMAND, les seeds tournaient DEUX FOIS : du temps perdu sur
+  // un jeu idempotent, des doublons silencieux ailleurs.
+  for (const entree of [
+    { schemaFile: "db/schema.rb" },
+    { schemaFile: "db/structure.sql" },
+    { schemaFile: null },
+    { strategy: "migrate" },
+  ]) {
+    const { command } = dbPrepareCommand(entree);
+    assert.doesNotMatch(command, /db:seed/, `${JSON.stringify(entree)} ne doit pas semer`);
+    assert.doesNotMatch(command, /db:prepare/, `${JSON.stringify(entree)} ne doit plus prépare`);
+  }
+});
+
+test("structure.sql est traité comme schema.rb : Rails choisit le format, pas railsbox", () => {
+  // `db:schema:load` suit `config.active_record.schema_format`. Distinguer les
+  // deux ici reviendrait à décider à la place de l'application.
+  assert.equal(dbPrepareCommand({ schemaFile: "db/structure.sql" }).command, DB_PREPARE_SCHEMA);
+  assert.equal(dbPrepareCommand({ schemaFile: "db/schema.rb" }).command, DB_PREPARE_SCHEMA);
+});
+
+test("sans schéma versionné, le repli est EXPLICITE et se dit", () => {
+  // Laisser `db:schema:load` échouer sur un fichier absent donnerait un message
+  // de Rails qui ne nomme pas le choix de railsbox.
+  const prepare = dbPrepareCommand({ schemaFile: null });
+
+  assert.equal(prepare.strategy, "migrate");
+  assert.equal(prepare.command, DB_PREPARE_MIGRATE);
+  assert.equal(prepare.findings.length, 1);
+  assert.equal(prepare.findings[0].code, "prepare-sans-schema");
+  assert.match(prepare.findings[0].message, /db:create db:migrate/);
+});
+
+test("la préparation par défaut ne change pas face à des migrations porteuses", () => {
   // Le point de l'arbitrage : relever des migrations porteuses de données ne
   // change PAS la commande. railsbox signale un défaut applicatif, il ne le
   // masque pas en rejouant l'historique dans le dos du mainteneur.
-  assert.deepEqual(dbPrepareCommand({ dataMigrations: ["20260514210000_create_currencies.rb"] }), {
-    strategy: "schema",
-    command: DB_PREPARE_SCHEMA,
+  const prepare = dbPrepareCommand({
+    schemaFile: "db/schema.rb",
+    dataMigrations: ["20260514210000_create_currencies.rb"],
   });
+
+  assert.equal(prepare.strategy, "schema");
+  assert.equal(prepare.command, DB_PREPARE_SCHEMA);
 });
 
-test("database_prepare: migrate produit db:create db:migrate, sans repli silencieux", () => {
-  const prepare = dbPrepareCommand({ strategy: "migrate" });
-  assert.deepEqual(prepare, { strategy: "migrate", command: DB_PREPARE_MIGRATE });
+test("database_prepare: migrate rejoue tout l'historique, sans repli silencieux", () => {
+  const prepare = dbPrepareCommand({ strategy: "migrate", schemaFile: "db/schema.rb" });
+
+  assert.equal(prepare.strategy, "migrate");
+  assert.equal(prepare.command, DB_PREPARE_MIGRATE);
+  assert.doesNotMatch(prepare.command, /db:schema:load/, "un choix explicite est respecté");
   // Aucun « || » : un choix explicite doit échouer bruyamment, pas se faire
   // rattraper par un chargement de schéma qui remettrait la table à vide.
   assert.ok(!prepare.command.includes("||"));
@@ -650,8 +703,33 @@ test("database_prepare: migrate produit db:create db:migrate, sans repli silenci
 
 test("une valeur non reconnue retombe sur le chargement du schéma", () => {
   for (const strategy of ["auto", "", null, undefined, "Migrate"]) {
-    assert.equal(dbPrepareCommand({ strategy }).command, DB_PREPARE_SCHEMA, String(strategy));
+    assert.equal(
+      dbPrepareCommand({ strategy, schemaFile: "db/schema.rb" }).command,
+      DB_PREPARE_SCHEMA,
+      String(strategy),
+    );
   }
+});
+
+test("les seeds n'ont qu'UN seul endroit, y compris quand la commande est personnalisée", () => {
+  // La régression que l'invariant existe pour empêcher : une commande de seed
+  // déclarée dans railsbox.yml ne doit pas être doublée par la préparation.
+  const args = buildArgs({
+    manifest: {
+      ruby: "3.3.12",
+      database: "sqlite3",
+      services: {},
+      schemaFile: "db/schema.rb",
+      seed: { command: "bin/rails runner db/seeds/demo.rb" },
+    },
+    specs: new Map(),
+    hasSeeds: true,
+    appName: "demo",
+  });
+
+  assert.equal(args.SEED_COMMAND, "bin/rails runner db/seeds/demo.rb");
+  assert.doesNotMatch(args.DB_PREPARE_COMMAND, /seed/, "la préparation ne sème pas");
+  assert.match(args.DB_PREPARE_COMMAND, /db:schema:load/);
 });
 
 test("la clé railsbox.yml pilote bien DB_PREPARE_COMMAND de bout en bout", async () => {

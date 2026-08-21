@@ -2,7 +2,7 @@
 //
 // railsbox n'a AUCUN réseau sortant (voir SECURITY.md, « Principe fondamental ») :
 // la VM n'a qu'un loopback émulé. Une application dont un initialiseur, un
-// `db:prepare` ou un simple démarrage sollicite un service distant n'échoue pas
+// la préparation de la base ou un simple démarrage sollicite un service distant n'échoue pas
 // à la détection ni à l'installation des gems — elle échoue VINGT MINUTES plus
 // tard, à la capture de l'instantané, sur un message qui ne nomme jamais la
 // cause. Le cas fondateur : `aws-sdk-s3` interroge l'adresse de métadonnées

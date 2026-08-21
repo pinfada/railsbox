@@ -222,7 +222,8 @@ version](#pinning-a-ruby-version-what-base-allows-and-what-it-does-not)".
 
 #### Data seeded by a **migration** will not arrive
 
-railsbox prepares the database with `rails db:prepare`. On an **empty**
+railsbox prepares the database by LOADING ITS SCHEMA (`db:create db:schema:load
+db:migrate`), then seeds in a **separate process**. On an **empty**
 database — every build — that task loads `db/schema.rb`, i.e. the
 **structure**, then marks every migration as applied **without running a single
 one**. A migration that inserts reference data (currencies, roles, categories,
@@ -253,7 +254,7 @@ That leaves the maintainer who wants to publish a demo **now**, without touching
 the application. One key, explicit opt-in:
 
 ```yaml
-database_prepare: migrate # instead of db:prepare: db:create db:migrate
+database_prepare: migrate # instead of loading the schema: db:create db:migrate
 ```
 
 It replays the **whole** migration history on every build. What it costs, and

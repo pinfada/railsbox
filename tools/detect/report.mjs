@@ -296,7 +296,7 @@ function describeDatabasePrepare(manifest) {
       ? ` — ATTENTION : ${migrations.length} migration${pluriel ? "s" : ""} ` +
         `y amorce${pluriel ? "nt" : ""} des données qui ne seront donc pas insérées`
       : "";
-  return `chargement de db/schema.rb, db:prepare${reserve}`;
+  return `chargement de db/schema.rb, db:create db:schema:load db:migrate${reserve}`;
 }
 
 /** Libellés français des états de `config.force_ssl`. */

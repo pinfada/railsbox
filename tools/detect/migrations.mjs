@@ -2,13 +2,16 @@
 // modifier le schéma, écrivent des lignes (devises, rôles, catégories, pays,
 // réglages).
 //
-// Pourquoi ce module existe : railsbox prépare la base d'une application avec
-// `rails db:prepare`. Sur une base VIERGE — le cas de toute construction —
-// db:prepare charge `db/schema.rb`, c'est-à-dire la STRUCTURE, puis marque
-// toutes les migrations comme appliquées sans en jouer une seule. Un INSERT
-// écrit dans une migration n'est donc jamais exécuté, la table de référence
-// reste vide, et la panne n'éclate que bien plus loin — dans les seeds, sous la
-// forme d'une validation absurde (« attendu : » suivi du vide).
+// Pourquoi ce module existe : railsbox prépare la base d'une application en
+// CHARGEANT SON SCHÉMA VERSIONNÉ. Sur une base vierge — le cas de toute
+// construction — `db:schema:load` pose la STRUCTURE puis marque les migrations
+// correspondantes comme appliquées, sans en jouer une seule. Un INSERT écrit
+// dans une migration n'est donc jamais exécuté, la table de référence reste
+// vide, et la panne n'éclate que bien plus loin — dans les seeds, sous la forme
+// d'une validation absurde (« attendu : » suivi du vide).
+//
+// Le constat ne tient pas au NOM de la tâche : il tient au chargement d'un
+// schéma, quelle que soit la commande qui le déclenche.
 //
 // Module PUR : il reçoit des textes, il rend des noms de fichiers et des
 // raisons. La lecture du disque appartient à detect.mjs.
@@ -166,7 +169,7 @@ export function dataMigrationFindings(migrations) {
       "data-bearing-migration",
       `${migrations.length} migration${migrations.length > 1 ? "s écrivent" : " écrit"} des ` +
         `données (${raisons}) : ${nameFiles(migrations)}. railsbox prépare la base avec ` +
-        "`rails db:prepare`, qui sur une base VIERGE charge db/schema.rb — la structure, " +
+        "le chargement du schéma versionné, qui sur une base VIERGE pose db/schema.rb — la structure, " +
         "pas les données — et marque toutes les migrations comme appliquées sans en jouer " +
         "aucune : ces lignes ne seront jamais insérées, et une validation qui s'y réfère " +
         "échouera plus loin, dans les seeds, sur une table de référence vide.",

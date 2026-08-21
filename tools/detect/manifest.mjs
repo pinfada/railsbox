@@ -27,6 +27,9 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {string|null} [rails] version de Rails résolue
  * @property {string|null} [database] adaptateur de base de données
  * @property {string} [databasePrepare] préparation de la base (schema ou migrate)
+ * @property {string|null} [schemaFile] schéma versionné relevé (`db/schema.rb`,
+ *   `db/structure.sql`) ou `null` — décide entre chargement du schéma et rejeu
+ *   des migrations, et rien d'autre
  * @property {readonly string[]} [dataMigrations] migrations qui écrivent des lignes
  * @property {readonly string[]} [databaseAdapters] adaptateurs vus dans config/database.yml
  * @property {import("./sqlite.mjs").SqliteDriverState} [sqliteDriver] disponibilité du pilote sqlite3
@@ -68,7 +71,8 @@ const DATABASE_VALUES = Object.freeze(["postgresql", "sqlite3"]);
  * Valeurs acceptées pour `database_prepare:` — COMMENT la base est préparée,
  * quand `database:` dit seulement AVEC QUOI.
  *
- * - `schema` (défaut) : `db:prepare`, donc chargement de db/schema.rb. Rapide,
+ * - `schema` (défaut) : `db:create db:schema:load db:migrate`, donc chargement de
+ *   db/schema.rb puis application des migrations plus récentes que lui. Rapide,
  *   insensible aux vieilles migrations qui ne tournent plus, et fidèle à ce que
  *   fait Rails lui-même sur une base neuve.
  * - `migrate` : `db:create db:migrate`, tout l'historique rejoué. ÉCHAPPATOIRE
@@ -616,7 +620,7 @@ function describeDatabasePrepare(detected, declared) {
       SEVERITY.WARNING,
       "database-prepare-migrate",
       "database_prepare: migrate rejoue TOUT l'historique des migrations à chaque " +
-        `construction (db:create db:migrate au lieu de db:prepare) : ${constat}.`,
+        `construction (db:create db:migrate au lieu du chargement du schéma) : ${constat}.`,
       { files: migrations },
     ),
   ];
