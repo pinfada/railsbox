@@ -1,6 +1,6 @@
 {
   "name": "railsbox",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Une application Rails complète, non modifiée, qui tourne entièrement dans le navigateur : VM Linux i386 (v86) + pont série + proxy Service Worker",
   "type": "module",
   "private": true,

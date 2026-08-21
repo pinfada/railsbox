@@ -14,4 +14,4 @@
 //
 // Un test vérifie qu'elle ne diverge pas de package.json : deux versions qui se
 // contredisent valent moins que pas de version du tout.
-export const VERSION_RAILSBOX = "2.2.0";
+export const VERSION_RAILSBOX = "2.3.0";
