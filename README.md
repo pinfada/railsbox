@@ -160,7 +160,8 @@ Le détail, les révisions de base et ce qui demande une adaptation de votre cod
 | **[Décisions (ADR)](docs/decisions/)**                                         | pourquoi les choix structurants ont été faits                                        |
 | **[Modèle de menace](SECURITY.md)**                                            | ce qui est protégé, ce qui ne l'est pas                                              |
 | **[Adoption](docs/adoption.md)** · **[Utilisateurs](docs/utilisateurs.md)**     | sandboxes détectées, et la liste tenue à la main                                     |
-| **[Contribuer](CONTRIBUTING.md)** · **[Chantiers ouverts](docs/chantiers.md)** | comment aider                                                                        |
+| **[Contribuer](CONTRIBUTING.md)** · **[Chantiers ouverts](docs/chantiers.md)** | comment aider
+| **[Code de conduite](CODE_OF_CONDUCT.md)** | ce qu'on attend de chacun dans les espaces du projet                                                                        |
 
 **[Q&A](https://github.com/pinfada/railsbox/discussions/categories/q-a)** pour
 une question,
