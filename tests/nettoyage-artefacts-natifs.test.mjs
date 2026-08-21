@@ -83,3 +83,17 @@ test("le nettoyage suit le `bundle install` qu'il nettoie", () => {
     assert.ok(install > 0, `${chemin} : bundle install introuvable`);
   }
 });
+
+test("la surcouche système n'emporte ni archives statiques ni en-têtes", () => {
+  // Même classe de défaut que les résidus `.o` du bundle, sur l'AUTRE arbre :
+  // les paquets `-dev` sont installés pour que les gems natives compilent, et
+  // la relocalisation emportait leurs `.a` et leurs `/usr/include`.
+  //
+  // Mesuré le 21/08/2026 sur woofed-crm : 84 Mo d'archives et 21 Mo d'en-têtes
+  // sur 230 Mo de surcouche. 105 Mo qui ne sont jamais chargés dans la VM, et
+  // qui faisaient déborder la géométrie fixe de 512 Mo.
+  const source = readFileSync("tools/build-v86-image/base/app.Dockerfile", "utf8");
+
+  assert.match(source, /\*\.a\|\*\.la\) continue/, "les archives statiques doivent être écartées");
+  assert.match(source, /\/usr\/include\/\*\) continue/, "les en-têtes doivent être écartés");
+});

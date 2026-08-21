@@ -42,10 +42,28 @@ ARG EXTRA_PACKAGES=""
 RUN set -eu; \
     paquets="build-essential git curl ca-certificates openssl pkg-config \
       libyaml-dev zlib1g-dev libxml2-dev libxslt1-dev libsqlite3-dev libpq-dev"; \
-    if [ "${NPM_ASSETS}" = 1 ]; then paquets="${paquets} nodejs npm"; fi; \
     if [ -n "${EXTRA_PACKAGES}" ]; then paquets="${paquets} ${EXTRA_PACKAGES}"; fi; \
     apt-get update && apt-get install -y --no-install-recommends ${paquets} \
     && rm -rf /var/lib/apt/lists/*
+
+# NODE 22, ET PAS CELUI DE DEBIAN.
+#
+# bookworm livre Node 18.20.4, en fin de vie depuis avril 2025. Toute chaîne
+# front récente le refuse : mesuré sur woofed-crm, dont `yarn install` s'arrête
+# sur « @vitejs/plugin-react: The engine "node" is incompatible. Expected
+# "^20.19.0 || >=22.12.0". Got "18.20.4" ». Aucune option d'installation ne
+# contourne cela — c'est le runtime qui est trop vieux.
+#
+# On copie donc Node depuis son image officielle, elle-même bookworm : mêmes
+# bibliothèques système, aucun dépôt tiers à ajouter, et la version est choisie
+# par nous plutôt que par la distribution. npm et npx sont des scripts Node,
+# d'où les liens.
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN set -eu; \
+    ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
+    ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    node --version; npm --version
 
 # Gestionnaire de paquets front : `npm` ou `pnpm`, IDENTIFIANT SEUL. La
 # version déclarée par l'application n'arrive jamais jusqu'ici — Corepack la
