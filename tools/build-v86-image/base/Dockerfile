@@ -109,6 +109,38 @@ RUN set -eu; \
     rm -rf /var/lib/postgresql/15/main /etc/postgresql/15/main; \
     test ! -d /var/lib/postgresql/15/main
 
+# pgvector, compilé depuis les sources (révision 3.3-r3).
+#
+# POURQUOI ICI ET PAS EN SURCOUCHE. Une extension de SERVEUR ne peut pas vivre
+# sur le disque applicatif : PostgreSQL 15 cherche son fichier de contrôle dans
+# le `sharedir` compilé dans ses binaires, et `extension_control_path` n'arrive
+# qu'en PostgreSQL 18. La surcouche de l'ADR 0006 relocalise sous
+# /app/opt/systeme — un chemin que le serveur ne regardera jamais.
+#
+# POURQUOI DEPUIS LES SOURCES. `postgresql-15-pgvector` n'existe dans AUCUNE
+# suite Debian : bookworm, bookworm-backports et trixie tous vérifiés le
+# 21/08/2026.
+#
+# CE QUE ÇA COÛTE À TOUT LE MONDE : 1,0 Mo installé, mesuré — très en deçà du
+# seuil de 100 Mo de l'ADR 0006. Le déclencheur est woofed-crm, qui porte une
+# colonne `vector(1536)` et les gems `neighbor` et `pgvector` : sans
+# l'extension, sa migration s'arrête et aucune sandbox n'est possible.
+ARG PGVECTOR_VERSION=0.8.0
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql-server-dev-15; \
+    curl -fsSL "https://github.com/pgvector/pgvector/archive/refs/tags/v${PGVECTOR_VERSION}.tar.gz" \
+      -o /tmp/pgvector.tar.gz; \
+    tar -xzf /tmp/pgvector.tar.gz -C /tmp; \
+    cd "/tmp/pgvector-${PGVECTOR_VERSION}"; \
+    make OPTFLAGS=""; \
+    make install; \
+    cd /; rm -rf /tmp/pgvector*; \
+    apt-get purge -y postgresql-server-dev-15; \
+    apt-get autoremove -y; \
+    rm -rf /var/lib/apt/lists/*; \
+    test -f "$(pg_config --sharedir)/extension/vector.control"
+
 # Ruby exact demandé (les dépôts bookworm i386 ne fournissent que ruby 3.1),
 # compilé depuis les sources. C'est de loin la couche la plus coûteuse : elle
 # ne dépend d'aucun réglage applicatif, donc partagée par toutes les apps.
