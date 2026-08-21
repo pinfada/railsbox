@@ -66,13 +66,16 @@ The railsbox repository is public: any repository can reference this workflow.
 > simply looks absent. When in doubt, run the first build manually (_Run
 > workflow_ button).
 
-> **`@main` moves.** For a demo you show to other people, pin it:
-> `…/construire-sandbox.yml@v2.2.0`. The version in use is printed on the first
-> line of every sandbox boot log.
+> **`@main` moves.** For a demo you show to other people, pin the **[latest
+> release](https://github.com/pinfada/railsbox/releases)**:
+> `…/construire-sandbox.yml@vX.Y.Z`. The version in use is printed on the first
+> line of every sandbox boot log — it is the first thing you will be asked for if
+> you report a problem.
 
-> **Is your repository private?** This block will build without ever publishing
-> anything visible, and without saying so. Read the **[private repository
-> guide](docs/depot-prive.en.md)** before pasting.
+> **Is your repository private?** On a free account, GitHub Pages does not serve
+> private repositories. The workflow warns you and offers publication to a public
+> showcase repository — see the **[private repository
+> guide](docs/depot-prive.en.md)**.
 
 ### 2. Enable GitHub Pages on the `gh-pages` branch
 
@@ -123,8 +126,9 @@ The details, the base revisions, and what requires a change on your side:
 - **The whole artefact is public.** The disk image and the memory snapshot are
   downloadable by anyone, and the visitor is root inside their VM. Never ship
   real secrets or real data ([`SECURITY.md`](SECURITY.md)).
-- **Startup time varies.** Expect ~20–25 s on a desktop, more on a slow device
-  or a heavy application. Startup does not break, it stretches.
+- **Startup time varies.** Around 20–25 s for the reference demo; up to 78 s
+  measured on the Zealot application, depending on snapshot size, network and
+  CPU. Startup does not break, it stretches.
 - **No outbound network.** A gem that calls a remote service at boot will fail;
   the analysis reports it before the build.
 - **No shared persistence.** Every visitor writes to their own copy, which

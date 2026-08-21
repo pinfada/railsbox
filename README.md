@@ -67,13 +67,15 @@ Le dépôt railsbox est public : n'importe quel dépôt peut référencer ce wor
 > semble simplement absent. Dans le doute, lancez une première construction à la
 > main (bouton _Run workflow_).
 
-> **`@main` bouge.** Sur une démonstration montrée à des tiers, épinglez :
-> `…/construire-sandbox.yml@v2.2.0`. La version employée est écrite en première
-> ligne du journal de boot de chaque sandbox.
+> **`@main` bouge.** Sur une démonstration montrée à des tiers, épinglez la
+> **[dernière version publiée](https://github.com/pinfada/railsbox/releases)** :
+> `…/construire-sandbox.yml@vX.Y.Z`. La version employée est écrite en première
+> ligne du journal de boot de chaque sandbox — c'est ce qu'on vous demandera si
+> vous signalez un problème.
 
-> **Votre dépôt est privé ?** Ce bloc construira sans jamais rien publier de
-> visible, et sans le dire. Lisez le **[guide dépôt privé](docs/depot-prive.md)**
-> avant de coller.
+> **Votre dépôt est privé ?** Sur un compte gratuit, GitHub Pages ne sert pas
+> les dépôts privés. Le workflow vous avertit et propose la publication vers un
+> dépôt vitrine public — voir le **[guide dépôt privé](docs/depot-prive.md)**.
 
 ### 2. Activez GitHub Pages sur la branche `gh-pages`
 
@@ -127,9 +129,10 @@ Le détail, les révisions de base et ce qui demande une adaptation de votre cod
   téléchargeables par n'importe qui, et le visiteur est root dans sa VM.
   N'embarquez jamais de vrais secrets ni de vraies données
   ([`SECURITY.md`](SECURITY.md)).
-- **Le temps de démarrage varie.** Comptez ~20–25 s sur un poste de bureau,
-  davantage sur un appareil lent ou une application lourde. Le démarrage ne
-  casse pas, il s'allonge.
+- **Le temps de démarrage varie.** Environ 20–25 s pour la démonstration de
+  référence ; jusqu'à 78 s mesurés sur l'application Zealot, selon la taille de
+  l'instantané, le réseau et le processeur. Le démarrage ne casse pas, il
+  s'allonge.
 - **Aucun réseau sortant.** Une gem qui appelle un service distant au démarrage
   échouera ; l'analyse le signale avant la construction.
 - **Aucune persistance partagée.** Chaque visiteur écrit dans sa copie, qui

@@ -9,11 +9,15 @@ Pages ne sert pas un dépôt privé sur un compte gratuit, et ne le dit nulle pa
 
 Sur un dépôt public, les trois étapes ci-dessus suffisent et tout est gratuit :
 Actions et Pages le sont. Sur un dépôt privé, elles ne suffisent pas — et
-l'échec est du genre qu'on met une soirée à comprendre : la construction passe,
-`gh-pages` est bien poussée, l'onglet Actions reste vert, et **il n'y a pas de
-page**. GitHub Pages ne sert pas un dépôt privé sur un compte gratuit ; il ne le
-dit nulle part. C'est exactement ce qui est arrivé au premier dépôt privé
-installé avec le workflow public : jamais aucune page, jamais aucun message.
+GitHub Pages ne sert pas un dépôt privé sur un compte gratuit, et **GitHub ne
+le dit nulle part** : la construction passe, `gh-pages` est bien poussée,
+l'onglet Actions reste vert, et l'adresse répond 404. C'est ce qui est arrivé au
+premier dépôt privé installé avec le workflow public — jamais aucune page,
+jamais aucun message.
+
+Le workflow, lui, ne se tait plus : il détecte un dépôt privé qui publie sur
+lui-même, émet un avertissement dans l'onglet Actions et détaille la sortie dans
+le récapitulatif de l'exécution. C'est GitHub qui reste muet, pas railsbox.
 
 Deux issues, dont une seule est gratuite :
 

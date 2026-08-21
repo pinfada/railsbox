@@ -9,11 +9,15 @@ Pages does not serve a private repository on a free account, and says so nowhere
 
 On a public repository the three steps above are enough and everything is free:
 Actions and Pages both are. On a private repository they are not enough — and
-the failure is the kind you spend an evening on: the build passes, `gh-pages` is
-pushed, the Actions tab stays green, and **there is no page**. GitHub Pages does
-not serve a private repository on a free account, and it says so nowhere. That
-is exactly what happened to the first private repository installed with the
-public workflow: never a page, never a message.
+GitHub Pages does not serve a private repository on a free account, and
+**GitHub says so nowhere**: the build passes, `gh-pages` is pushed, the Actions
+tab stays green, and the address answers 404. That is what happened to the first
+private repository installed with the public workflow — never a page, never a
+message.
+
+The workflow itself is no longer silent: it detects a private repository
+publishing to itself, raises a warning in the Actions tab, and spells out the
+way forward in the run summary. GitHub stays mute, railsbox does not.
 
 Two ways out, only one of them free:
 

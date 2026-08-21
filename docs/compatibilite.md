@@ -18,7 +18,7 @@ Ce que railsbox prend en charge, ce qu'il refuse explicitement, et les limites q
 | **Chaînes npm** (esbuild, cssbundling, jsbundling) | même étage amd64 : installation puis vos scripts de build |
 | **pnpm** | pris en charge via Corepack, à condition que `package.json` déclare `packageManager` — c'est Corepack qui en lit la version, railsbox n'en extrait qu'un identifiant validé |
 | **Redis, Sidekiq** | détectés depuis le `Gemfile.lock`, présents dans la base |
-| **Active Storage, traitement d'images** | `libvips` (défaut de Rails 7+), ImageMagick et les aperçus PDF sont dans la base à partir de `3.3-r3` |
+| **Active Storage, traitement d'images** | `libvips` (défaut de Rails 7+), ImageMagick et les aperçus PDF sont aujourd'hui installés **en surcouche** sur le disque applicatif, au-dessus de `3.3-r2` : ils ne coûtent qu'aux applications qui les demandent. Leur intégration à la base `3.3-r3` est prévue ; cette révision **n'est pas encore publiée** |
 | **Autres bibliothèques système** | installées en surcouche sur le disque applicatif — voir « [Bibliothèques système](configuration.md#bibliothèques-système) » et [l'ADR 0006](decisions/0006-bibliotheques-systeme.md) |
 
 ## Limites connues
