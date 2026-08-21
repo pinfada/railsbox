@@ -94,3 +94,25 @@ jobs:
         run: npx playwright install chromium firefox webkit
       - name: Épreuves de frontière (chromium, firefox, webkit)
         run: npm run test:securite
+
+  # L'ÉTAGE D'ASSETS, CONSTRUIT POUR DE VRAI. Les tests purs disent quel
+  # gestionnaire est retenu ; aucun ne dit que la chaîne aboutit. Entre la
+  # décision et un fichier produit il y a la sérialisation en arguments de
+  # build, l'activation de Corepack dans l'image, l'installation verrouillée,
+  # et `jsbundling-rails` qui va lui-même chercher le gestionnaire — chacun de
+  # ces maillons a cassé au moins une fois sur une application tierce.
+  #
+  # Job séparé parce qu'il exige Docker et quelques minutes, là où `quality`
+  # doit rester en dessous de la minute. Aucune VM n'est bootée : seul l'étage
+  # amd64 est ciblé.
+  assets-pnpm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Étage d'assets pnpm (fixture jsbundling-rails)
+        run: node --test tests/integration/assets-pnpm.it.mjs
