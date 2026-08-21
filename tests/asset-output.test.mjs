@@ -100,12 +100,35 @@ test("normalizeOutputDir refuse les répertoires structurels d'une application R
   assert.equal(normalizeOutputDir("app/javascript/build"), "app/javascript/build");
 });
 
+test("normalizeOutputDir laisse passer la RACINE d'un paquet node_modules", () => {
+  // Sprockets sait avoir besoin d'un paquet npm À L'EXÉCUTION : le générateur
+  // Rails lui-même documente `config.assets.paths << Rails.root.join("node_modules")`.
+  // Mesuré sur woofed-crm le 21/08/2026 : une SEULE directive
+  // `@import "trix/dist/trix"` dans actiontext.scss, 0,45 Mo — et sans elle,
+  // /users/sign_in répond 500. Interdire tout node_modules sans exception
+  // rendait ces applications impubliables ; les exporter en entier coûtait
+  // 431 Mo, soit près du double du budget disque restant.
+  assert.equal(normalizeOutputDir("node_modules/trix"), "node_modules/trix");
+  assert.equal(normalizeOutputDir("node_modules/flowbite"), "node_modules/flowbite");
+});
+
+test("l'exception s'arrête à la racine du paquet, et rien de plus", () => {
+  // Le répertoire lui-même reste interdit : c'est lui qui pèse 431 Mo.
+  assert.equal(normalizeOutputDir("node_modules"), null);
+  // Les caches internes aussi — ils ne servent qu'à la construction.
+  assert.equal(normalizeOutputDir("node_modules/.vite"), null);
+  assert.equal(normalizeOutputDir("node_modules/.bin"), null);
+  assert.equal(normalizeOutputDir("node_modules/.cache"), null);
+  // Et l'on n'ouvre pas la porte à un sous-arbre quelconque : la racine du
+  // paquet suffit à Sprockets, qui résout `trix/dist/trix` depuis elle.
+  assert.equal(normalizeOutputDir("node_modules/trix/dist"), null);
+  assert.equal(normalizeOutputDir("node_modules/a/b/c"), null);
+});
+
 test("normalizeOutputDir refuse les arbres qu'on n'exporte jamais", () => {
   // Arrange / Act / Assert
   assert.equal(normalizeOutputDir(".git"), null);
   assert.equal(normalizeOutputDir(".git/objects"), null);
-  assert.equal(normalizeOutputDir("node_modules"), null);
-  assert.equal(normalizeOutputDir("node_modules/.vite"), null);
   assert.equal(normalizeOutputDir("vendor/bundle"), null);
 });
 
