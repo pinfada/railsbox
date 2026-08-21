@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { formatReport } from "../tools/detect/report.mjs";
 import {
   DB_PREPARE_MIGRATE,
   DB_PREPARE_SCHEMA,
@@ -699,6 +700,96 @@ test("database_prepare: migrate rejoue tout l'historique, sans repli silencieux"
   // Aucun « || » : un choix explicite doit échouer bruyamment, pas se faire
   // rattraper par un chargement de schéma qui remettrait la table à vide.
   assert.ok(!prepare.command.includes("||"));
+});
+
+test("un schéma secondaire manquant fait basculer sur les migrations, EN LE DISANT", () => {
+  // Sans cette bascule, `db:schema:load` s'arrête sur « db/cache_schema.rb
+  // doesn't exist yet » — la construction échoue sur une application saine,
+  // dont les migrations créent justement cette base. Rails conseille
+  // lui-même db:migrate dans ce cas.
+  const prepare = dbPrepareCommand({
+    schemaFile: "db/schema.rb",
+    schemasManquants: ["db/cache_schema.rb", "db/cable_schema.rb"],
+  });
+
+  assert.equal(prepare.strategy, "migrate");
+  assert.equal(prepare.command, DB_PREPARE_MIGRATE);
+  assert.doesNotMatch(prepare.command, /db:schema:load/);
+  assert.equal(prepare.findings.length, 1);
+  assert.equal(prepare.findings[0].code, "prepare-schemas-incomplets");
+  // Le diagnostic doit NOMMER les fichiers : « plusieurs bases » sans les
+  // nommer laisserait le mainteneur chercher lequel manque.
+  assert.match(prepare.findings[0].message, /db\/cache_schema\.rb/);
+  assert.match(prepare.findings[0].message, /db\/cable_schema\.rb/);
+});
+
+test("des schémas secondaires tous présents laissent le chargement du schéma", () => {
+  for (const schemasManquants of [[], undefined]) {
+    const prepare = dbPrepareCommand({ schemaFile: "db/schema.rb", schemasManquants });
+
+    assert.equal(prepare.strategy, "schema", String(schemasManquants));
+    assert.equal(prepare.command, DB_PREPARE_SCHEMA);
+    assert.deepEqual(prepare.findings, []);
+  }
+});
+
+test("le relevé de schémas manquants ne sème pas davantage", () => {
+  // L'invariant du huitième commit vaut pour TOUTES les branches, celle-ci
+  // comprise : la préparation ne charge jamais db/seeds.rb.
+  const { command } = dbPrepareCommand({
+    schemaFile: "db/schema.rb",
+    schemasManquants: ["db/cache_schema.rb"],
+  });
+
+  assert.doesNotMatch(command, /db:seed/);
+  assert.doesNotMatch(command, /db:prepare/);
+});
+
+test("le RÉSUMÉ et la COMMANDE ne peuvent pas diverger", () => {
+  // Deux endroits décident du même fait : dbPrepareCommand fabrique la
+  // commande, describeDatabasePrepare la raconte. Rien dans le langage ne les
+  // relie — ce test est le lien. Un résumé annonçant « chargement de
+  // db/schema.rb » pendant que la construction rejoue les migrations enverrait
+  // le mainteneur chercher une panne au mauvais endroit.
+  const manifestes = [
+    { schemaFile: "db/schema.rb" },
+    { schemaFile: "db/structure.sql" },
+    { schemaFile: null },
+    { schemaFile: undefined },
+    { schemaFile: "db/schema.rb", schemasManquants: [] },
+    { schemaFile: "db/schema.rb", schemasManquants: ["db/cache_schema.rb"] },
+    { schemaFile: "db/structure.sql", schemasManquants: ["db/cache_structure.sql"] },
+    { schemaFile: "db/schema.rb", databasePrepare: "migrate" },
+    { schemaFile: null, databasePrepare: "migrate" },
+    { schemaFile: "db/schema.rb", dataMigrations: ["20260514210000_create_currencies.rb"] },
+  ];
+
+  for (const manifest of manifestes) {
+    const { strategy, command } = dbPrepareCommand({
+      strategy: manifest.databasePrepare,
+      schemaFile: manifest.schemaFile,
+      schemasManquants: manifest.schemasManquants,
+    });
+    const ligne = formatReport({ manifest })
+      .split("\n")
+      .find((l) => l.startsWith("Préparation base"));
+    const trace = `${JSON.stringify(manifest)} → ${ligne}`;
+
+    if (strategy === "migrate") {
+      assert.match(ligne, /rejeu des migrations/, trace);
+      assert.doesNotMatch(ligne, /chargement de/, trace);
+      // La réserve sur les migrations porteuses n'a plus lieu d'être : elles
+      // tournent.
+      assert.doesNotMatch(ligne, /ne seront donc pas insérées/, trace);
+    } else {
+      assert.match(ligne, /chargement de/, trace);
+      assert.match(ligne, /db:schema:load/, trace);
+      assert.equal(command, DB_PREPARE_SCHEMA, trace);
+      // Le résumé doit nommer le fichier RÉELLEMENT chargé, pas db/schema.rb
+      // par habitude : structure.sql se lit autrement.
+      assert.ok(ligne.includes(manifest.schemaFile), trace);
+    }
+  }
 });
 
 test("une valeur non reconnue retombe sur le chargement du schéma", () => {

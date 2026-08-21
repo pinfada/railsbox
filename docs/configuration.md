@@ -294,6 +294,48 @@ peut échouer sur une vieille migration qui ne tourne plus sous Rails récent
 (sans repli — un choix explicite doit échouer bruyamment), et cela ne répare
 **que la sandbox** : l'application reste cassée partout ailleurs.
 
+#### Plusieurs bases déclarées : le repli est **automatique**
+
+Une application peut déclarer plusieurs bases sous une même clé
+d'environnement. C'est la forme que produisent `solid_cache` et `solid_cable`,
+donc celle de beaucoup d'applications Rails 8 :
+
+```yaml
+production:
+  primary: &primary_production
+    <<: *default
+  cache:
+    <<: *primary_production
+  cable:
+    <<: *primary_production
+```
+
+`db:schema:load` réclame alors un fichier de schéma **par base** :
+`db/schema.rb` pour `primary`, puis `db/cache_schema.rb` et
+`db/cable_schema.rb`. Or ces schémas-là ne sont presque jamais versionnés —
+ce sont les migrations qui créent ces tables. La construction s'arrêtait donc
+sur un message de Rails qui ne nomme pas railsbox, et qui laisse croire à un
+défaut de l'application :
+
+```
+/app/db/cache_schema.rb doesn't exist yet. Run `bin/rails db:migrate` to create it, then try again.
+```
+
+railsbox relève désormais ces schémas manquants et prend d'office la voie que
+Rails conseille lui-même, en la nommant :
+
+```
+- [prepare-schemas-incomplets] config/database.yml déclare plusieurs bases, et il
+  manque un schéma versionné (db/cache_schema.rb, db/cable_schema.rb) : la base
+  sera préparée en rejouant toutes les migrations (db:create db:migrate) au lieu
+  de charger le schéma. […]
+```
+
+Rien à écrire dans `railsbox.yml`. Une base portant `schema_dump: false` n'est
+pas comptée — Rails n'en attend aucun fichier. Et si tous les schémas
+secondaires sont bien versionnés, le chargement du schéma reste la voie
+normale : ce repli ne coûte du temps de construction qu'à qui en a besoin.
+
 ### Bibliothèques système
 
 La base est mutualisée : son jeu de paquets est figé à sa construction, et

@@ -223,7 +223,7 @@ export const DB_PREPARE_MIGRATE = "bundle exec rails db:create db:migrate";
  *
  * `database_prepare: migrate` reste disponible en opt-in explicite, sans repli
  * silencieux : un choix explicite doit échouer bruyamment.
- * @param {{strategy?: string, schemaFile?: string|null, dataMigrations?: readonly string[]}} [input] stratégie déclarée
+ * @param {{strategy?: string, schemaFile?: string|null, schemasManquants?: readonly string[], dataMigrations?: readonly string[]}} [input] stratégie déclarée
  *   dans railsbox.yml ; `dataMigrations` est accepté et volontairement IGNORÉ —
  *   c'est là que vit l'arbitrage, et un lecteur doit pouvoir le vérifier ici.
  * @returns {{strategy: string, command: string, findings: Finding[]}} stratégie retenue,
@@ -247,6 +247,27 @@ export function dbPrepareCommand(input = {}) {
           "Ni db/schema.rb ni db/structure.sql : la base sera préparée en rejouant " +
             "toutes les migrations (db:create db:migrate) au lieu de charger le schéma. " +
             "Plus lent, et sensible à une migration ancienne qui ne tournerait plus.",
+        ),
+      ],
+    };
+  }
+  // Bases MULTIPLES dont un schéma n'est pas versionné. `db:schema:load`
+  // s'arrête sur le premier fichier absent — « db/cache_schema.rb doesn't
+  // exist yet » — et ce message ne dit ni que railsbox a choisi cette voie, ni
+  // que l'application, elle, est parfaitement saine : ses migrations créent ces
+  // bases, et Rails conseille lui-même `db:migrate`. On le fait, et on le dit.
+  if (input.schemasManquants !== undefined && input.schemasManquants.length > 0) {
+    return {
+      strategy: "migrate",
+      command: DB_PREPARE_MIGRATE,
+      findings: [
+        createFinding(
+          SEVERITY.INFO,
+          "prepare-schemas-incomplets",
+          "config/database.yml déclare plusieurs bases, et il manque un schéma versionné " +
+            `(${input.schemasManquants.join(", ")}) : la base sera préparée en rejouant toutes les migrations ` +
+            "(db:create db:migrate) au lieu de charger le schéma. Plus lent, et c'est la voie " +
+            "que Rails conseille lui-même dans ce cas.",
         ),
       ],
     };
@@ -388,6 +409,7 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
   const dbPrepare = dbPrepareCommand({
     strategy: manifest.databasePrepare,
     schemaFile: manifest.schemaFile,
+    schemasManquants: manifest.schemasManquants,
   });
   // Ce qui n'entrera PAS dans le contexte de construction. Calculé ici parce
   // que la décision dépend du plan d'assets : un répertoire de sortie n'est
@@ -543,6 +565,7 @@ export async function analyzeApp(appDir, appName, options = {}) {
     ...dbPrepareCommand({
       strategy: manifest.databasePrepare,
       schemaFile: manifest.schemaFile,
+      schemasManquants: manifest.schemasManquants,
     }).findings,
   );
 

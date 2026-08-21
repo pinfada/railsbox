@@ -30,6 +30,9 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  * @property {string|null} [schemaFile] schéma versionné relevé (`db/schema.rb`,
  *   `db/structure.sql`) ou `null` — décide entre chargement du schéma et rejeu
  *   des migrations, et rien d'autre
+ * @property {readonly string[]} [schemasManquants] schémas réclamés par une
+ *   déclaration de bases multiples et absents du dépôt — leur présence force
+ *   le rejeu des migrations
  * @property {readonly string[]} [dataMigrations] migrations qui écrivent des lignes
  * @property {readonly string[]} [databaseAdapters] adaptateurs vus dans config/database.yml
  * @property {import("./sqlite.mjs").SqliteDriverState} [sqliteDriver] disponibilité du pilote sqlite3

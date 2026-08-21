@@ -290,13 +290,27 @@ function describeDatabasePrepare(manifest) {
   if (manifest.databasePrepare === "migrate") {
     return "rejeu des migrations, db:create db:migrate (demandé par railsbox.yml)";
   }
+  // Les deux REPLIS de dbPrepareCommand. Les taire ici ferait mentir le
+  // résumé : il annoncerait un chargement de schéma là où la construction
+  // rejoue les migrations, et la réserve sur les migrations porteuses de
+  // données serait fausse — elles TOURNENT, dans ce cas.
+  if (manifest.schemaFile === null || manifest.schemaFile === undefined) {
+    return "rejeu des migrations, db:create db:migrate (aucun schéma versionné)";
+  }
+  const manquants = manifest.schemasManquants ?? [];
+  if (manquants.length > 0) {
+    return (
+      "rejeu des migrations, db:create db:migrate " +
+      `(bases multiples, schéma absent : ${manquants.join(", ")})`
+    );
+  }
   const pluriel = migrations.length > 1;
   const reserve =
     migrations.length > 0
       ? ` — ATTENTION : ${migrations.length} migration${pluriel ? "s" : ""} ` +
         `y amorce${pluriel ? "nt" : ""} des données qui ne seront donc pas insérées`
       : "";
-  return `chargement de db/schema.rb, db:create db:schema:load db:migrate${reserve}`;
+  return `chargement de ${manifest.schemaFile}, db:create db:schema:load db:migrate${reserve}`;
 }
 
 /** Libellés français des états de `config.force_ssl`. */

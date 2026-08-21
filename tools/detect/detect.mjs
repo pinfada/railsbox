@@ -255,6 +255,76 @@ export function parseDatabaseAdapters(text) {
 }
 
 /**
+ * Nomme les bases déclarées par un environnement de `config/database.yml`.
+ *
+ * Rails accepte deux formes sous une clé d'environnement : une CONNEXION
+ * unique (`adapter:`, `database:`… directement dessous) ou un DICTIONNAIRE DE
+ * BASES NOMMÉES, chaque nom portant sa propre connexion. La seconde forme
+ * change tout pour la préparation : `db:schema:load` réclame alors un fichier
+ * de schéma PAR base — `db/schema.rb` pour `primary`, `db/<nom>_schema.rb`
+ * pour les autres — et échoue sur le premier absent.
+ *
+ * Une base dont le bloc porte `schema_dump: false` n'est pas comptée : Rails
+ * n'en attend aucun fichier.
+ *
+ * @param {unknown} text contenu du fichier
+ * @param {string} [env] environnement examiné
+ * @returns {readonly string[]} noms déclarés, vide si la forme est une connexion unique
+ */
+export function parseDatabaseNames(text, env = "production") {
+  if (typeof text !== "string") return [];
+  const lignes = text.replace(ERB_TAG, "").split(/\r?\n/);
+  const entete = new RegExp(String.raw`^${env}:[ \t]*(?:&\S+[ \t]*)?$`);
+  const debut = lignes.findIndex((ligne) => entete.test(ligne));
+  if (debut === -1) return [];
+
+  const noms = [];
+  let indentation = null;
+  let courant = null;
+  for (const ligne of lignes.slice(debut + 1)) {
+    if (ligne.trim() === "" || ligne.trimStart().startsWith("#")) continue;
+    const creux = ligne.length - ligne.trimStart().length;
+    if (creux === 0) break; // l'environnement suivant commence en colonne zéro
+    if (indentation === null) indentation = creux;
+    if (creux > indentation) {
+      // Contenu d'une base nommée. Seul `schema_dump: false` s'y lit : il
+      // dispense Rails d'écrire — donc d'attendre — un fichier de schéma.
+      if (courant !== null && /^schema_dump:[ \t]*false\b/.test(ligne.trim())) {
+        noms.splice(noms.indexOf(courant), 1);
+        courant = null;
+      }
+      continue;
+    }
+    const entree = /^([A-Za-z_][\w-]*|<<):[ \t]*(.*)$/.exec(ligne.trim());
+    if (entree === null) return [];
+    const [, cle, reste] = entree;
+    // Une valeur sur la même ligne — l'ancre nue mise à part — décrit un
+    // réglage de connexion, pas une base : la forme est alors unique, et
+    // nommer ses clés (`adapter`, `pool`…) comme des bases serait faux.
+    if (cle === "<<" || reste.replace(/&\S+/, "").split("#")[0].trim() !== "") return [];
+    courant = cle;
+    noms.push(cle);
+  }
+  return Object.freeze(noms);
+}
+
+/**
+ * Fichier de schéma qu'attend Rails pour une base nommée.
+ *
+ * `primary` garde le nom historique ; les autres sont préfixées. Le format
+ * suit `config.active_record.schema_format`, que railsbox lit ici dans le
+ * schéma DÉJÀ présent plutôt que de le deviner.
+ *
+ * @param {string} nom nom de la base dans database.yml
+ * @param {string} schemaPrimaire chemin du schéma de la base primaire
+ * @returns {string} chemin attendu, relatif à la racine de l'application
+ */
+export function schemaDeBase(nom, schemaPrimaire) {
+  const suffixe = schemaPrimaire.endsWith(".sql") ? "_structure.sql" : "_schema.rb";
+  return nom === "primary" ? schemaPrimaire : `db/${nom}${suffixe}`;
+}
+
+/**
  * Détermine la version de Ruby et sa provenance, par ordre de priorité.
  * @param {{rubyVersionFile: string|null, gemfile: string|null, lock: string|null}} sources
  * @returns {{version: string|null, source: string|null, findings: Finding[]}} résultat
@@ -648,6 +718,22 @@ export async function detectApp(appDir, options = {}) {
   // seulement QU'UN schéma existe, et lequel, pour le diagnostic.
   const schemaFile =
     schemaRb !== null ? "db/schema.rb" : structureSql !== null ? "db/structure.sql" : null;
+  // Bases MULTIPLES : `db:schema:load` en réclame un fichier PAR base et
+  // s'arrête sur le premier absent, avec un message qui ne nomme pas railsbox.
+  // Le cas n'a rien d'exotique — solid_cache et solid_cable ajoutent `cache` et
+  // `cable` sans versionner leur schéma, ce sont leurs migrations qui les
+  // créent. On relève ici ce qui manque ; la préparation en tirera le rejeu des
+  // migrations, et le dira.
+  const schemasManquants = (
+    await Promise.all(
+      (schemaFile === null ? [] : parseDatabaseNames(databaseYml ?? ""))
+        .map((nom) => schemaDeBase(nom, schemaFile ?? "db/schema.rb"))
+        .filter((chemin) => chemin !== schemaFile)
+        .map(async (chemin) =>
+          (await readOptionalFile(join(appDir, chemin))) === null ? chemin : null,
+        ),
+    )
+  ).filter((chemin) => chemin !== null);
   const dataMigrations = scanDataMigrations(migrations);
   findings.push(...dataMigrationFindings(dataMigrations));
   const ssl = detectSsl(productionRb);
@@ -712,6 +798,7 @@ export async function detectApp(appDir, options = {}) {
     // en mode « auto », de préparer la base en jouant les migrations.
     dataMigrations: Object.freeze(dataMigrations.map((entry) => entry.file)),
     schemaFile,
+    schemasManquants: Object.freeze(schemasManquants),
     // État du db/seeds.rb (absent, vide, utile). Aucun diagnostic ici : le
     // verdict dépend aussi de `seed.command`, qui n'arrive qu'à la fusion.
     seedsFile: etatFichierSeeds(seedsRb),

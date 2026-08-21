@@ -7,6 +7,8 @@ import {
   detectApp,
   normalizeRubyVersion,
   parseDatabaseAdapters,
+  parseDatabaseNames,
+  schemaDeBase,
   readOptionalFile,
 } from "../tools/detect/detect.mjs";
 import { collectNativeGems, detectServices, parseLockSpecs } from "../tools/detect/gems.mjs";
@@ -228,6 +230,121 @@ test("database.yml truffé d'ERB donne quand même postgresql", async () => {
 
   assert.equal(manifest.database, "postgresql");
   assert.equal(hasBlocking(findings), false);
+});
+
+// --- Bases MULTIPLES ---------------------------------------------------------
+
+const YML_BASES_MULTIPLES = [
+  "default: &default",
+  "  adapter: postgresql",
+  "  pool: 5",
+  "",
+  "test:",
+  "  <<: *default",
+  "",
+  "production:",
+  "  primary: &primary_production",
+  "    <<: *default",
+  "  cache:",
+  "    <<: *primary_production",
+  "  cable:",
+  "    <<: *primary_production",
+  "",
+].join("\n");
+
+test("une connexion unique ne nomme AUCUNE base", () => {
+  // Le piège à éviter : prendre `adapter`, `pool`, `url` pour des noms de
+  // bases et réclamer un db/adapter_schema.rb.
+  assert.deepEqual(parseDatabaseNames(YML_BASES_MULTIPLES, "test"), []);
+  assert.deepEqual(parseDatabaseNames("production:\n  adapter: postgresql\n  pool: 5\n"), []);
+  assert.deepEqual(parseDatabaseNames("production:\n  <<: *default\n"), []);
+  assert.deepEqual(parseDatabaseNames(null), []);
+  assert.deepEqual(parseDatabaseNames("development:\n  <<: *default\n"), []);
+});
+
+test("un dictionnaire de bases nommées les nomme toutes, ancre comprise", () => {
+  assert.deepEqual(parseDatabaseNames(YML_BASES_MULTIPLES), ["primary", "cache", "cable"]);
+  assert.deepEqual(parseDatabaseNames(YML_BASES_MULTIPLES, "development"), []);
+});
+
+test("une base marquée schema_dump: false n'attend aucun fichier", () => {
+  // Rails ne dumpe pas ces bases : en réclamer le schéma ferait basculer la
+  // préparation sur les migrations pour rien.
+  const yml = [
+    "production:",
+    "  primary:",
+    "    <<: *default",
+    "  cache:",
+    "    <<: *default",
+    "    schema_dump: false",
+    "",
+  ].join("\n");
+
+  assert.deepEqual(parseDatabaseNames(yml), ["primary"]);
+});
+
+test("le schéma d'une base suit son nom, et le format du schéma primaire", () => {
+  assert.equal(schemaDeBase("primary", "db/schema.rb"), "db/schema.rb");
+  assert.equal(schemaDeBase("cache", "db/schema.rb"), "db/cache_schema.rb");
+  assert.equal(schemaDeBase("primary", "db/structure.sql"), "db/structure.sql");
+  assert.equal(schemaDeBase("cable", "db/structure.sql"), "db/cable_structure.sql");
+});
+
+test("un schéma secondaire absent est RELEVÉ NOMMÉMENT", async () => {
+  // La panne d'origine, en salle blanche : `db:schema:load` s'arrêtait sur
+  // « /app/db/cache_schema.rb doesn't exist yet » — un message de Rails qui ne
+  // nomme pas railsbox et laisse croire à un défaut de l'application.
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.schemaFile, "db/schema.rb");
+  assert.deepEqual(manifest.schemasManquants, ["db/cache_schema.rb", "db/cable_schema.rb"]);
+});
+
+test("des schémas secondaires tous présents ne relèvent rien", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+    "db/cache_schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+    "db/cable_schema.rb": "ActiveRecord::Schema[8.0].define(version: 1) do\nend\n",
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.deepEqual(manifest.schemasManquants, []);
+});
+
+test("en format SQL, ce sont les structure.sql secondaires qui sont attendus", async () => {
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+    "db/structure.sql": "CREATE TABLE things (id bigserial primary key);\n",
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.schemaFile, "db/structure.sql");
+  assert.deepEqual(manifest.schemasManquants, ["db/cache_structure.sql", "db/cable_structure.sql"]);
+});
+
+test("sans schéma primaire, rien n'est relevé : le repli existe déjà", async () => {
+  // Cumuler les deux diagnostics dirait deux fois la même chose, et
+  // `prepare-sans-schema` couvre déjà ce cas.
+  const dir = await createApp({
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/database.yml": YML_BASES_MULTIPLES,
+  });
+
+  const { manifest } = await detectApp(dir);
+
+  assert.equal(manifest.schemaFile, null);
+  assert.deepEqual(manifest.schemasManquants, []);
 });
 
 test("mysql2 dans database.yml bloque l'analyse avec le bon message", async () => {
