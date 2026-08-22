@@ -85,6 +85,16 @@ const APP_PREFIX = appPrefix(BASE_PATH);
 const RAW_ASSET_PREFIX = `${BASE_PATH.replace(/\/+$/, "")}/disks/`;
 const REQUEST_TIMEOUT_MS = 120_000;
 const PORT_RECOVERY_TIMEOUT_MS = 10_000;
+// PLAFOND quand la coquille est VIVANTE mais muette. v86 émule sur le fil
+// principal de la page hôte : un rendu lourd le monopolise, et la coquille ne
+// peut alors pas répondre — sans être fermée pour autant. Mesuré sur la
+// démonstration de woofed-crm, sur un poste 1,5× plus lent que la référence :
+// quatre requêtes concurrentes suffisaient à faire tomber les cinq frames
+// paresseuses du pipeline en 502 (issue #12).
+// Exprimé en TENTATIVES et non en horloge : le plafond vaut alors
+// PORT_RECOVERY_TIMEOUT_MS x PORT_BUSY_RETRIES (une minute), sans dépendre
+// d'une mesure de temps que rien ne garantit monotone dans un worker réveillé.
+const PORT_BUSY_RETRIES = 6;
 // Fraction du quota de stockage au-delà de laquelle on cesse d'écrire dans le
 // cache : le navigateur évincerait l'origine entière (dont l'instantané en
 // IndexedDB, bien plus coûteux à reconstituer qu'un morceau de 4 Mio).
@@ -411,19 +421,66 @@ function adoptBridgePort(port) {
   for (const waiter of waiters) waiter.resolve(port);
 }
 
+/**
+ * Une coquille est-elle encore là pour porter le pont ?
+ *
+ * C'est la question que le délai posait implicitement, et mal : il concluait de
+ * « n'a pas répondu en dix secondes » à « a disparu ». Or v86 émule sur le fil
+ * principal de la page hôte, et un rendu lourd l'y monopolise bien plus
+ * longtemps. On interroge donc les clients, qui répondent par leur EXISTENCE et
+ * non par leur disponibilité — c'est précisément le signal qui manquait.
+ * @returns {Promise<boolean>}
+ */
+async function coquilleVivante() {
+  try {
+    const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
+    return clientList.some((client) =>
+      isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH }),
+    );
+  } catch {
+    // Une énumération qui échoue ne doit pas faire conclure à la disparition :
+    // on retombe sur le comportement d'avant, qui est le plus prudent.
+    return false;
+  }
+}
+
 function ensureBridgePort() {
   if (state.bridgePort) return Promise.resolve(state.bridgePort);
+  let tentatives = 0;
   const waiting = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    /** @type {any} */
+    let timer;
+    const echeance = async () => {
+      // UNE PAGE OCCUPÉE N'EST PAS UNE PAGE FERMÉE. Tant qu'une coquille
+      // existe, on la resollicite : elle finira par rendre la main. Sans cela,
+      // les frames paresseuses d'une application partant par cinq tombaient
+      // toutes ensemble en 502, sur une machine lente.
+      const vivante = await coquilleVivante();
+      if (vivante && tentatives < PORT_BUSY_RETRIES) {
+        tentatives += 1;
+        requestPortFromClients();
+        timer = setTimeout(echeance, PORT_RECOVERY_TIMEOUT_MS);
+        return;
+      }
       state.portWaiters = state.portWaiters.filter((w) => w.resolve !== wrapped.resolve);
       // LE CANAL EST ABANDONNÉ AVEC LA REQUÊTE. Le porteur a été sollicité et
       // n'a pas répondu : soit il a disparu sans que le worker l'ait vu, soit
       // il ne pilote plus la VM. Le garder reviendrait à laisser un onglet
       // muet tenir le proxy en otage — la lecture suivante ouvrira un tour de
       // rétablissement, et l'onglet qui pilote pourra reprendre la main.
+      //
+      // Cette garde est INCHANGÉE : elle ne s'applique plus qu'aux cas où
+      // plus aucune coquille n'existe, ou au-delà du plafond.
       abandonnerCanal();
-      reject(new Error("La page hôte n'a pas fourni le pont VM (est-elle ouverte ?)"));
-    }, PORT_RECOVERY_TIMEOUT_MS);
+      reject(
+        new Error(
+          vivante
+            ? "La page hôte est restée occupée trop longtemps (émulation en cours) : requête abandonnée."
+            : "La page hôte n'a pas fourni le pont VM (est-elle ouverte ?)",
+        ),
+      );
+    };
+    timer = setTimeout(echeance, PORT_RECOVERY_TIMEOUT_MS);
     const wrapped = {
       /** @param {MessagePort} port */
       resolve: (port) => {
