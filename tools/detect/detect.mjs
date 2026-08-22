@@ -746,9 +746,17 @@ export async function detectApp(appDir, options = {}) {
   // sur « extension "vector" is not available », sans nommer de remède. Le
   // schéma compte autant que les migrations : une base préparée par
   // `db:schema:load` exécute ses `enable_extension` tout autant.
+  // Les DEUX formats de schéma, pas seulement `schema.rb` : une application en
+  // `schema_format = :sql` déclare ses extensions dans `db/structure.sql`, sous
+  // la forme `CREATE EXTENSION`, et `db:schema:load` les joue tout autant. Ne
+  // transmettre que `schema.rb` laissait ces applications franchir le refus
+  // amont pour échouer en construction — précisément ce qu'il existe pour
+  // éviter. Les deux fichiers sont exclusifs en pratique ; les passer tous deux
+  // ne coûte qu'une lecture déjà faite.
   const extensions = extensionsRequises([
     ...migrations,
     { name: "db/schema.rb", text: schemaRb ?? "" },
+    { name: "db/structure.sql", text: structureSql ?? "" },
   ]);
   const manquantes = extensionsManquantes(extensions, base.version);
   if (manquantes.length > 0) {
