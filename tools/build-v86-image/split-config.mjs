@@ -175,14 +175,29 @@ export function refusalLines(missing) {
 }
 
 /**
- * Vérifie qu'un contenu applicatif tient dans la géométrie fixe. Le disque est
- * mkfs'é exactement à {@link APP_DISK_BYTES} : au-delà, il déborderait.
+ * MARGE D'EXÉCUTION : ce que le guest doit pouvoir écrire une fois démarré.
+ *
+ * Doit rester égale à `MARGE_EXECUTION_MB` de build-app-disk.sh, où vit la
+ * garde réellement appliquée et le détail des mesures. Les deux décrivent le
+ * même disque depuis deux langages ; rien ne les relie à l'exécution, c'est une
+ * épreuve qui les tient d'accord.
+ */
+export const MARGE_EXECUTION_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Vérifie qu'un contenu applicatif tient dans la géométrie fixe ET laisse de
+ * quoi tourner. Le disque est mkfs'é exactement à {@link APP_DISK_BYTES}.
+ *
+ * « Tenir » ne suffit pas : un disque plein à 100 % se construit parfaitement
+ * et ne démarre pas — PostgreSQL y tient son WAL, Rails ses journaux et son
+ * tmp. Mesuré sur woofed-crm : à 498 Mo de contenu, la construction passait et
+ * la sandbox échouait sur « No space left on device », chez le visiteur.
  * @param {number} contentBytes taille estimée du contenu (arbre app + bundle)
  * @returns {{ ok: boolean, targetBytes: number, freeBytes: number }}
  */
 export function checkAppDiskFit(contentBytes) {
   const freeBytes = APP_DISK_BYTES - contentBytes;
-  return { ok: freeBytes >= 0, targetBytes: APP_DISK_BYTES, freeBytes };
+  return { ok: freeBytes >= MARGE_EXECUTION_BYTES, targetBytes: APP_DISK_BYTES, freeBytes };
 }
 
 /**
