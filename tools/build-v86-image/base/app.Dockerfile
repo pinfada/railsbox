@@ -114,6 +114,25 @@ RIB_SYSTEME_INSTALL
 COPY Gemfile* ./
 RUN bundle lock --add-platform x86-linux ruby && bundle install
 
+# Résidus de compilation des gems natives. Le disque applicatif est figé à
+# 512 Mo (ADR 0002) et peuplé par un `docker export`, donc par TOUT ce qui vit
+# sous /app. Une gem compilée depuis les sources — et railsbox les compile
+# TOUTES, BUNDLE_FORCE_RUBY_PLATFORM oblige — y laisse ses objets
+# intermédiaires, dont plus rien n'a besoin une fois le `.so` produit et
+# installé.
+#
+# Mesuré le 21/08/2026 sur woofed-crm : 1 604 Mo d'objets .o/.a sur 1 895 Mo de
+# gems, dont 1 677 Mo pour grpc seul, qui retombe à 55 Mo. L'application ne
+# tenait pas dans 512 Mo à cause de cela seul.
+#
+# LES SOURCES AUSSI. Une gem compilée garde son arbre C/C++ : 45 Mo de plus sur
+# woofed-crm, dont l'essentiel pour grpc. Ruby ne lit jamais un `.c` ni un `.h` à
+# l'exécution — la compilation a eu lieu ici, au build.
+#
+# JAMAIS LES `.so` : ce sont eux que Ruby charge. En supprimer un ne casse rien
+# à la construction — l'erreur surgit au boot de la VM, chez le visiteur.
+RUN find ${BUNDLE_PATH} -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
+
 COPY . .
 # COPY . . a rétabli le Gemfile.lock du dépôt : on ré-ajoute la plateforme i386,
 # sinon bundle exec refuse le bundle pourtant installé.
@@ -145,6 +164,18 @@ while IFS= read -r brut; do
   # et ce sont eux qui gonflent le plus vite un disque applicatif de 512 Mo.
   case "$brut" in
     /usr/share/doc/*|/usr/share/man/*|/usr/share/lintian/*|/usr/share/locale/*) continue ;;
+    # CE QUI NE SERT QU'À COMPILER ET À LIER n'a rien à faire dans la VM. Les
+    # paquets `-dev` sont installés parce que les gems natives en ont besoin AU
+    # BUILD ; leurs archives statiques et leurs en-têtes ne sont jamais chargés
+    # à l'exécution, où seul le `.so` compte.
+    #
+    # Mesuré le 21/08/2026 sur woofed-crm : surcouche de 230 Mo, dont 84 Mo
+    # d'archives `.a` et 21 Mo d'en-têtes. 105 Mo sur 230 — et l'application
+    # passait de 633 Mo à 528 Mo pour la seule géométrie de 512 Mo. Même classe
+    # de défaut que les résidus `.o` du bundle, sur l'autre arbre.
+    *.a|*.la) continue ;;
+    /usr/include/*) continue ;;
+    /usr/lib/*/pkgconfig/*|/usr/share/pkgconfig/*|/usr/share/aclocal/*) continue ;;
     /) continue ;;
   esac
   # Debian a fusionné /usr : /lib, /bin et /sbin sont des LIENS vers /usr/…, et

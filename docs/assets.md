@@ -47,7 +47,7 @@ contenir. Sa présence prouve que le binaire `tailwindcss` a balayé les vues
 pendant cette construction — sur l'hôte amd64, jamais dans le guest.
 
 Deux points d'attention plutôt qu'un refus : sans `package-lock.json` (ou avec un
-verrou yarn/pnpm/bun, que railsbox ne relit pas), l'installation retombe sur
+verrou bun, que railsbox ne relit pas), l'installation retombe sur
 `npm install` et la construction n'est plus reproductible — c'est un
 avertissement du rapport d'analyse. Et si l'étage amd64 ne produit **aucun**
 asset, la construction s'arrête là.

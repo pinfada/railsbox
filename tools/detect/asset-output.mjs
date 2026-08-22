@@ -70,6 +70,33 @@ const STRUCTURAL_ROOTS = Object.freeze([
 /** Arbres qu'on n'exporte jamais, où qu'ils se trouvent dans le chemin. */
 const NEVER_EXPORTED = Object.freeze([".git", "node_modules", "vendor/bundle"]);
 
+/**
+ * LA SEULE EXCEPTION À `node_modules` : la racine d'un paquet.
+ *
+ * Sprockets sait avoir besoin d'un paquet npm À L'EXÉCUTION, et ce n'est pas un
+ * montage exotique : le générateur Rails documente lui-même
+ * `config.assets.paths << Rails.root.join("node_modules")`. Une application qui
+ * écrit `@import "trix/dist/trix"` dans une feuille de style ne rend cette
+ * feuille qu'avec le paquet présent — précompilation ou pas, dès lors que
+ * `config.assets.compile` reste à `true` en production, ce qui est le défaut
+ * de sprockets-rails.
+ *
+ * Mesuré sur woofed-crm le 21/08/2026 : UNE directive, 0,45 Mo, et sans elle un
+ * 500 sur la page de connexion. Le refus global rendait ces applications
+ * impubliables ; exporter `node_modules` entier coûtait 431 Mo, soit près du
+ * double du budget disque qui restait.
+ *
+ * L'exception s'arrête à la RACINE du paquet — deux segments, le second sans
+ * point initial. Le répertoire lui-même reste interdit (c'est lui qui pèse), les
+ * caches internes (`.vite`, `.bin`, `.cache`) aussi, et l'on n'ouvre aucun
+ * sous-arbre : Sprockets résout `trix/dist/trix` depuis la racine du paquet.
+ *
+ * Les paquets À PORTÉE (`@scope/nom`) ne passent pas : `SEGMENT` refuse le `@`,
+ * et cette liste est une frontière de sécurité qu'on n'élargit pas pour un cas
+ * qui ne s'est pas encore présenté.
+ */
+const NODE_MODULES_PACKAGE = /^node_modules\/[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+
 /** Sortie par défaut de vite_ruby, relative au répertoire public. */
 const VITE_DEFAULT_OUTPUT = "vite";
 
@@ -118,8 +145,11 @@ export function normalizeOutputDir(value) {
     if (!SEGMENT.test(segment)) return null;
   }
   if (segments.length === 1 && STRUCTURAL_ROOTS.includes(segments[0])) return null;
-  if (NEVER_EXPORTED.some((tree) => trimmed === tree || trimmed.startsWith(`${tree}/`)))
-    return null;
+  if (NEVER_EXPORTED.some((tree) => trimmed === tree || trimmed.startsWith(`${tree}/`))) {
+    // Seule dérogation : la racine d'un paquet npm, dont Sprockets peut avoir
+    // besoin à l'exécution. Voir NODE_MODULES_PACKAGE.
+    if (!NODE_MODULES_PACKAGE.test(trimmed)) return null;
+  }
   return trimmed;
 }
 
