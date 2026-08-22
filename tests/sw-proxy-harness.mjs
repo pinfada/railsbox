@@ -322,6 +322,18 @@ export async function chargerWorker({
       };
     },
 
+    /**
+     * Nombre d'interrogations de `clients.matchAll`. C'est l'observable
+     * DÉTERMINISTE du partage de la boucle de récupération : une boucle
+     * interroge une fois par échéance, donc cinq boucles interrogent cinq fois.
+     * Compter les sollicitations dans une fenêtre de temps, à l'inverse,
+     * dépendait de l'ordonnancement des minuteries — et rendait l'épreuve
+     * intermittente en CI.
+     */
+    get interrogationsClients() {
+      return appelsMatchAll;
+    },
+
     /** @param {Array<{ url: string, id?: string }>} liste */
     poserClients(liste) {
       clients = liste.map((client) => ({

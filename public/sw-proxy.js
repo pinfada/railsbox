@@ -91,9 +91,13 @@ const PORT_RECOVERY_TIMEOUT_MS = 10_000;
 // démonstration de woofed-crm, sur un poste 1,5× plus lent que la référence :
 // quatre requêtes concurrentes suffisaient à faire tomber les cinq frames
 // paresseuses du pipeline en 502 (issue #12).
-// Exprimé en TENTATIVES et non en horloge : le plafond vaut alors
-// PORT_RECOVERY_TIMEOUT_MS x PORT_BUSY_RETRIES (une minute), sans dépendre
-// d'une mesure de temps que rien ne garantit monotone dans un worker réveillé.
+// Exprimé en TENTATIVES et non en horloge, pour ne pas dépendre d'une mesure de
+// temps que rien ne garantit monotone dans un worker que le navigateur réveille.
+//
+// Ce n'est donc PAS une garantie de durée : chaque tentative attend au moins
+// PORT_RECOVERY_TIMEOUT_MS, plus le temps d'interroger les clients, plus ce que
+// le fil principal saturé fait attendre. Six tentatives valent « au moins une
+// minute », jamais « exactement une minute ».
 const PORT_BUSY_RETRIES = 6;
 // Fraction du quota de stockage au-delà de laquelle on cesse d'écrire dans le
 // cache : le navigateur évincerait l'origine entière (dont l'instantané en

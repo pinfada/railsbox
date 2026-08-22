@@ -80,35 +80,42 @@ async function donnerLePont(worker) {
   };
 }
 
-/**
- * Sollicitations émises pendant qu'un nombre donné de requêtes attend le pont.
- * @param {number} combien
- */
-async function solliciterAvec(combien) {
+test("CINQ requêtes concurrentes n'ouvrent QU'UNE boucle de récupération", async () => {
+  // Le défaut n° 1. L'observable est le nombre d'interrogations de
+  // `clients.matchAll` : une boucle en fait UNE par échéance, cinq boucles en
+  // font cinq. Ce compte ne dépend d'aucun délai.
+  //
+  // La version précédente comparait des sollicitations accumulées pendant une
+  // attente approximative — elle passait vingt fois en local et rougissait en
+  // CI, ce qui prouvait surtout qu'elle mesurait l'ordonnancement des
+  // minuteries plutôt que le partage.
   const worker = await workerPret();
-  const avant = demandesDePont(worker);
-  const enVol = Array.from({ length: combien }, (_, i) =>
-    Promise.resolve(worker.requeter(`${SCOPE}app/accounts/1/stages/${i + 1}`)).catch(() => null),
+  // L'ÉCART, pas l'absolu : d'autres chemins du worker interrogent aussi les
+  // clients (le rétablissement du canal, par exemple). Seul compte ce que les
+  // cinq requêtes ajoutent.
+  const avant = worker.interrogationsClients;
+  const barriere = worker.retenirClients();
+
+  const enVol = [1, 2, 3, 4, 5].map((i) =>
+    Promise.resolve(worker.requeter(`${SCOPE}app/accounts/1/stages/${i}`)).catch(() => null),
   );
-  await respirer(12);
-  const pendant = demandesDePont(worker) - avant;
+
+  // Une première échéance est arrivée jusqu'à l'interrogation, où elle est
+  // RETENUE. Si chaque requête avait sa boucle, les quatre autres échéances
+  // interrogeraient à leur tour — la barrière étant consommée, rien ne les
+  // retiendrait, et le compteur monterait.
+  await barriere.engagee();
+  await respirer(10);
+
+  assert.equal(
+    worker.interrogationsClients - avant,
+    1,
+    "cinq requêtes ont ouvert autant de boucles : la récupération n'est pas partagée",
+  );
+
+  barriere.liberer();
   await Promise.all(enVol);
   worker.fermer();
-  return pendant;
-}
-
-test("CINQ requêtes concurrentes ne sollicitent pas plus qu'UNE SEULE", async () => {
-  // Le défaut n° 1. Le seuil n'est PAS absolu — il dépendrait de la vitesse des
-  // minuteries, donc de la machine. L'invariant est comparatif : cinq requêtes
-  // partagent une boucle, elles doivent donc solliciter la coquille autant
-  // qu'une seule. Mesuré avant le partage : 35 contre 7.
-  const uneSeule = await solliciterAvec(1);
-  const cinq = await solliciterAvec(5);
-
-  assert.ok(
-    cinq <= uneSeule + 1,
-    `cinq requêtes ont sollicité ${cinq} fois contre ${uneSeule} pour une seule : les boucles ne sont pas partagées`,
-  );
 });
 
 test("le pont arrivé PENDANT une échéance ne laisse aucune minuterie orpheline", async () => {
