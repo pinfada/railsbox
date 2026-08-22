@@ -50,10 +50,16 @@ export function reponseFactice({
 
 /**
  * Charge une instance neuve du Service Worker.
- * @param {{ scope?: string, repondre: (request: Request) => any }} options
+ * @param {{ scope?: string, repondre: (request: Request) => any, minuteriesAccelerees?: boolean }} options
  *   `repondre` est le `fetch` truqué : il reçoit la requête réelle du worker.
+ *   `minuteriesAccelerees` comprime les délais du worker, qui se comptent en
+ *   dizaines de secondes : une épreuve qui les subirait ne serait pas jouable.
  */
-export async function chargerWorker({ scope = "http://localhost/", repondre }) {
+export async function chargerWorker({
+  scope = "http://localhost/",
+  repondre,
+  minuteriesAccelerees = false,
+}) {
   /** @type {Map<string, Function[]>} */
   const ecouteurs = new Map();
   /** @type {Array<{ nom: string, url: string, corps: any }>} */
@@ -73,6 +79,13 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
   const requetesReseau = [];
   /** @type {any[]} */
   let clients = [];
+  // Barrière optionnelle DEVANT `clients.matchAll`. Le worker interroge ses
+  // clients au milieu de sa boucle de récupération ; sans moyen d'arrêter le
+  // temps à cet instant précis, toute épreuve de la course « le pont arrive
+  // pendant l'attente » serait intermittente — donc pire qu'absente.
+  /** @type {Promise<void> | null} */
+  let barriereClients = null;
+  let appelsMatchAll = 0;
 
   const entrees = new Map(); // "nom\u0000url" -> corps
 
@@ -100,8 +113,13 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
   const vraiSetTimeout = globalThis.setTimeout;
   /** @type {any[]} */
   const minuteries = [];
+  // Les délais du worker se comptent en dizaines de SECONDES : une épreuve qui
+  // les subit vraiment ne serait pas jouable. `minuteriesAccelerees` les
+  // comprime, sans toucher au code éprouvé — ce qui est vérifié reste l'ordre
+  // des opérations et la décision prise à l'échéance, pas la durée elle-même.
   poser("setTimeout", (fn, ms, ...reste) => {
-    const id = vraiSetTimeout(fn, ms, ...reste);
+    const delai = minuteriesAccelerees && ms > 50 ? 5 : ms;
+    const id = vraiSetTimeout(fn, delai, ...reste);
     minuteries.push(id);
     return id;
   });
@@ -116,7 +134,15 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
     },
     clients: {
       claim: async () => {},
-      matchAll: async () => clients,
+      matchAll: async () => {
+        appelsMatchAll += 1;
+        if (barriereClients) {
+          const attendue = barriereClients;
+          barriereClients = null;
+          await attendue;
+        }
+        return clients;
+      },
       // Le worker s'en sert pour savoir si le porteur du canal vit encore :
       // tant qu'il vit, aucun second canal n'est adopté.
       get: async (id) => clients.find((client) => client.id === id),
@@ -274,6 +300,38 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
       await Promise.all(differes.splice(0));
       await Promise.resolve();
       await Promise.all(differes.splice(0));
+    },
+
+    /**
+     * Retient le PROCHAIN `clients.matchAll` jusqu'à ce que la promesse rendue
+     * par `liberer()` soit tenue. Rend de quoi savoir quand l'appel a eu lieu.
+     */
+    retenirClients() {
+      /** @type {() => void} */
+      let liberer = () => {};
+      barriereClients = new Promise((resolve) => {
+        liberer = () => resolve(undefined);
+      });
+      const depart = appelsMatchAll;
+      return {
+        liberer,
+        /** Attend que le worker soit RÉELLEMENT entré dans l'appel retenu. */
+        async engagee() {
+          while (appelsMatchAll === depart) await new Promise((r) => setTimeout(r, 1));
+        },
+      };
+    },
+
+    /**
+     * Nombre d'interrogations de `clients.matchAll`. C'est l'observable
+     * DÉTERMINISTE du partage de la boucle de récupération : une boucle
+     * interroge une fois par échéance, donc cinq boucles interrogent cinq fois.
+     * Compter les sollicitations dans une fenêtre de temps, à l'inverse,
+     * dépendait de l'ordonnancement des minuteries — et rendait l'épreuve
+     * intermittente en CI.
+     */
+    get interrogationsClients() {
+      return appelsMatchAll;
     },
 
     /** @param {Array<{ url: string, id?: string }>} liste */

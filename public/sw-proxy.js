@@ -85,6 +85,20 @@ const APP_PREFIX = appPrefix(BASE_PATH);
 const RAW_ASSET_PREFIX = `${BASE_PATH.replace(/\/+$/, "")}/disks/`;
 const REQUEST_TIMEOUT_MS = 120_000;
 const PORT_RECOVERY_TIMEOUT_MS = 10_000;
+// PLAFOND quand la coquille est VIVANTE mais muette. v86 émule sur le fil
+// principal de la page hôte : un rendu lourd le monopolise, et la coquille ne
+// peut alors pas répondre — sans être fermée pour autant. Mesuré sur la
+// démonstration de woofed-crm, sur un poste 1,5× plus lent que la référence :
+// quatre requêtes concurrentes suffisaient à faire tomber les cinq frames
+// paresseuses du pipeline en 502 (issue #12).
+// Exprimé en TENTATIVES et non en horloge, pour ne pas dépendre d'une mesure de
+// temps que rien ne garantit monotone dans un worker que le navigateur réveille.
+//
+// Ce n'est donc PAS une garantie de durée : chaque tentative attend au moins
+// PORT_RECOVERY_TIMEOUT_MS, plus le temps d'interroger les clients, plus ce que
+// le fil principal saturé fait attendre. Six tentatives valent « au moins une
+// minute », jamais « exactement une minute ».
+const PORT_BUSY_RETRIES = 6;
 // Fraction du quota de stockage au-delà de laquelle on cesse d'écrire dans le
 // cache : le navigateur évincerait l'origine entière (dont l'instantané en
 // IndexedDB, bien plus coûteux à reconstituer qu'un morceau de 4 Mio).
@@ -137,6 +151,8 @@ const COOKIE_KEY = new URL(sw.registration.scope).pathname;
  * @property {string | null} canalClientId
  * @property {Map<string, { clientId: string | null, at: number }>} demandesCanal
  * @property {Array<{ resolve: (port: MessagePort) => void }>} portWaiters
+ * @property {Promise<MessagePort> | null} bridgeRecovery
+ * @property {number} bridgeRecoveryGeneration
  * @property {Map<number, { resolve: Function, reject: Function, timer: any }>} pending
  * @property {number} nextId
  * @property {{ name: string, cache: Cache, artifacts: any } | null} artifacts
@@ -165,6 +181,15 @@ const state = {
   // n'est adopte qu'en REPONSE a l'une d'elles, et le nonce est consomme.
   demandesCanal: new Map(),
   portWaiters: [],
+  // UNE SEULE récupération de pont à la fois, partagée par toutes les requêtes
+  // en attente. Sans cela, cinq turbo-frames armaient cinq boucles et
+  // sollicitaient la coquille cinq fois par échéance — une rafale de messages
+  // au fil principal précisément quand il est saturé.
+  bridgeRecovery: null,
+  // Jeton d'annulation : une échéance déjà ENGAGÉE dans son `await` ne peut pas
+  // être arrêtée par `clearTimeout`. Elle compare sa génération à celle-ci en
+  // reprenant, et se retire si elle a été supplantée.
+  bridgeRecoveryGeneration: 0,
   pending: new Map(), // id -> { resolve, reject, timer }
   nextId: 1,
   // Cache d'artefacts en service : { name, cache, artifacts }, null tant que
@@ -407,34 +432,120 @@ function sourceUrl(event) {
 function adoptBridgePort(port) {
   state.bridgePort = port;
   port.onmessage = (event) => resolvePending(event.data);
+  // LE PONT EST LÀ : toute récupération en cours est PÉRIMÉE, y compris une
+  // échéance déjà engagée dans son `await`. Incrémenter la génération est ce
+  // qui l'arrête — elle le constatera en reprenant, et se retirera sans armer
+  // de minuterie. Résoudre les attentes ne suffirait pas : la résolution ne
+  // peut rien contre du code déjà parti.
+  // ORDRE IMPORTANT : résoudre D'ABORD — `clore()` compare les générations, et
+  // les invalider avant ferait passer les attentes pour périmées, donc jamais
+  // résolues. La génération n'est incrémentée qu'ensuite.
   const waiters = state.portWaiters.splice(0);
   for (const waiter of waiters) waiter.resolve(port);
+  state.bridgeRecoveryGeneration += 1;
+  state.bridgeRecovery = null;
+}
+
+/**
+ * Une coquille est-elle encore là pour porter le pont ?
+ *
+ * C'est la question que le délai posait implicitement, et mal : il concluait de
+ * « n'a pas répondu en dix secondes » à « a disparu ». Or v86 émule sur le fil
+ * principal de la page hôte, et un rendu lourd l'y monopolise bien plus
+ * longtemps. On interroge donc les clients, qui répondent par leur EXISTENCE et
+ * non par leur disponibilité — c'est précisément le signal qui manquait.
+ * @returns {Promise<boolean>}
+ */
+async function coquilleVivante() {
+  try {
+    const clientList = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
+    return clientList.some((client) =>
+      isShellClient(client.url, { origin: sw.location.origin, basePath: BASE_PATH }),
+    );
+  } catch {
+    // Une énumération qui échoue ne doit pas faire conclure à la disparition :
+    // on retombe sur le comportement d'avant, qui est le plus prudent.
+    return false;
+  }
 }
 
 function ensureBridgePort() {
   if (state.bridgePort) return Promise.resolve(state.bridgePort);
-  const waiting = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      state.portWaiters = state.portWaiters.filter((w) => w.resolve !== wrapped.resolve);
+  // UNE SEULE BOUCLE POUR TOUTES LES REQUÊTES. Cinq turbo-frames paresseuses
+  // arrivent ensemble : leur donner une boucle chacune faisait cinq minuteries
+  // et cinq sollicitations par échéance, adressées à une coquille déjà saturée.
+  if (state.bridgeRecovery) return state.bridgeRecovery;
+
+  const generation = ++state.bridgeRecoveryGeneration;
+  let tentatives = 0;
+  /** @type {any} */
+  let timer = null;
+
+  state.bridgeRecovery = new Promise((resolve, reject) => {
+    /**
+     * Clôt la récupération courante. Rend faux si elle a été supplantée — une
+     * échéance périmée ne doit toucher à rien.
+     * @returns {boolean}
+     */
+    const clore = () => {
+      if (state.bridgeRecoveryGeneration !== generation) return false;
+      clearTimeout(timer);
+      timer = null;
+      state.bridgeRecovery = null;
+      state.portWaiters = state.portWaiters.filter((w) => w !== attente);
+      return true;
+    };
+
+    const attente = {
+      /** @param {MessagePort} port */
+      resolve: (port) => {
+        if (!clore()) return;
+        resolve(port);
+      },
+    };
+
+    const echeance = async () => {
+      // UNE PAGE OCCUPÉE N'EST PAS UNE PAGE FERMÉE. Tant qu'une coquille
+      // existe, on la resollicite : elle finira par rendre la main. Sans cela,
+      // les frames paresseuses d'une application partant par cinq tombaient
+      // toutes ensemble en 502, sur une machine lente.
+      const vivante = await coquilleVivante();
+      // REVÉRIFIER APRÈS L'AWAIT, et c'est le point le plus délicat de cette
+      // fonction : `clearTimeout` ne peut rien contre une échéance DÉJÀ
+      // ENGAGÉE. Si le pont est arrivé pendant l'appel ci-dessus, reprendre
+      // ici armerait une minuterie que plus personne ne tient — laquelle
+      // finirait par appeler `abandonnerCanal()` sur un pont parfaitement sain.
+      if (state.bridgePort || state.bridgeRecoveryGeneration !== generation) return;
+      if (vivante && tentatives < PORT_BUSY_RETRIES) {
+        tentatives += 1;
+        requestPortFromClients();
+        timer = setTimeout(echeance, PORT_RECOVERY_TIMEOUT_MS);
+        return;
+      }
+      if (!clore()) return;
       // LE CANAL EST ABANDONNÉ AVEC LA REQUÊTE. Le porteur a été sollicité et
       // n'a pas répondu : soit il a disparu sans que le worker l'ait vu, soit
       // il ne pilote plus la VM. Le garder reviendrait à laisser un onglet
       // muet tenir le proxy en otage — la lecture suivante ouvrira un tour de
       // rétablissement, et l'onglet qui pilote pourra reprendre la main.
+      //
+      // Cette garde est INCHANGÉE : elle ne s'applique plus qu'aux cas où
+      // plus aucune coquille n'existe, ou au-delà du plafond.
       abandonnerCanal();
-      reject(new Error("La page hôte n'a pas fourni le pont VM (est-elle ouverte ?)"));
-    }, PORT_RECOVERY_TIMEOUT_MS);
-    const wrapped = {
-      /** @param {MessagePort} port */
-      resolve: (port) => {
-        clearTimeout(timer);
-        resolve(port);
-      },
+      reject(
+        new Error(
+          vivante
+            ? "La page hôte est restée occupée trop longtemps (émulation en cours) : requête abandonnée."
+            : "La page hôte n'a pas fourni le pont VM (est-elle ouverte ?)",
+        ),
+      );
     };
-    state.portWaiters.push(wrapped);
+
+    timer = setTimeout(echeance, PORT_RECOVERY_TIMEOUT_MS);
+    state.portWaiters.push(attente);
   });
   requestPortFromClients();
-  return waiting;
+  return state.bridgeRecovery;
 }
 
 function requestPortFromClients() {
