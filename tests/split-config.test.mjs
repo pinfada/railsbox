@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   APP_DISK_BYTES,
   BASE_REVISIONS,
@@ -7,6 +8,7 @@ import {
   PACKAGE_BASE_REVISIONS,
   UNSUPPORTED_ISSUE_URL,
   buildSplitConfig,
+  MARGE_EXECUTION_BYTES,
   checkAppDiskFit,
   packagesForRevision,
   refusalLines,
@@ -30,6 +32,30 @@ test("checkAppDiskFit refuse un contenu qui déborde", () => {
   const { ok, freeBytes } = checkAppDiskFit(600 * 1024 * 1024);
   assert.equal(ok, false);
   assert.ok(freeBytes < 0);
+});
+
+test("checkAppDiskFit exige la MARGE D'EXÉCUTION, pas seulement de tenir", () => {
+  // Le même défaut que la garde du script de construction, corrigé dans d03cc23 :
+  // un disque plein à 100 % est constructible et incapable de démarrer. Cette
+  // fonction-ci n'a aujourd'hui aucun appelant en production — raison de plus
+  // pour qu'elle ne dorme pas avec la mauvaise réponse.
+  const auRas = APP_DISK_BYTES - MARGE_EXECUTION_BYTES + 1024 * 1024;
+  assert.equal(checkAppDiskFit(auRas).ok, false, "sous la marge, ce n'est pas « ok »");
+
+  const juste = APP_DISK_BYTES - MARGE_EXECUTION_BYTES;
+  assert.equal(checkAppDiskFit(juste).ok, true, "exactement la marge suffit");
+});
+
+test("les DEUX gardes de volumétrie annoncent le même chiffre", () => {
+  // Elles décrivent le même disque depuis deux langages. Rien ne les relie à
+  // l'exécution : seule cette épreuve empêche qu'elles divergent — et une
+  // divergence donnerait deux verdicts contradictoires sur la même application.
+  const script = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+  const margeShell = Number(script.match(/MARGE_EXECUTION_MB=(\d+)/)?.[1]);
+  const tailleShell = Number(script.match(/APP_DISK_MB=(\d+)/)?.[1]);
+
+  assert.equal(margeShell * 1024 * 1024, MARGE_EXECUTION_BYTES, "marges divergentes");
+  assert.equal(tailleShell * 1024 * 1024, APP_DISK_BYTES, "géométries divergentes");
 });
 
 test("buildSplitConfig émet une config split valide et bootable", () => {
