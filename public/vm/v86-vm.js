@@ -11,6 +11,7 @@ import {
   createResponseAssembler,
   splitHttpResponse,
 } from "../shared/serial-codec.js";
+import { creerLimiteConcurrence } from "../shared/limite-concurrence.js";
 import { loadSnapshot } from "../shared/snapshot-parts.js";
 import { INSTANTANE, verifierInstantane } from "../shared/instantane-lien.js";
 import {
@@ -27,6 +28,10 @@ const BIOS_URL = new URL("vendor/v86/seabios.bin", document.baseURI).href;
 const VGA_BIOS_URL = new URL("vendor/v86/vgabios.bin", document.baseURI).href;
 const VGA_MEMORY_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
+// Requêtes simultanées admises vers la VM. Voir shared/limite-concurrence.js
+// pour les mesures : au-dela de deux, sur un poste lent, tout tombe en 502 —
+// alors que les memes requetes EN SEQUENCE passent toutes.
+const VM_CONCURRENCE_MAX = 2;
 const PROBE_TIMEOUT_MS = 10_000;
 // Boot complet noyau + PostgreSQL + Puma sous émulation : jusqu'à ~15 min à
 // froid (large marge) ; quelques secondes après restauration d'instantané.
@@ -264,7 +269,18 @@ function createFacade(emulator, state, onConsole, snapshot) {
     return response;
   }
 
+  // La file est creee UNE FOIS par instance de VM : elle porte l'etat des
+  // jetons, la partager entre deux VM n'aurait aucun sens.
+  const filePont = creerLimiteConcurrence(VM_CONCURRENCE_MAX);
+
   async function handleHttpRequest(descriptor, body, timeoutMs = REQUEST_TIMEOUT_MS) {
+    // Le jeton est pris AVANT d'entrer dans sendRequest, donc le delai ne court
+    // pas pendant l'attente en file : une requete mise en attente ne doit pas
+    // consommer son propre budget de temps a ne rien faire.
+    return filePont(() => servirRequete(descriptor, body, timeoutMs));
+  }
+
+  async function servirRequete(descriptor, body, timeoutMs) {
     const rawBytes = await sendRequest(descriptor, body, timeoutMs);
     const { headText, bodyBytes } = splitHttpResponse(rawBytes);
     const parsed = parseCurlHeaders(headText);
