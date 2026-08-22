@@ -217,11 +217,15 @@ RUN bundle lock --add-platform x86-linux ruby && bundle install
 # gems, dont 1 677 Mo pour grpc seul, qui retombe à 55 Mo. L'application ne
 # tenait pas dans 512 Mo à cause de cela seul.
 #
+# LES SOURCES AUSSI. Une gem compilée garde son arbre C/C++ : 45 Mo de plus sur
+# woofed-crm, dont l'essentiel pour grpc. Ruby ne lit jamais un `.c` ni un `.h` à
+# l'exécution — la compilation a eu lieu ici, au build.
+#
 # JAMAIS LES `.so` : ce sont eux que Ruby charge. En supprimer un ne casse rien
 # à la construction — l'erreur surgit au boot de la VM, chez le visiteur.
 # Le chemin monolithique ne fixe pas BUNDLE_PATH : les gems vont dans le
 # répertoire système, que `gem env home` donne sans avoir à le deviner.
-RUN find "$(gem env home)" \( -name '*.o' -o -name '*.a' \) -type f -delete 2>/dev/null || true
+RUN find "$(gem env home)" -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
 
 COPY . .
 COPY --from=assets /app/public/assets ./public/assets
