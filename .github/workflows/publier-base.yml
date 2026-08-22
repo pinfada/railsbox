@@ -189,16 +189,36 @@ jobs:
       # que dans la CI d'un mainteneur.
       - name: Répétition du cycle de vie PostgreSQL
         run: |
-          docker run --rm --platform linux/386 \
+          docker run --rm -i --platform linux/386 \
             -e PGDATA=/tmp/pgtest -e RIB_PG_VERSION=15 \
-            "$IMAGE:${{ inputs.tag }}" sh -c '
-              set -eu
-              mkdir -p /tmp/pgtest
-              sh /opt/rib/postgres.sh start
-              su -s /bin/sh postgres -c "psql -h 127.0.0.1 -U postgres -d postgres -qtAc \
-                \"select version();\"" | head -1
-              sh /opt/rib/postgres.sh stop
-            '
+            "$IMAGE:${{ inputs.tag }}" sh -s <<'REPETITION'
+          set -eu
+          psql_postgres() {
+            su -s /bin/sh postgres -c \
+              "psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -qtAc \"$1\""
+          }
+          mkdir -p /tmp/pgtest
+          sh /opt/rib/postgres.sh start
+          psql_postgres "select version()" | head -1
+
+          # pgvector DANS LE CLUSTER DE RAILSBOX, pas seulement dans l'image.
+          #
+          # La construction de la base prouve déjà l'extension, mais sous un
+          # initdb nu. Ici le cluster est celui que rib/postgres.sh démarre,
+          # avec postgresql-railsbox.conf — la configuration que la sandbox
+          # utilisera réellement. Un réglage qui empêcherait le chargement de
+          # vector.so ne se verrait QUE par ce chemin.
+          psql_postgres "create extension vector"
+          distance=$(psql_postgres \
+            "select round((cast('[1,2,3]' as vector) <-> cast('[4,5,6]' as vector))::numeric, 4)")
+          test "$distance" = "5.1962" || {
+            echo "distance L2 inattendue : $distance" >&2
+            exit 1
+          }
+          echo "pgvector : distance L2 = $distance, conforme"
+
+          sh /opt/rib/postgres.sh stop
+          REPETITION
 
       # ------------------------------------------------------------------
       # Artefacts navigateur, extraits de L'IMAGE QUI VIENT D'ÊTRE VÉRIFIÉE.
