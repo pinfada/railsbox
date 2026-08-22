@@ -16,7 +16,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { baseRubyVersion, parseBaseVersion, resolveBase } from "../tools/detect/bases.mjs";
+import {
+  DEFAULT_BASE,
+  baseRubyVersion,
+  parseBaseVersion,
+  resolveBase,
+} from "../tools/detect/bases.mjs";
 import { detectApp } from "../tools/detect/detect.mjs";
 import { mergeManifest, parseRailsboxYml } from "../tools/detect/manifest.mjs";
 import { hasBlocking, REMEDIES } from "../tools/detect/report.mjs";
@@ -291,4 +296,22 @@ test("railsbox.yml « ruby: » égal au Ruby de la base ne dit rien", async () =
 
   assert.equal(findByCode(merged.findings, "ruby-key-series-only"), undefined);
   assert.equal(findByCode(merged.findings, "ruby-key-series-mismatch"), undefined);
+});
+
+test("3.3-r3 est CONNUE, sans devenir le défaut", () => {
+  // Deux affirmations distinctes, et c'est le second point qui compte.
+  //
+  // Une base absente de la table ne casse rien : elle DÉSARME simplement la
+  // vérification de la contrainte Ruby du Gemfile (« base-ruby-unknown »).
+  // Publier r3 sans l'inscrire ici laisserait donc passer sans contrôle
+  // l'écart 3.3.4 / 3.3.12 que cette table existe pour attraper.
+  assert.equal(baseRubyVersion("3.3-r3"), "3.3.12");
+
+  // Mais le défaut RESTE r2, délibérément. La publication est additive :
+  // r3 pèse 435 Mo contre 402, soit +33 Mo pour CHAQUE visiteur de CHAQUE
+  // sandbox. Ce coût ne doit tomber que sur les applications qui en tirent
+  // quelque chose — pgvector, pour l'essentiel. Une sandbox sqlite3 n'a
+  // aucune raison de le payer, et déplacer le défaut le lui imposerait en
+  // silence. Les autres épinglent r3 explicitement, au dispatch.
+  assert.equal(DEFAULT_BASE, "3.3-r2", "le défaut ne suit PAS la dernière base publiée");
 });
