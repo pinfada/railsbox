@@ -61,16 +61,41 @@ test("plpgsql ne compte pas : PostgreSQL l'installe lui-même", () => {
   assert.deepEqual(extensionsManquantes(["plpgsql"], "3.3"), []);
 });
 
+test("pgvector est compilé dans un étage JETABLE, jamais dans la base", () => {
+  // `postgresql-server-dev-15` traîne la chaîne LLVM : mesuré le 22/08/2026,
+  // 360 Mo dans /usr/lib/llvm-14 et 10 paquets llvm/clang qu'un `apt-get purge`
+  // suivi d'`autoremove` NE RETIRE PAS — PostgreSQL en dépend pour son JIT.
+  // Compilé dans la base, cela coûtait 461 Mo pour une extension de 961 Ko,
+  // dans un rootfs que TOUS les visiteurs téléchargent. En multi-étage : 1,2 Mo.
+  const dockerfile = readFileSync("tools/build-v86-image/base/Dockerfile", "utf8");
+
+  assert.match(dockerfile, /FROM .+ AS pgvector/, "un étage de compilation séparé");
+  assert.match(
+    dockerfile,
+    /COPY --from=pgvector .*vector\.so/,
+    "la base ne reçoit que la bibliothèque",
+  );
+  assert.match(dockerfile, /COPY --from=pgvector .*vector\.control/);
+
+  // Et l'étage de la BASE ne doit jamais installer le paquet de développement.
+  const base = dockerfile.slice(dockerfile.indexOf("AS base"));
+  assert.doesNotMatch(
+    base,
+    /postgresql-server-dev/,
+    "le paquet de développement n'a rien à faire dans l'image publiée",
+  );
+});
+
 test("la base COMPILE réellement l'extension qu'elle prétend fournir", () => {
   // Une table qui annonce `vector: "3.3-r3"` sans que le Dockerfile l'installe
   // serait pire que le refus d'avant : elle laisserait passer la construction
   // pour la faire échouer au boot, chez le visiteur.
   const dockerfile = readFileSync("tools/build-v86-image/base/Dockerfile", "utf8");
 
-  assert.match(dockerfile, /pgvector/, "la base doit installer pgvector");
+  assert.match(dockerfile, /pgvector/, "la base doit fournir pgvector");
   assert.match(
     dockerfile,
     /test -f "\$\(pg_config --sharedir\)\/extension\/vector\.control"/,
-    "et le VÉRIFIER : une compilation silencieusement ratée ne doit pas produire une base",
+    "et le VÉRIFIER : une copie silencieusement ratée ne doit pas produire une base",
   );
 });
