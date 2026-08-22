@@ -33,7 +33,18 @@ ARG RUBY_VERSION=3.3.12
 # On compile donc ici, dans un étage qui ne sera jamais publié, et la base ne
 # reçoit que les fichiers utiles.
 FROM i386/debian:bookworm-slim AS pgvector
+# LE TAG NE SUFFIT PAS. Un tag git se déplace ; la base, elle, est publiée une
+# fois et se veut immuable. Deux constructions à un an d'écart doivent donner la
+# MÊME extension, ou s'arrêter en le disant.
+#
+# Empreinte relevée le 22/08/2026, et vérifiée trois fois plutôt qu'une :
+#  - github.com et codeload.github.com rendent la même archive ;
+#  - son contenu est identique, fichier par fichier, à l'arbre git du tag
+#    v0.8.0 (commit 2627c5ff775ae6d7aef0c430121ccf857842d2f2).
+# Changer PGVECTOR_VERSION sans changer l'empreinte fait donc échouer la
+# construction ICI, avant que quoi que ce soit ne soit compilé.
 ARG PGVECTOR_VERSION=0.8.0
+ARG PGVECTOR_SHA256=867a2c328d4928a5a9d6f052cd3bc78c7d60228a9b914ad32aa3db88e9de27b0
 ENV DEBIAN_FRONTEND=noninteractive
 RUN set -eu; \
     apt-get update; \
@@ -41,6 +52,7 @@ RUN set -eu; \
       build-essential postgresql-server-dev-15 curl ca-certificates; \
     curl -fsSL "https://github.com/pgvector/pgvector/archive/refs/tags/v${PGVECTOR_VERSION}.tar.gz" \
       -o /tmp/pgvector.tar.gz; \
+    echo "${PGVECTOR_SHA256}  /tmp/pgvector.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/pgvector.tar.gz -C /tmp; \
     cd "/tmp/pgvector-${PGVECTOR_VERSION}"; \
     make OPTFLAGS=""; \

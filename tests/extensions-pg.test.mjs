@@ -99,3 +99,17 @@ test("la base COMPILE réellement l'extension qu'elle prétend fournir", () => {
     "et le VÉRIFIER : une copie silencieusement ratée ne doit pas produire une base",
   );
 });
+
+test("la source de pgvector est épinglée par empreinte, pas par tag", () => {
+  // Un tag git se déplace ; la base est publiée une fois et se veut immuable.
+  // Sans empreinte, deux constructions à un an d'écart peuvent livrer deux
+  // extensions différentes sous la même révision de base — et rien ne le dirait.
+  const dockerfile = readFileSync("tools/build-v86-image/base/Dockerfile", "utf8");
+
+  assert.match(dockerfile, /ARG PGVECTOR_SHA256=[0-9a-f]{64}/, "une empreinte complète, épinglée");
+  assert.match(
+    dockerfile,
+    /sha256sum -c -/,
+    "et RÉELLEMENT vérifiée : une empreinte inscrite mais jamais contrôlée ne vaut rien",
+  );
+});
