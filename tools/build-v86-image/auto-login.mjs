@@ -15,6 +15,60 @@
 // Logique pure (chaînes en entrée, source Ruby en sortie) → testable sans
 // Rails ni VM.
 
+import { createHash } from "node:crypto";
+
+/**
+ * Nom du marqueur d'auto-connexion, ISOLÉ par sandbox et par construction.
+ *
+ * LE DÉFAUT QUE CECI FERME. Le marqueur s'appelait `railsbox_auto_login` et
+ * vivait en `Path=/`. Or l'auto-connexion n'a lieu qu'UNE fois par visiteur :
+ * quiconque avait déjà ouvert une autre démonstration railsbox sur la même
+ * origine n'était jamais connecté sur la suivante — il arrivait sur l'écran de
+ * connexion. Sur GitHub Pages, toutes les démonstrations d'un compte partagent
+ * `compte.github.io` : le défaut frappait dès la deuxième ouverte par un même
+ * visiteur. Constaté dans Chrome le 22/08/2026, bocal de cookies à l'appui.
+ *
+ * RESTREINDRE `Path` NE SUFFIT PAS : l'ancien cookie global, lui, continuerait
+ * d'être envoyé et de satisfaire la recherche. C'est le NOM qui doit changer.
+ *
+ * L'empreinte porte sur le chemin ET sur l'identité de construction :
+ *   · deux sandboxes, deux chemins        -> deux marqueurs (A ne bloque plus B)
+ *   · republication au même chemin        -> marqueur neuf, l'auto-connexion
+ *                                            est retentée
+ *   · même sandbox, même construction     -> même marqueur, donc une seule
+ *                                            tentative, et la déconnexion
+ *                                            reste possible
+ * @param {string} mountPath chemin public de l'application dans la sandbox
+ * @param {string} buildIdentity valeur propre à cette construction
+ * @returns {string} nom de cookie
+ */
+export function markerName(mountPath, buildIdentity) {
+  const empreinte = createHash("sha256")
+    .update(
+      `${normalizeMountPath(mountPath)}
+${String(buildIdentity ?? "")}`,
+    )
+    .digest("hex")
+    .slice(0, 12);
+  return `railsbox_auto_login_${empreinte}`;
+}
+
+/**
+ * Chemin de cookie utilisable.
+ *
+ * `Path=` vide n'est pas un chemin : le navigateur le rattacherait au
+ * répertoire de la requête, et le marqueur deviendrait invisible ailleurs dans
+ * l'application. Une sandbox servie à la racine retombe donc sur « / ».
+ * @param {unknown} mountPath
+ * @returns {string}
+ */
+export function normalizeMountPath(mountPath) {
+  const brut = typeof mountPath === "string" ? mountPath.trim() : "";
+  if (brut === "" || brut === "/") return "/";
+  const sansFin = brut.replace(/\/+$/, "");
+  return sansFin.startsWith("/") ? sansFin : `/${sansFin}`;
+}
+
 /** Chemin du fichier généré, relatif à la racine de l'application. */
 export const INITIALIZER_PATH = "config/initializers/zzz_railsbox_auto_login.rb";
 
@@ -71,11 +125,13 @@ function connectionBody({ autoLoginCode, autoLogin, model = DEFAULT_MODEL }) {
 /**
  * Produit l'initialiseur Rails à déposer dans l'arbre de l'application, ou une
  * chaîne vide si aucune auto-connexion n'est demandée.
- * @param {{ autoLogin?: string|boolean|null, autoLoginCode?: string|null, model?: string }} options
+ * @param {{ autoLogin?: string|boolean|null, autoLoginCode?: string|null, model?: string, mountPath?: string|null, buildIdentity?: string }} options
  * @returns {string} source Ruby, vide si rien à générer
  */
 export function buildAutoLoginInitializer(options = {}) {
-  const { autoLogin = null, autoLoginCode = null } = options;
+  const { autoLogin = null, autoLoginCode = null, mountPath = "/", buildIdentity = "" } = options;
+  const cookie = markerName(mountPath, buildIdentity);
+  const chemin = normalizeMountPath(mountPath);
   if (!autoLoginCode && (autoLogin === null || autoLogin === undefined || autoLogin === "")) {
     return "";
   }
@@ -91,7 +147,8 @@ export function buildAutoLoginInitializer(options = {}) {
 if ENV["RAILSBOX_SANDBOX"] == "1"
   module Railsbox
     class AutoLogin
-      COOKIE = "railsbox_auto_login".freeze
+      COOKIE = "${cookie}".freeze
+      CHEMIN = "${chemin}".freeze
 
       def initialize(app)
         @app = app
@@ -210,7 +267,7 @@ ${aides}
       # écrit sous la clé déjà présente, sinon selon la version. Un marqueur
       # manquant ne justifie jamais de casser la réponse.
       def marquer!(entetes)
-        valeur = "#{COOKIE}=1; Path=/; SameSite=Lax"
+        valeur = "#{COOKIE}=1; Path=#{CHEMIN}; SameSite=Lax"
         cle = if entetes.key?("set-cookie")
                 "set-cookie"
               elsif entetes.key?("Set-Cookie")

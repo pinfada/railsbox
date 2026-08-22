@@ -22,6 +22,8 @@ import { parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
 import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "../detect/ssl.mjs";
 import { validateSystemPackages } from "../detect/paquets-systeme.mjs";
+import { randomUUID } from "node:crypto";
+
 import { buildAutoLoginInitializer } from "./auto-login.mjs";
 import { buildForceSslInitializer } from "./force-ssl.mjs";
 import { formatReport, hasBlocking } from "../detect/report.mjs";
@@ -394,11 +396,19 @@ export function formatEnvFragment(env) {
 
 /**
  * Construit la table des arguments de construction Docker.
- * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, appName: string, baseRevision?: string}} input contexte d'analyse
+ * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, appName: string, baseRevision?: string, mountPrefix?: string, buildIdentity?: string}} input contexte d'analyse
  * @returns {Record<string, string>} arguments prêts à passer en `--build-arg`
  * @throws {Error} si la version de Ruby ne peut pas être résolue
  */
-export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) {
+export function buildArgs({
+  manifest,
+  specs,
+  hasSeeds,
+  appName,
+  baseRevision,
+  mountPrefix = "",
+  buildIdentity = "",
+}) {
   const ruby = resolveRubyVersion(manifest.ruby);
   const assets = assetsPlan(manifest, specs);
   const seedCommand = manifest.seed?.command ?? (hasSeeds ? DEFAULT_SEED : "");
@@ -499,6 +509,11 @@ export function buildArgs({ manifest, specs, hasSeeds, appName, baseRevision }) 
     AUTO_LOGIN_INITIALIZER: buildAutoLoginInitializer({
       autoLogin: manifest.seed?.autoLogin ?? null,
       autoLoginCode: manifest.seed?.autoLoginCode ?? null,
+      // Le marqueur d'auto-connexion est isolé par CHEMIN et par CONSTRUCTION
+      // (voir auto-login.mjs) : sans quoi une démonstration déjà visitée sur la
+      // même origine empêche la suivante de connecter le visiteur.
+      mountPath: `${mountPrefix}/app`,
+      buildIdentity,
     }),
     // Neutralisation de config.force_ssl dans le guest. Émise sans condition
     // sur ce que la détection a lu : le réglage peut venir de application.rb,
@@ -532,7 +547,7 @@ function shellQuote(value) {
  * Analyse une application et en déduit manifeste, diagnostics et arguments.
  * @param {string} appDir racine de l'application Rails
  * @param {string} [appName] nom court de l'image (défaut : nom du dossier)
- * @param {{base?: string}} [options] base visée : fixe le Ruby du guest ET la
+ * @param {{base?: string, mountPrefix?: string, buildIdentity?: string}} [options] base visée : fixe le Ruby du guest ET la
  *   frontière entre ce que la base fournit et ce que la surcouche installe (ADR 0006)
  * @returns {Promise<{manifest: Manifest, findings: readonly any[], args: Record<string, string>, report: string}>} analyse complète
  */
@@ -627,6 +642,14 @@ export async function analyzeApp(appDir, appName, options = {}) {
     // La base épinglée décide de la frontière base / surcouche (ADR 0006) ;
     // c'est la même valeur qui fixe le Ruby du guest, d'où une seule option.
     baseRevision: options.base,
+    // Chemin PUBLIC de la sandbox et identité de CETTE construction : les deux
+    // isolent le marqueur d'auto-connexion (voir auto-login.mjs). L'identité
+    // par défaut est tirée au hasard — une republication au même chemin doit
+    // retenter la connexion d'un visiteur déjà venu. Cela n'ôte aucune
+    // reproductibilité : le disque embarque une base PostgreSQL scellée, donc
+    // horodatée, et n'a jamais été identique au bit près d'un build à l'autre.
+    mountPrefix: options.mountPrefix ?? "",
+    buildIdentity: options.buildIdentity ?? randomUUID(),
   });
   return { manifest, findings, args, report };
 }
@@ -653,8 +676,12 @@ async function main() {
   const base = baseIndex === -1 ? undefined : args[baseIndex + 1];
   // La VALEUR d'une option ne commence pas par « -- » : sans l'exclure ici,
   // elle serait prise pour le nom de l'application.
+  const prefixValueIndex = args.indexOf("--mount-prefix") + 1;
   const positional = args.filter(
-    (value, index) => !value.startsWith("--") && !(baseIndex !== -1 && index === baseIndex + 1),
+    (value, index) =>
+      !value.startsWith("--") &&
+      !(baseIndex !== -1 && index === baseIndex + 1) &&
+      !(prefixValueIndex > 0 && index === prefixValueIndex),
   );
   const appDir = positional[0];
   const appName = positional[1];
@@ -665,7 +692,9 @@ async function main() {
     );
     return EXIT_USAGE;
   }
-  const analysis = await analyzeApp(appDir, appName, { base });
+  const prefixIndex = args.indexOf("--mount-prefix");
+  const mountPrefix = prefixIndex === -1 ? "" : (args[prefixIndex + 1] ?? "");
+  const analysis = await analyzeApp(appDir, appName, { base, mountPrefix });
   process.stderr.write(`${analysis.report}\n`);
   if (hasBlocking(analysis.findings)) return EXIT_BLOCKING;
   process.stdout.write(
