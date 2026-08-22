@@ -509,6 +509,41 @@ rm -f "$OUTPUT_DIR/$NAME-app.ext2"
 # 495 Mo sans.
 mke2fs -q -t ext2 -b 4096 -m 0 -d "$WORK_DIR/app" "$OUTPUT_DIR/$NAME-app.ext2" "${APP_DISK_MB}M"
 
+# LE SEUL CHIFFRE QUI NE MENT PAS.
+#
+# La garde d'avant raisonnait sur la géométrie NOMINALE : « contenu + marge
+# ≤ 512 ». Or un ext2 de 512 Mo n'offre pas 512 Mo — les métadonnées de ses
+# 32 768 inodes en prennent leur part. Mesuré : ~495 Mo réellement libres sur un
+# disque vide. À 448 Mo de contenu, la garde annonçait donc 64 Mo de marge alors
+# qu'il en restait 47.
+#
+# On lit maintenant ce que le système de fichiers DÉCLARE, une fois construit.
+# Une constante estimée dériverait au premier changement de géométrie, de taille
+# de bloc ou de nombre d'inodes ; ce compte-ci suit.
+BLOCS_LIBRES="$(dumpe2fs -h "$OUTPUT_DIR/$NAME-app.ext2" 2>/dev/null | awk -F: '/^Free blocks/ { gsub(/ /, "", $2); print $2 }')"
+TAILLE_BLOC="$(dumpe2fs -h "$OUTPUT_DIR/$NAME-app.ext2" 2>/dev/null | awk -F: '/^Block size/ { gsub(/ /, "", $2); print $2 }')"
+if [ -n "$BLOCS_LIBRES" ] && [ -n "$TAILLE_BLOC" ]; then
+  LIBRE_REEL_MB=$((BLOCS_LIBRES * TAILLE_BLOC / 1048576))
+  echo "  Espace libre RÉEL dans l'ext2 : ${LIBRE_REEL_MB} Mo (marge exigée ${MARGE_EXECUTION_MB} Mo)"
+  if [ "$LIBRE_REEL_MB" -lt "$MARGE_EXECUTION_MB" ]; then
+    echo "✗ Le disque construit ne laisse que ${LIBRE_REEL_MB} Mo libres," >&2
+    echo "  moins que la marge d'exécution de ${MARGE_EXECUTION_MB} Mo." >&2
+    echo >&2
+    echo "  Ce contrôle-ci lit le système de fichiers RÉEL, là où le contrôle" >&2
+    echo "  précédent estimait depuis la géométrie nominale. Il est donc" >&2
+    echo "  possible de passer l'un et d'échouer ici : c'est ce chiffre qui" >&2
+    echo "  décide, parce que c'est celui que le guest rencontrera." >&2
+    echo >&2
+    plus_gros_repertoires "$WORK_DIR/app" >&2
+    rm -f "$OUTPUT_DIR/$NAME-app.ext2"
+    exit 1
+  fi
+else
+  # Un dumpe2fs muet ne doit pas faire passer un disque pour sain : on le dit,
+  # sans arrêter une construction que rien ne prouve mauvaise.
+  echo "  ⚠ Espace libre réel non mesurable (dumpe2fs muet) : marge non vérifiée." >&2
+fi
+
 APP_DISK_BYTES=$(stat -c%s "$OUTPUT_DIR/$NAME-app.ext2")
 
 # Fiche du disque, lue par make-delta-snapshot.mjs : c'est ici, et nulle part
