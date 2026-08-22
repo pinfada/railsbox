@@ -117,6 +117,40 @@ plus_gros_repertoires() {
     }'
 }
 
+# Ventile le contenu livré dans des cases COMPARABLES d'une application à
+# l'autre. Le diagnostic voisin — plus_gros_repertoires — nomme les plus gros
+# répertoires de CETTE application, ce qui aide à l'alléger ; il ne permet pas
+# de comparer deux applications, ses lignes dépendant de chaque arbre.
+#
+# Les cinq postes sont des chemins que railsbox IMPOSE, jamais des choix de
+# l'application : c'est ce qui rend les chiffres superposables. Ils ont des
+# causes distinctes — le Gemfile, la chaîne front, la précompilation, le coût
+# structurel du datadir pré-semé, la surcouche système de l'ADR 0006 — et c'est
+# la seule façon de savoir si un dépassement tient à l'application ou à
+# railsbox.
+#
+# Le reliquat est AFFICHÉ : une ventilation dont les postes ne totalisent pas le
+# contenu laisserait croire que tout est expliqué.
+ventiler_contenu() {
+  local racine="$1" total="$2"
+  local somme=0 mo
+  echo "  Ventilation :"
+  for poste in "vendor/bundle:gems" "node_modules:node_modules"                "public/assets:assets precompiles" "var/pg:base pre-semee"                "opt/systeme:surcouche systeme"; do
+    chemin="${poste%%:*}"
+    libelle="${poste#*:}"
+    if [ -d "$racine/$chemin" ]; then
+      mo="$(du -sm "$racine/$chemin" 2>/dev/null | cut -f1)"
+    else
+      mo=0
+    fi
+    somme=$((somme + mo))
+    printf "    %6d Mo  %s
+" "$mo" "$libelle"
+  done
+  printf "    %6d Mo  reste (code, config, db/, log, tmp)
+" "$((total - somme))"
+}
+
 APP_DIR="$(cd "$APP_DIR" && pwd)"
 [ -n "$NAME" ] || NAME="$(basename "$APP_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
 
@@ -427,6 +461,10 @@ fi
 USED_MB="$(du -sm "$WORK_DIR/app" | cut -f1)"
 LIBRE_MB=$((APP_DISK_MB - USED_MB))
 echo "  Contenu /app : ${USED_MB} Mo (cible ${APP_DISK_MB} Mo, libre ${LIBRE_MB} Mo)"
+# Émise à CHAQUE construction, pas seulement au refus : c'est sur les
+# constructions qui RÉUSSISSENT que se lit la tendance, et c'est elle qui
+# doit décider si la géométrie de 512 Mo reste au bon endroit.
+ventiler_contenu "$WORK_DIR/app" "$USED_MB"
 if [ "$((USED_MB + MARGE_EXECUTION_MB))" -gt "$APP_DISK_MB" ]; then
   if [ "$USED_MB" -gt "$APP_DISK_MB" ]; then
     echo "✗ Le contenu applicatif (${USED_MB} Mo) dépasse la géométrie fixe (${APP_DISK_MB} Mo)." >&2
