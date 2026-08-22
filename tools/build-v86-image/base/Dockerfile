@@ -168,7 +168,40 @@ RUN set -eu; \
 COPY --from=pgvector /usr/lib/postgresql/15/lib/vector.so /usr/lib/postgresql/15/lib/vector.so
 COPY --from=pgvector /usr/share/postgresql/15/extension/vector.control /usr/share/postgresql/15/extension/
 COPY --from=pgvector /usr/share/postgresql/15/extension/vector--*.sql /usr/share/postgresql/15/extension/
-RUN test -f "$(pg_config --sharedir)/extension/vector.control"
+# LA PREUVE EST FAITE ICI, PAS CHEZ LE VISITEUR.
+#
+# `test -f vector.control` ne prouvait que la copie. Il aurait laissé passer une
+# `vector.so` d'une autre architecture, liée à un PostgreSQL différent, ou une
+# migration SQL manquante — trois pannes qui ne se seraient déclarées qu'au
+# `CREATE EXTENSION`, dans une VM, chez le visiteur, sans remède affichable.
+#
+# On démarre donc réellement le serveur, on crée l'extension, et on exécute une
+# requête qui EXERCE le type : stockage d'une colonne vector(3) et distance L2,
+# qui passe par le code compilé. Le cluster est jetable, dans /tmp, et retiré
+# aussitôt — la base publiée n'a toujours aucun datadir.
+RUN <<'PREUVE'
+set -eu
+test -f "$(pg_config --sharedir)/extension/vector.control"
+su postgres -s /bin/sh <<'POSTGRES'
+set -eu
+export PATH="/usr/lib/postgresql/15/bin:$PATH"
+export PGDATA=/tmp/preuve-pgvector PGHOST=/tmp
+initdb -D "$PGDATA" -A trust --no-instructions >/dev/null
+pg_ctl -D "$PGDATA" -o "-k /tmp -h ''" -w start >/dev/null
+psql -q -v ON_ERROR_STOP=1 <<'SQL'
+CREATE EXTENSION vector;
+CREATE TABLE preuve (id int, plongement vector(3));
+INSERT INTO preuve VALUES (1, '[1,2,3]'), (2, '[4,5,6]');
+SQL
+distance="$(psql -tAq -v ON_ERROR_STOP=1 -c \
+  "SELECT round((((SELECT plongement FROM preuve WHERE id = 1) <-> (SELECT plongement FROM preuve WHERE id = 2)))::numeric, 4)")"
+test "$distance" = "5.1962" || { echo "distance L2 inattendue : $distance" >&2; exit 1; }
+pg_ctl -D "$PGDATA" -m immediate stop >/dev/null
+rm -rf "$PGDATA"
+POSTGRES
+test ! -d /tmp/preuve-pgvector
+test ! -d /var/lib/postgresql/15/main
+PREUVE
 
 # Ruby exact demandé (les dépôts bookworm i386 ne fournissent que ruby 3.1),
 # compilé depuis les sources. C'est de loin la couche la plus coûteuse : elle

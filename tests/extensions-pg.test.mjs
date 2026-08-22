@@ -100,6 +100,29 @@ test("la base COMPILE réellement l'extension qu'elle prétend fournir", () => {
   );
 });
 
+test("la base EXÉCUTE l'extension qu'elle fournit, elle ne se contente pas de la copier", () => {
+  // La présence du fichier de contrôle ne prouve que la copie. Elle laisserait
+  // passer une vector.so d'une autre architecture, liée à un autre PostgreSQL,
+  // ou une migration SQL manquante : trois pannes qui ne se déclareraient qu'au
+  // CREATE EXTENSION, dans une VM, chez le visiteur, sans remède affichable.
+  const dockerfile = readFileSync("tools/build-v86-image/base/Dockerfile", "utf8");
+
+  assert.match(dockerfile, /CREATE EXTENSION vector;/, "l'extension est réellement créée");
+  assert.match(
+    dockerfile,
+    /vector\(3\)/,
+    "et le TYPE exercé : une colonne, donc le code compilé, pas seulement le catalogue",
+  );
+  assert.match(dockerfile, /<->/, "avec un opérateur de distance, qui passe par vector.so");
+  // Construit et mesuré le 22/08/2026 : la distance L2 entre [1,2,3] et
+  // [4,5,6] vaut 5,1962. Contre-épreuve jouée — attendre une autre valeur fait
+  // bien échouer la construction de la base.
+  assert.match(dockerfile, /5\.1962/, "contre une valeur ATTENDUE, pas seulement « ça répond »");
+  // Et le cluster de vérification ne doit pas survivre : la base publiée n'a
+  // aucun datadir, c'est le disque applicatif qui l'apporte.
+  assert.match(dockerfile, /test ! -d \/tmp\/preuve-pgvector/);
+});
+
 test("la source de pgvector est épinglée par empreinte, pas par tag", () => {
   // Un tag git se déplace ; la base est publiée une fois et se veut immuable.
   // Sans empreinte, deux constructions à un an d'écart peuvent livrer deux
