@@ -79,6 +79,13 @@ export async function chargerWorker({
   const requetesReseau = [];
   /** @type {any[]} */
   let clients = [];
+  // Barrière optionnelle DEVANT `clients.matchAll`. Le worker interroge ses
+  // clients au milieu de sa boucle de récupération ; sans moyen d'arrêter le
+  // temps à cet instant précis, toute épreuve de la course « le pont arrive
+  // pendant l'attente » serait intermittente — donc pire qu'absente.
+  /** @type {Promise<void> | null} */
+  let barriereClients = null;
+  let appelsMatchAll = 0;
 
   const entrees = new Map(); // "nom\u0000url" -> corps
 
@@ -127,7 +134,15 @@ export async function chargerWorker({
     },
     clients: {
       claim: async () => {},
-      matchAll: async () => clients,
+      matchAll: async () => {
+        appelsMatchAll += 1;
+        if (barriereClients) {
+          const attendue = barriereClients;
+          barriereClients = null;
+          await attendue;
+        }
+        return clients;
+      },
       // Le worker s'en sert pour savoir si le porteur du canal vit encore :
       // tant qu'il vit, aucun second canal n'est adopté.
       get: async (id) => clients.find((client) => client.id === id),
@@ -285,6 +300,26 @@ export async function chargerWorker({
       await Promise.all(differes.splice(0));
       await Promise.resolve();
       await Promise.all(differes.splice(0));
+    },
+
+    /**
+     * Retient le PROCHAIN `clients.matchAll` jusqu'à ce que la promesse rendue
+     * par `liberer()` soit tenue. Rend de quoi savoir quand l'appel a eu lieu.
+     */
+    retenirClients() {
+      /** @type {() => void} */
+      let liberer = () => {};
+      barriereClients = new Promise((resolve) => {
+        liberer = () => resolve(undefined);
+      });
+      const depart = appelsMatchAll;
+      return {
+        liberer,
+        /** Attend que le worker soit RÉELLEMENT entré dans l'appel retenu. */
+        async engagee() {
+          while (appelsMatchAll === depart) await new Promise((r) => setTimeout(r, 1));
+        },
+      };
     },
 
     /** @param {Array<{ url: string, id?: string }>} liste */
