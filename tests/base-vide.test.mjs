@@ -96,7 +96,11 @@ test("le marqueur ne voyage pas dans le disque livré", () => {
   const positionExport = BUILD_SCRIPT.indexOf("docker export");
   // La FABRICATION, pas le contrôle de prérequis en tête de fichier : `mke2fs`
   // y apparaît d'abord dans un `command -v`, bien avant l'export.
-  const positionExt2 = BUILD_SCRIPT.indexOf('mke2fs -q -t ext2 -b 4096 -d "$WORK_DIR/app"');
+  //
+  // Repéré par ce qu'il FAIT — peupler l'ext2 depuis l'arbre exporté — et non
+  // par la liste exacte de ses drapeaux : ajouter `-m 0` avait suffi à casser
+  // cette épreuve, alors que rien de ce qu'elle garde n'avait bougé.
+  const positionExt2 = BUILD_SCRIPT.search(/mke2fs[^\n]*-d "\$WORK_DIR\/app"/);
   assert.ok(positionExport !== -1 && positionExt2 !== -1, "les deux jalons doivent exister");
   assert.ok(
     positionExport < positionLecture && positionLecture < positionExt2,

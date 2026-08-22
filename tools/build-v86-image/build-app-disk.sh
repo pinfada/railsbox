@@ -25,6 +25,25 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR="$PROJECT_ROOT/public/disks"
 # Géométrie fixe partagée (voir split-config.mjs APP_DISK_BYTES = 512 Mo).
 APP_DISK_MB=512
+# MARGE D'EXÉCUTION : ce que le guest doit pouvoir écrire APRÈS la construction.
+#
+# Sans elle, la garde acceptait un disque plein à 100 % : constructible, et
+# incapable de démarrer. Mesuré sur woofed-crm — à 498 Mo de contenu la
+# construction passait, PostgreSQL échouait sur « No space left on device ».
+#
+# Le chiffre vient de mesures, pas d'une intuition (Docker, i386, base 3.3-r3,
+# PostgreSQL 15) :
+#   datadir après initdb ........... 38 Mo, dont 33 Mo de pg_wal
+#   après 20 000 lignes ............ 66 Mo
+#   après 100 000 lignes ........... 102 Mo, dont 49 Mo de pg_wal
+# 49 Mo de WAL sous charge soutenue, plus les journaux et le tmp de Rails : 64 Mo
+# couvre le pire cas observé sans refuser des applications viables — woofed-crm
+# tient à 323 Mo, et la première construction qui a FONCTIONNÉ le faisait à 443.
+#
+# Écarté après mesure : borner `max_wal_size` ne change rien (49 Mo de WAL avec
+# et sans borne). Les 80 Mo de `min_wal_size` sont un plancher de recyclage, pas
+# une préallocation. L'hypothèse était séduisante et fausse.
+MARGE_EXECUTION_MB=64
 
 APP_DIR=""
 NAME=""
@@ -406,9 +425,21 @@ if [ -f "$BASE_VIDE" ]; then
 fi
 
 USED_MB="$(du -sm "$WORK_DIR/app" | cut -f1)"
-echo "  Contenu /app : ${USED_MB} Mo (cible ${APP_DISK_MB} Mo)"
-if [ "$USED_MB" -gt "$APP_DISK_MB" ]; then
-  echo "✗ Le contenu applicatif (${USED_MB} Mo) dépasse la géométrie fixe (${APP_DISK_MB} Mo)." >&2
+LIBRE_MB=$((APP_DISK_MB - USED_MB))
+echo "  Contenu /app : ${USED_MB} Mo (cible ${APP_DISK_MB} Mo, libre ${LIBRE_MB} Mo)"
+if [ "$((USED_MB + MARGE_EXECUTION_MB))" -gt "$APP_DISK_MB" ]; then
+  if [ "$USED_MB" -gt "$APP_DISK_MB" ]; then
+    echo "✗ Le contenu applicatif (${USED_MB} Mo) dépasse la géométrie fixe (${APP_DISK_MB} Mo)." >&2
+  else
+    echo "✗ Le disque tiendrait (${USED_MB} Mo sur ${APP_DISK_MB}), mais il ne laisse que" >&2
+    echo "  ${LIBRE_MB} Mo libres — moins que la marge d'exécution de ${MARGE_EXECUTION_MB} Mo." >&2
+    echo >&2
+    echo "  CE N'EST PAS UNE MARGE DE CONFORT. Le guest ÉCRIT sur ce disque une fois" >&2
+    echo "  démarré : PostgreSQL y tient son WAL, Rails ses journaux et son tmp." >&2
+    echo "  Sans cette place, la construction réussit et la sandbox échoue au" >&2
+    echo "  démarrage sur « No space left on device » — chez le visiteur, sans que" >&2
+    echo "  rien ne l'ait annoncé. C'est exactement ce qui est arrivé à 498 Mo." >&2
+  fi
   echo "  La géométrie ne peut pas changer (contrainte de restauration d'instantané, ADR 0002)." >&2
   echo >&2
   # Le chiffre seul ne se traite pas : c'est le NOM des répertoires coupables
@@ -432,7 +463,13 @@ fi
 # sur /dev/sdb directement (voir ADR 0002, risque de recouvrement du cache).
 echo "→ Fabrication de $NAME-app.ext2 (${APP_DISK_MB} Mo, géométrie fixe)…"
 rm -f "$OUTPUT_DIR/$NAME-app.ext2"
-mke2fs -q -t ext2 -b 4096 -d "$WORK_DIR/app" "$OUTPUT_DIR/$NAME-app.ext2" "${APP_DISK_MB}M"
+# -m 0 : AUCUN bloc réservé à root. Par défaut mke2fs en réserve 5 %, soit
+# 25 Mo sur 512, inaccessibles à PostgreSQL — qui tourne sous l'utilisateur
+# `postgres`. Cette réserve existe pour qu'un administrateur puisse réparer un
+# disque plein ; ce disque-ci est jeté avec l'onglet du visiteur, personne ne le
+# réparera jamais. Mesuré : utilisable par un non-root, 470 Mo avec la réserve,
+# 495 Mo sans.
+mke2fs -q -t ext2 -b 4096 -m 0 -d "$WORK_DIR/app" "$OUTPUT_DIR/$NAME-app.ext2" "${APP_DISK_MB}M"
 
 APP_DISK_BYTES=$(stat -c%s "$OUTPUT_DIR/$NAME-app.ext2")
 
