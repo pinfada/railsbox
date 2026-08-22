@@ -114,7 +114,7 @@ dépôt selon votre application. Le détail est dans
 | ------------------------ | ----------------------------------------------------------------------------------------------------- |
 | **Ruby**                 | 3.3.12 (fourni par la base `3.3-r2`, non modifiable)                                                   |
 | **Bases de données**     | SQLite et PostgreSQL ; MySQL/MariaDB refusé avec un rapport explicite                                  |
-| **Gestionnaires front**  | npm, et pnpm via Corepack ; yarn et bun sont signalés, pas exécutés                                    |
+| **Gestionnaires front**  | npm, pnpm et yarn via Corepack ; bun est signalé, pas exécuté                                          |
 | **Assets**               | importmap, Propshaft, Sprockets, Tailwind, dart-sass, chaînes npm (esbuild, cssbundling, jsbundling)   |
 | **Non pris en charge**   | réseau sortant, ActionCable et WebSockets                                                              |
 

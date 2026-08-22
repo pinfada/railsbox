@@ -46,7 +46,7 @@ proves the `tailwindcss` binary scanned the views during this very build — on
 the amd64 host, never in the guest.
 
 Two warnings rather than a refusal: without a `package-lock.json` (or with a
-yarn/pnpm/bun lockfile, which railsbox does not read), installation falls back to
+bun lockfile, which railsbox does not read), installation falls back to
 `npm install` and the build is no longer reproducible — the analysis report says
 so. And if the amd64 stage produces **no** asset at all, the build stops there.
 
