@@ -1191,3 +1191,24 @@ test("database_prepare: schema est le défaut et ne produit aucun avertissement"
   const { findings } = mergeManifest(detected, { databasePrepare: "schema" });
   assert.equal(findByCode(findings, "database-prepare-migrate"), undefined);
 });
+
+test("une extension déclarée dans structure.sql est vue, comme dans schema.rb", async () => {
+  // detectApp lisait `db/structure.sql` — pour savoir QUEL schéma charger — mais
+  // ne le transmettait pas au détecteur d'extensions, qui ne recevait que
+  // `db/schema.rb`. Une application au format `:sql` passait donc le contrôle
+  // pour échouer en construction, exactement ce que ce refus amont existe pour
+  // éviter. Les deux formats sont exclusifs : c'est structure.sql, ou rien.
+  const dir = await createApp({
+    Gemfile: "source 'https://rubygems.org'\ngem 'rails'\ngem 'pg'\n",
+    "Gemfile.lock": lockWith(["pg"]),
+    ".ruby-version": "3.3.4\n",
+    "config/database.yml": "production:\n  adapter: postgresql\n  database: app\n",
+    "db/structure.sql": 'CREATE EXTENSION IF NOT EXISTS "vector" WITH SCHEMA public;\n',
+  });
+
+  const { findings } = await detectApp(dir);
+  const extension = findings.find((f) => f.code === "extension-postgres-absente");
+
+  assert.ok(extension, "l'extension du structure.sql doit être relevée");
+  assert.match(extension.message, /vector/);
+});

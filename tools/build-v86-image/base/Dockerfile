@@ -20,6 +20,46 @@
 
 ARG RUBY_VERSION=3.3.12
 
+########################################################################
+# Étage jetable : compilation de pgvector
+########################################################################
+# POURQUOI UN ÉTAGE À PART. `postgresql-server-dev-15` traîne la chaîne LLVM
+# complète — mesuré le 22/08/2026 : 360 Mo dans /usr/lib/llvm-14 et 10 paquets
+# llvm/clang. Un `apt-get purge` suivi d'`autoremove` ne les retire PAS, parce
+# que PostgreSQL lui-même en dépend pour son JIT : la couche pesait 461 Mo pour
+# une extension de 961 Ko, et publier cela alourdirait le rootfs que TOUS les
+# visiteurs téléchargent.
+#
+# On compile donc ici, dans un étage qui ne sera jamais publié, et la base ne
+# reçoit que les fichiers utiles.
+FROM i386/debian:bookworm-slim AS pgvector
+# LE TAG NE SUFFIT PAS. Un tag git se déplace ; la base, elle, est publiée une
+# fois et se veut immuable. Deux constructions à un an d'écart doivent donner la
+# MÊME extension, ou s'arrêter en le disant.
+#
+# Empreinte relevée le 22/08/2026, et vérifiée trois fois plutôt qu'une :
+#  - github.com et codeload.github.com rendent la même archive ;
+#  - son contenu est identique, fichier par fichier, à l'arbre git du tag
+#    v0.8.0 (commit 2627c5ff775ae6d7aef0c430121ccf857842d2f2).
+# Changer PGVECTOR_VERSION sans changer l'empreinte fait donc échouer la
+# construction ICI, avant que quoi que ce soit ne soit compilé.
+ARG PGVECTOR_VERSION=0.8.0
+ARG PGVECTOR_SHA256=867a2c328d4928a5a9d6f052cd3bc78c7d60228a9b914ad32aa3db88e9de27b0
+ENV DEBIAN_FRONTEND=noninteractive
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      build-essential postgresql-server-dev-15 curl ca-certificates; \
+    curl -fsSL "https://github.com/pgvector/pgvector/archive/refs/tags/v${PGVECTOR_VERSION}.tar.gz" \
+      -o /tmp/pgvector.tar.gz; \
+    echo "${PGVECTOR_SHA256}  /tmp/pgvector.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/pgvector.tar.gz -C /tmp; \
+    cd "/tmp/pgvector-${PGVECTOR_VERSION}"; \
+    make OPTFLAGS=""; \
+    make install; \
+    test -f "$(pg_config --sharedir)/extension/vector.control"; \
+    test -f "$(pg_config --pkglibdir)/vector.so"
+
 FROM i386/debian:bookworm-slim AS base
 
 # Rattache le paquet GHCR à ce dépôt. Sans cette étiquette, GHCR lie le paquet
@@ -108,6 +148,60 @@ RUN set -eu; \
     pg_dropcluster --stop 15 main 2>/dev/null || true; \
     rm -rf /var/lib/postgresql/15/main /etc/postgresql/15/main; \
     test ! -d /var/lib/postgresql/15/main
+
+# pgvector (révision 3.3-r3), repris de l'étage jetable ci-dessus.
+#
+# POURQUOI DANS LA BASE ET PAS EN SURCOUCHE. Une extension de SERVEUR ne peut
+# pas vivre sur le disque applicatif : PostgreSQL 15 cherche son fichier de
+# contrôle dans le `sharedir` compilé dans ses binaires, et
+# `extension_control_path` n'arrive qu'en PostgreSQL 18. La surcouche de
+# l'ADR 0006 relocalise sous /app/opt/systeme — un chemin que le serveur ne
+# regardera jamais.
+#
+# POURQUOI DEPUIS LES SOURCES. `postgresql-15-pgvector` n'existe dans AUCUNE
+# suite Debian : bookworm, bookworm-backports et trixie tous vérifiés.
+#
+# CE QUI EST REPRIS, ET RIEN D'AUTRE : la bibliothèque, le fichier de contrôle
+# et les migrations SQL — 961 Ko. Le bitcode LLVM de `pkglibdir/bitcode`
+# (26 Mo) est volontairement laissé : il ne sert qu'au JIT, que PostgreSQL sait
+# ne pas utiliser, et il ne vaut pas son poids dans un rootfs mutualisé.
+COPY --from=pgvector /usr/lib/postgresql/15/lib/vector.so /usr/lib/postgresql/15/lib/vector.so
+COPY --from=pgvector /usr/share/postgresql/15/extension/vector.control /usr/share/postgresql/15/extension/
+COPY --from=pgvector /usr/share/postgresql/15/extension/vector--*.sql /usr/share/postgresql/15/extension/
+# LA PREUVE EST FAITE ICI, PAS CHEZ LE VISITEUR.
+#
+# `test -f vector.control` ne prouvait que la copie. Il aurait laissé passer une
+# `vector.so` d'une autre architecture, liée à un PostgreSQL différent, ou une
+# migration SQL manquante — trois pannes qui ne se seraient déclarées qu'au
+# `CREATE EXTENSION`, dans une VM, chez le visiteur, sans remède affichable.
+#
+# On démarre donc réellement le serveur, on crée l'extension, et on exécute une
+# requête qui EXERCE le type : stockage d'une colonne vector(3) et distance L2,
+# qui passe par le code compilé. Le cluster est jetable, dans /tmp, et retiré
+# aussitôt — la base publiée n'a toujours aucun datadir.
+RUN <<'PREUVE'
+set -eu
+test -f "$(pg_config --sharedir)/extension/vector.control"
+su postgres -s /bin/sh <<'POSTGRES'
+set -eu
+export PATH="/usr/lib/postgresql/15/bin:$PATH"
+export PGDATA=/tmp/preuve-pgvector PGHOST=/tmp
+initdb -D "$PGDATA" -A trust --no-instructions >/dev/null
+pg_ctl -D "$PGDATA" -o "-k /tmp -h ''" -w start >/dev/null
+psql -q -v ON_ERROR_STOP=1 <<'SQL'
+CREATE EXTENSION vector;
+CREATE TABLE preuve (id int, plongement vector(3));
+INSERT INTO preuve VALUES (1, '[1,2,3]'), (2, '[4,5,6]');
+SQL
+distance="$(psql -tAq -v ON_ERROR_STOP=1 -c \
+  "SELECT round((((SELECT plongement FROM preuve WHERE id = 1) <-> (SELECT plongement FROM preuve WHERE id = 2)))::numeric, 4)")"
+test "$distance" = "5.1962" || { echo "distance L2 inattendue : $distance" >&2; exit 1; }
+pg_ctl -D "$PGDATA" -m immediate stop >/dev/null
+rm -rf "$PGDATA"
+POSTGRES
+test ! -d /tmp/preuve-pgvector
+test ! -d /var/lib/postgresql/15/main
+PREUVE
 
 # Ruby exact demandé (les dépôts bookworm i386 ne fournissent que ruby 3.1),
 # compilé depuis les sources. C'est de loin la couche la plus coûteuse : elle

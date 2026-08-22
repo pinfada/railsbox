@@ -12,6 +12,7 @@ import { SEVERITY, createFinding } from "./findings.mjs";
 import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
 import { dataMigrationFindings, scanDataMigrations } from "./migrations.mjs";
+import { extensionsManquantes, extensionsRequises } from "./extensions-pg.mjs";
 import { externalServiceFindings } from "./services-externes.mjs";
 import { sqliteDriverFindings, sqliteDriverState } from "./sqlite.mjs";
 import {
@@ -740,6 +741,39 @@ export async function detectApp(appDir, options = {}) {
   findings.push(
     ...dataMigrationFindings(dataMigrations, schemaFile !== null && schemasManquants.length === 0),
   );
+  // Extensions PostgreSQL : REFUS AMONT plutôt qu'échec de migration.
+  // `enable_extension 'vector'` échouait après quatre minutes de construction
+  // sur « extension "vector" is not available », sans nommer de remède. Le
+  // schéma compte autant que les migrations : une base préparée par
+  // `db:schema:load` exécute ses `enable_extension` tout autant.
+  // Les DEUX formats de schéma, pas seulement `schema.rb` : une application en
+  // `schema_format = :sql` déclare ses extensions dans `db/structure.sql`, sous
+  // la forme `CREATE EXTENSION`, et `db:schema:load` les joue tout autant. Ne
+  // transmettre que `schema.rb` laissait ces applications franchir le refus
+  // amont pour échouer en construction — précisément ce qu'il existe pour
+  // éviter. Les deux fichiers sont exclusifs en pratique ; les passer tous deux
+  // ne coûte qu'une lecture déjà faite.
+  const extensions = extensionsRequises([
+    ...migrations,
+    { name: "db/schema.rb", text: schemaRb ?? "" },
+    { name: "db/structure.sql", text: structureSql ?? "" },
+  ]);
+  const manquantes = extensionsManquantes(extensions, base.version);
+  if (manquantes.length > 0) {
+    findings.push(
+      createFinding(
+        SEVERITY.BLOCKING,
+        "extension-postgres-absente",
+        `L'application exige ${manquantes.length > 1 ? "les extensions PostgreSQL" : "l'extension PostgreSQL"} ` +
+          `« ${manquantes.join(" », « ")} » ; la base ${base.version} ne ${manquantes.length > 1 ? "les" : "la"} fournit pas. ` +
+          "Une extension de SERVEUR ne peut pas passer par la surcouche système : PostgreSQL 15 " +
+          "cherche son fichier de contrôle dans le répertoire compilé dans ses binaires, que le " +
+          "disque applicatif ne peut pas compléter.",
+        { extensions: manquantes, base: base.version },
+      ),
+    );
+  }
+
   const ssl = detectSsl(productionRb);
   findings.push(...ssl.findings);
   const assets = detectAssets(packageJson);
