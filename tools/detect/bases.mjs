@@ -20,9 +20,20 @@
 export const BASE_RUBY_VERSIONS = Object.freeze({
   3.3: "3.3.12",
   "3.3-r2": "3.3.12",
+  "3.3-r3": "3.3.12",
 });
 
-/** Version de base utilisée par défaut (défaut de construire-sandbox.yml). */
+/**
+ * Version de base utilisée par défaut (défaut de construire-sandbox.yml).
+ *
+ * ELLE NE SUIT PAS LA DERNIÈRE BASE PUBLIÉE, et c'est délibéré. La publication
+ * est ADDITIVE : r3 pèse 435 Mo contre 402 pour r2 — +33 Mo pour CHAQUE
+ * visiteur de CHAQUE sandbox, dus aux paquets de traitement d'images. Ce coût
+ * ne doit tomber que sur les applications qui en tirent quelque chose (pgvector
+ * pour l'essentiel) ; une sandbox sqlite3 n'a aucune raison de le payer.
+ * Déplacer le défaut le lui imposerait en silence. Les applications qui ont
+ * besoin de r3 l'épinglent explicitement, à la construction.
+ */
 export const DEFAULT_BASE = "3.3-r2";
 
 /**
