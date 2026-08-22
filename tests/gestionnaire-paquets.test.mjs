@@ -257,7 +257,7 @@ test("yarnGeneration reconnaît les deux générations, et rien d'autre", () => 
   assert.equal(yarnGeneration(/** @type {*} */ (null)), null);
 });
 
-test("les étages rendent corepack DISPONIBLE avant de l'invoquer", () => {
+test("corepack est livré par l'image Node, jamais résolu à la volée", () => {
   // Trouvé par la première construction réelle avec yarn, sur woofed-crm :
   // « /bin/sh: 1: corepack: not found ». Le paquet `nodejs` de Debian ne le
   // livre pas. Le défaut était LATENT depuis l'ajout de pnpm — la ligne
@@ -267,10 +267,22 @@ test("les étages rendent corepack DISPONIBLE avant de l'invoquer", () => {
     "tools/build-v86-image/assets-amd64.Dockerfile",
   ]) {
     const source = readFileSync(chemin, "utf8");
+    // Corepack vient de l'image Node, avec Node. Un `npm install -g corepack`
+    // fermerait le même trou au prix d'une résolution FLOTTANTE : la
+    // construction dépendrait du dernier Corepack publié, dans une image qui se
+    // veut reproductible.
     assert.match(
       source,
-      /command -v corepack >\/dev\/null 2>&1 \|\| npm install -g corepack/,
-      `${chemin} doit installer corepack s'il manque`,
+      /ln -sf \.\.\/lib\/node_modules\/corepack\/dist\/corepack\.js \/usr\/local\/bin\/corepack/,
+      `${chemin} doit lier le corepack livré par l'image Node`,
+    );
+    // Les commentaires expliquent justement pourquoi cette installation est
+    // écartée : c'est l'INSTRUCTION qu'on interdit, pas la mention.
+    const instructions = source.replace(/^[ \t]*#.*$/gm, "");
+    assert.doesNotMatch(
+      instructions,
+      /npm install -g corepack/,
+      `${chemin} ne doit PAS résoudre corepack à la volée`,
     );
     assert.match(
       source,
