@@ -50,10 +50,16 @@ export function reponseFactice({
 
 /**
  * Charge une instance neuve du Service Worker.
- * @param {{ scope?: string, repondre: (request: Request) => any }} options
+ * @param {{ scope?: string, repondre: (request: Request) => any, minuteriesAccelerees?: boolean }} options
  *   `repondre` est le `fetch` truqué : il reçoit la requête réelle du worker.
+ *   `minuteriesAccelerees` comprime les délais du worker, qui se comptent en
+ *   dizaines de secondes : une épreuve qui les subirait ne serait pas jouable.
  */
-export async function chargerWorker({ scope = "http://localhost/", repondre }) {
+export async function chargerWorker({
+  scope = "http://localhost/",
+  repondre,
+  minuteriesAccelerees = false,
+}) {
   /** @type {Map<string, Function[]>} */
   const ecouteurs = new Map();
   /** @type {Array<{ nom: string, url: string, corps: any }>} */
@@ -100,8 +106,13 @@ export async function chargerWorker({ scope = "http://localhost/", repondre }) {
   const vraiSetTimeout = globalThis.setTimeout;
   /** @type {any[]} */
   const minuteries = [];
+  // Les délais du worker se comptent en dizaines de SECONDES : une épreuve qui
+  // les subit vraiment ne serait pas jouable. `minuteriesAccelerees` les
+  // comprime, sans toucher au code éprouvé — ce qui est vérifié reste l'ordre
+  // des opérations et la décision prise à l'échéance, pas la durée elle-même.
   poser("setTimeout", (fn, ms, ...reste) => {
-    const id = vraiSetTimeout(fn, ms, ...reste);
+    const delai = minuteriesAccelerees && ms > 50 ? 5 : ms;
+    const id = vraiSetTimeout(fn, delai, ...reste);
     minuteries.push(id);
     return id;
   });
