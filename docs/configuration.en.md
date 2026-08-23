@@ -304,6 +304,11 @@ recommends — naming it:
   one versioned schema is missing (db/cache_schema.rb, db/cable_schema.rb): […]
 ```
 
+RailsBox also generates Rails' conventional named connection variables
+(`CACHE_DATABASE_URL`, `CABLE_DATABASE_URL`, or any other detected name),
+pointing them to isolated databases in the same cluster with the sandbox's
+throwaway role. A value explicitly declared in `railsbox.yml` still wins.
+
 Nothing to write in `railsbox.yml`. A database carrying `schema_dump: false` is
 not counted — Rails expects no file for it. And when every secondary schema is
 versioned, loading the schema stays the normal route: this fallback only costs

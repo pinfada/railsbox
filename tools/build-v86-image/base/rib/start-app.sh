@@ -26,7 +26,8 @@ if ! mountpoint -q /app; then
     mount -t ext2 /dev/sdb /app
 fi
 
-# 2. Environnement déclaré par l'application (bloc `env:` de railsbox.yml),
+# 2. Environnement applicatif (valeurs générées par RailsBox, puis bloc `env:`
+#    de railsbox.yml),
 #    écrit sur le disque applicatif par build-app-disk.sh. Y figurent aussi les
 #    réglages de la base : RAILSBOX_DATABASE, et pour PostgreSQL PGDATA +
 #    DATABASE_URL.

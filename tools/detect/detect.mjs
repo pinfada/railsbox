@@ -269,10 +269,11 @@ export function parseDatabaseAdapters(text) {
  * n'en attend aucun fichier.
  *
  * @param {unknown} text contenu du fichier
- * @param {string} [env] environnement examiné
+ * @param {string} env environnement examiné
+ * @param {boolean} includeSchemaDumpFalse conserve les connexions sans dump
  * @returns {readonly string[]} noms déclarés, vide si la forme est une connexion unique
  */
-export function parseDatabaseNames(text, env = "production") {
+function parseNamedDatabases(text, env, includeSchemaDumpFalse) {
   if (typeof text !== "string") return [];
   const lignes = text.replace(ERB_TAG, "").split(/\r?\n/);
   const entete = new RegExp(String.raw`^${env}:[ \t]*(?:&\S+[ \t]*)?$`);
@@ -290,7 +291,11 @@ export function parseDatabaseNames(text, env = "production") {
     if (creux > indentation) {
       // Contenu d'une base nommée. Seul `schema_dump: false` s'y lit : il
       // dispense Rails d'écrire — donc d'attendre — un fichier de schéma.
-      if (courant !== null && /^schema_dump:[ \t]*false\b/.test(ligne.trim())) {
+      if (
+        !includeSchemaDumpFalse &&
+        courant !== null &&
+        /^schema_dump:[ \t]*false\b/.test(ligne.trim())
+      ) {
         noms.splice(noms.indexOf(courant), 1);
         courant = null;
       }
@@ -307,6 +312,22 @@ export function parseDatabaseNames(text, env = "production") {
     noms.push(cle);
   }
   return Object.freeze(noms);
+}
+
+export function parseDatabaseNames(text, env = "production") {
+  return parseNamedDatabases(text, env, false);
+}
+
+/**
+ * Nomme toutes les connexions de production, y compris celles qui désactivent
+ * le dump de schéma : elles n'attendent aucun fichier mais doivent quand même
+ * pouvoir se connecter au cluster.
+ * @param {unknown} text contenu du fichier
+ * @param {string} [env] environnement examiné
+ * @returns {readonly string[]} connexions nommées
+ */
+export function parseDatabaseConnectionNames(text, env = "production") {
+  return parseNamedDatabases(text, env, true);
 }
 
 /**
@@ -709,6 +730,7 @@ export async function detectApp(appDir, options = {}) {
   // retenue peut changer à la fusion de railsbox.yml (« database: sqlite3 »),
   // et le verdict doit alors être réévalué avec les mêmes données.
   const adapters = parseDatabaseAdapters(databaseYml ?? "");
+  const databaseNames = parseDatabaseConnectionNames(databaseYml ?? "");
   const sqlite = sqliteDriverState(gemfile, specs, lock !== null);
   findings.push(...sqliteDriverFindings({ state: sqlite, database: database.database, adapters }));
   findings.push(...externalServiceFindings(specs.keys()));
@@ -840,6 +862,7 @@ export async function detectApp(appDir, options = {}) {
     rails: rails.version,
     database: database.database,
     databaseAdapters: Object.freeze(adapters),
+    databaseNames: Object.freeze(databaseNames),
     // Noms des migrations qui écrivent des lignes : ce sont eux qui décident,
     // en mode « auto », de préparer la base en jouant les migrations.
     dataMigrations: Object.freeze(dataMigrations.map((entry) => entry.file)),
