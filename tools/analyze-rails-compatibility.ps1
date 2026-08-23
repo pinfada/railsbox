@@ -205,7 +205,9 @@ function Get-Analyse {
     if ($base -eq 'inconnue') { $reserves += "adaptateur de base non identifié" }
     if ($lignesSeeds -lt 1)   { $reserves += "aucune seed : la démonstration partirait d'une base vide" }
     if ($externes.Count)      { $reserves += "services sans réseau sortant : $($externes -join ', ')" }
-    if ($Source.Licence -eq 'aucune') { $reserves += "aucune licence : la redistribution n'est pas autorisée" }
+    if (@($null, '', 'aucune', 'NOASSERTION') -contains $Source.Licence) {
+        $bloquants += "licence non établie : RailsBox ne peut pas conclure que la redistribution est autorisée"
+    }
 
     $verdict = if ($bloquants.Count) { 'bloqué' } elseif ($reserves.Count) { 'sous réserve' } else { 'compatible' }
 
@@ -223,6 +225,9 @@ function Get-Analyse {
         Reserves       = ($reserves -join ' | ')
     }
 }
+
+# Autorise les tests à charger les fonctions sans lancer l'interface du script.
+if ($MyInvocation.InvocationName -eq '.') { return }
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue) -and $PSCmdlet.ParameterSetName -eq 'Depot') {
     throw "gh introuvable. Installez GitHub CLI et lancez 'gh auth login'."
