@@ -117,8 +117,10 @@ sonde de réactivité à 100 ms sur 60 s :
 | retards > 100 ms | **0** |
 | tâches longues | 1, de 85 ms |
 
-**Le fil principal n'est pas bloqué par v86.** L'émulateur rend la main
-régulièrement.
+**Dans le parcours woofed-crm mesuré, v86 n'a produit aucun blocage
+significatif du fil principal.** L'émulateur rend la main régulièrement.
+Cette mesure porte sur UNE application, UN parcours et UN poste : elle ne
+démontre pas que v86 ne bloque jamais.
 
 **Sur le geste qui figeait l'onglet** — déplacement d'étape par l'interface :
 
@@ -135,8 +137,11 @@ name: "same-origin-descendant"
 attribution: unknown / iframe / /woofed-crm/app/
 ```
 
-**La tâche de 7,3 s vient de l'IFRAME**, c'est-à-dire du JavaScript de
-l'application — Turbo, Stimulus, `moment` —, pas de la page où tourne v86.
+**La tâche de 7,3 s vient de l'IFRAME applicative**, pas de la page où tourne
+v86. C'est tout ce que cette trace établit : `same-origin-descendant` désigne
+le cadre, jamais la bibliothèque responsable. Nommer un coupable — Turbo,
+Stimulus ou un autre — demanderait un profilage dans le cadre, qui n'a pas
+été fait.
 
 Sortir v86 du fil principal **ne supprimerait pas ce blocage** : l'iframe est
 same-origin et partage le même fil.
@@ -152,10 +157,11 @@ se traite en le chargeant dans le Worker.
 bloque pas le fil principal ; le seul blocage mesuré vient de l'application. #14
 tel qu'il est rédigé promet une réactivité que le déplacement n'apporterait pas.
 
-Reste un bénéfice **de second ordre**, réel mais non mesuré : pendant un blocage
+Reste un bénéfice **de second ordre**, plausible mais non mesuré : pendant un blocage
 de 7 s côté application, v86 ne reçoit aucun temps CPU et toute requête en vol
-stagne. Dans un Worker, la VM continuerait de servir. C'est un argument
-défendable — il demande d'être chiffré avant d'engager le chantier, pas après.
+stagne. Dans un Worker, la VM continuerait de servir. C'est une hypothèse
+défendable — elle demande d'être chiffrée avant d'engager le chantier, pas
+après. Tant qu'elle ne l'est pas, elle ne justifie aucun travail.
 
 **Recommandation : ne pas engager la refonte en l'état.** Réécrire #14 autour du
 bénéfice réellement mesurable, ou le refermer au profit du constat que le
