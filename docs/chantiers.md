@@ -390,6 +390,69 @@ une nouvelle révision de base (`3.4` ou `3.3-r4`), et toute sandbox publiée
 contre l'ancienne base doit être reconstruite pour en profiter — un `hdb` de
 1 Go ne se restaure pas sur un instantané capturé avec un placeholder de 512 Mo.
 
+### Ce que la mesure a établi depuis (23/08/2026)
+
+Le budget réel n'est pas 512 Mo. Trois retenues s'appliquent, toutes mesurées :
+
+| Retenue | Valeur | Nature |
+| --- | ---: | --- |
+| métadonnées ext2 (32 768 inodes) | ~9 Mo | incompressible |
+| marge d'exécution exigée | 64 Mo | ce que le guest écrit au démarrage |
+| **budget applicatif réel** | **~431 Mo** | |
+
+La réserve de 5 % à root (25 Mo) a été supprimée par `mke2fs -m 0` : PostgreSQL
+tourne sous `postgres`, elle lui était inaccessible, et personne ne viendra
+jamais réparer un disque jeté avec l'onglet.
+
+**Deux applications mesurées avec la même ventilation**, même base 3.3-r3 :
+
+| Poste | zealot | woofed-crm |
+| --- | ---: | ---: |
+| gems (`vendor/bundle`) | 153 Mo | 205 Mo |
+| `node_modules` | 0 | 1 Mo |
+| assets précompilés | 8 Mo | 11 Mo |
+| base pré-semée (`var/pg`) | 72 Mo | 73 Mo |
+| surcouche système | 1 Mo | 3 Mo |
+| reste | 6 Mo | 30 Mo |
+| **total** | **240 Mo** | **323 Mo** |
+| **marge sous les 431 Mo** | **191 Mo** | **108 Mo** |
+
+Trois enseignements. Les **gems dominent** — 63 à 64 % — et c'est le poste sur
+lequel railsbox n'a aucune prise. `node_modules` et la surcouche sont
+**négligeables**, les redouter était une erreur de perspective. Et `var/pg`
+converge à 1 Mo près sur deux applications sans rapport : c'est un plancher.
+
+Décomposé, ce plancher vaut : **22 Mo de bases modèles** (`template0`,
+`template1`, `postgres`) — structurels, tout cluster PostgreSQL les porte — et
+**33 Mo de WAL**, dont la taille est un choix d'initialisation.
+
+### Optimisation conditionnelle : `initdb --wal-segsize=1`
+
+Mesurée, **non retenue aujourd'hui**. Segments de 1 Mo au lieu de 16 :
+
+| Étape | 16 Mo | 1 Mo |
+| --- | --- | --- |
+| après `initdb` | 38 Mo · WAL 17 · 1 fichier | 27 Mo · WAL 6 · 5 fichiers |
+| après 130 000 écritures | 109 Mo · WAL 49 · 3 fichiers | 93 Mo · WAL 33 · **32 fichiers** |
+| après redémarrage | 109 Mo | 93 Mo |
+| seed de 30 000 lignes | 136 ms | **253 ms** |
+| 100 000 écritures | 316 ms | **599 ms** |
+| parcours métier | 1 707 ms | 1 689 ms — identique |
+
+Le gain de **16 Mo est durable** : il tient du seed au redémarrage. Mais il
+coûte **×1,9 sur les écritures massives** et fait passer `pg_wal` de 3 à
+32 fichiers, pour un réglage PostgreSQL non standard à expliquer.
+
+**Ces 16 Mo augmentent l'espace UTILISABLE ; ils ne retranchent rien de ce qui
+est PUBLIÉ.** L'ext2 garde sa géométrie fixe et son découpage complet. Un gain
+réseau éventuel dépendrait des blocs réellement lus par v86, ce qui n'a pas été
+mesuré.
+
+**Condition de réexamen** : une application par ailleurs compatible refusée avec
+un déficit réel inférieur ou proche de 16 Mo. Et même alors, comparer d'abord à
+une géométrie configurable — modifier globalement PostgreSQL pour sauver une
+application limite n'est pas forcément le meilleur choix produit.
+
 ### Fichiers concernés
 
 - `tools/build-v86-image/split-config.mjs` (`APP_DISK_BYTES`)
