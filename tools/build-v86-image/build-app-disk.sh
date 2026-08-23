@@ -259,7 +259,7 @@ fi
 if [ "${WITH_POSTGRES:-0}" = 1 ]; then
   echo "  Cluster PostgreSQL $PG_VERSION : $PG_DATABASE dans ${PG_DATA_DIR} (sur le disque applicatif)"
 fi
-echo "  Environnement déclaré : $ENV_COUNT variable(s)"
+echo "  Environnement applicatif : $ENV_COUNT variable(s)"
 echo "  Montée sous : ${MOUNT_PREFIX}/app"
 echo "  Assets : précompilation « ${ASSETS_STAGE:-aucun} »${BINARY_ASSET_GEMS:+ (${BINARY_ASSET_GEMS})}"
 if [ -n "${SYSTEM_PACKAGES:-}" ]; then
