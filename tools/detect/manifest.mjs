@@ -35,6 +35,7 @@ import { normalizeScripts, normalizeText, parseScalar, stripComment } from "./ya
  *   le rejeu des migrations
  * @property {readonly string[]} [dataMigrations] migrations qui écrivent des lignes
  * @property {readonly string[]} [databaseAdapters] adaptateurs vus dans config/database.yml
+ * @property {readonly string[]} [databaseNames] connexions nommées de l'environnement production
  * @property {import("./sqlite.mjs").SqliteDriverState} [sqliteDriver] disponibilité du pilote sqlite3
  * @property {string} [authMecanisme] mécanisme d'authentification reconnu (voir authentification.mjs)
  * @property {string|null} [bundler] version de Bundler ayant produit le lock

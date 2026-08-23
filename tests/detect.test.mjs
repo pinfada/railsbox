@@ -7,6 +7,7 @@ import {
   detectApp,
   normalizeRubyVersion,
   parseDatabaseAdapters,
+  parseDatabaseConnectionNames,
   parseDatabaseNames,
   schemaDeBase,
   readOptionalFile,
@@ -281,6 +282,11 @@ test("une base marquée schema_dump: false n'attend aucun fichier", () => {
   ].join("\n");
 
   assert.deepEqual(parseDatabaseNames(yml), ["primary"]);
+  assert.deepEqual(
+    parseDatabaseConnectionNames(yml),
+    ["primary", "cache"],
+    "la connexion cache existe même sans dump de schéma",
+  );
 });
 
 test("le schéma d'une base suit son nom, et le format du schéma primaire", () => {
@@ -303,6 +309,7 @@ test("un schéma secondaire absent est RELEVÉ NOMMÉMENT", async () => {
   const { manifest } = await detectApp(dir);
 
   assert.equal(manifest.schemaFile, "db/schema.rb");
+  assert.deepEqual(manifest.databaseNames, ["primary", "cache", "cable"]);
   assert.deepEqual(manifest.schemasManquants, ["db/cache_schema.rb", "db/cable_schema.rb"]);
 });
 
@@ -344,6 +351,7 @@ test("sans schéma primaire, rien n'est relevé : le repli existe déjà", async
   const { manifest } = await detectApp(dir);
 
   assert.equal(manifest.schemaFile, null);
+  assert.deepEqual(manifest.databaseNames, ["primary", "cache", "cable"]);
   assert.deepEqual(manifest.schemasManquants, []);
 });
 

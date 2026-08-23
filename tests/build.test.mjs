@@ -19,6 +19,7 @@ import {
   extraPackages,
   formatAssignments,
   formatEnvFragment,
+  postgresNamedDatabaseEnv,
   resolveRubyVersion,
   splitPackages,
 } from "../tools/build-v86-image/manifest-to-args.mjs";
@@ -358,6 +359,33 @@ test("defaultAppName normalise le dernier segment du chemin", () => {
   // Arrange / Act / Assert
   assert.equal(defaultAppName("tools/demo-app/Demo/"), "demo");
   assert.equal(defaultAppName("C:\\Projets\\Mon App"), "mon-app");
+});
+
+test("les URLs PostgreSQL secondaires suivent les noms détectés, sans liste codée en dur", () => {
+  const env = postgresNamedDatabaseEnv("Mon Shop", ["primary", "analytics", "jobs_archive"]);
+
+  assert.deepEqual(Object.keys(env), ["ANALYTICS_DATABASE_URL", "JOBS_ARCHIVE_DATABASE_URL"]);
+  assert.match(env.ANALYTICS_DATABASE_URL, /mon_shop_production_analytics/);
+  assert.match(env.JOBS_ARCHIVE_DATABASE_URL, /mon_shop_production_jobs_archive/);
+});
+
+test("railsbox.yml garde la priorité sur une URL PostgreSQL secondaire générée", () => {
+  const args = buildArgs({
+    manifest: {
+      ruby: "3.3.12",
+      database: "postgresql",
+      databaseNames: ["primary", "cache"],
+      env: { CACHE_DATABASE_URL: "postgresql://override/cache" },
+      assets: { npm: false, scripts: [] },
+      services: {},
+    },
+    specs: new Map(),
+    hasSeeds: false,
+    appName: "shop",
+  });
+
+  assert.match(args.APP_ENV_MANIFEST, /CACHE_DATABASE_URL='postgresql:\/\/override\/cache'/);
+  assert.doesNotMatch(args.APP_ENV_MANIFEST, /shop_production_cache/);
 });
 
 // --- Table des arguments -----------------------------------------------------

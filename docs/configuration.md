@@ -338,6 +338,11 @@ Rails conseille lui-même, en la nommant :
   de charger le schéma. […]
 ```
 
+RailsBox génère aussi les variables de connexion conventionnelles de Rails
+(`CACHE_DATABASE_URL`, `CABLE_DATABASE_URL`, ou tout autre nom détecté) vers
+des bases isolées du même cluster et avec le rôle jetable de la sandbox. Une
+valeur explicitement déclarée dans `railsbox.yml` conserve la priorité.
+
 Rien à écrire dans `railsbox.yml`. Une base portant `schema_dump: false` n'est
 pas comptée — Rails n'en attend aucun fichier. Et si tous les schémas
 secondaires sont bien versionnés, le chargement du schéma reste la voie

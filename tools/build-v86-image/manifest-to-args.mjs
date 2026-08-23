@@ -136,6 +136,31 @@ export function postgresSettings(appName) {
   };
 }
 
+/**
+ * Variables Rails conventionnelles pour les connexions PostgreSQL nommées.
+ * DATABASE_URL couvre `primary`; chaque autre nom reçoit <NOM>_DATABASE_URL.
+ * @param {string} appName nom court de la sandbox
+ * @param {readonly string[]|undefined} names noms lus dans database.yml
+ * @returns {Record<string, string>} environnement généré par RailsBox
+ */
+export function postgresNamedDatabaseEnv(appName, names) {
+  const primary = postgresDatabaseName(appName);
+  const generated = {};
+  for (const name of names ?? []) {
+    if (name === "primary") continue;
+    const normalized = String(name)
+      .toUpperCase()
+      .replace(/[^A-Z0-9_]/g, "_");
+    const databaseSuffix = String(name)
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, "_");
+    if (!normalized || !databaseSuffix) continue;
+    generated[`${normalized}_DATABASE_URL`] =
+      `postgresql://${PG_ROLE}:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/${primary}_${databaseSuffix}?sslmode=disable`;
+  }
+  return generated;
+}
+
 /** Paquets Debian fournissant chaque bibliothèque système réclamée par une gem. */
 const SYSTEM_LIB_PACKAGES = Object.freeze({
   imagemagick: Object.freeze(["imagemagick"]),
@@ -384,7 +409,7 @@ export function assetsPlan(manifest, specs) {
  * ainsi une chaîne littérale et n'est pas exécutée au build (cf. Dockerfile :
  * APP_ENV_MANIFEST est concaténé sans `eval`, contrairement au --env-file de
  * confiance qui, lui, peut contenir des `$(openssl rand …)` à figer).
- * @param {Record<string, string>|undefined} env variables issues de railsbox.yml
+ * @param {Record<string, string>|undefined} env variables générées ou issues de railsbox.yml
  * @returns {string} lignes `export NOM='valeur'`, vide si aucune variable
  */
 export function formatEnvFragment(env) {
@@ -414,6 +439,9 @@ export function buildArgs({
   const seedCommand = manifest.seed?.command ?? (hasSeeds ? DEFAULT_SEED : "");
   const withPostgres = manifest.database === "postgresql";
   const postgres = postgresSettings(appName);
+  const generatedDatabaseEnv = withPostgres
+    ? postgresNamedDatabaseEnv(appName, manifest.databaseNames)
+    : {};
   const keepForceSsl = manifest.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE;
   const paquets = splitPackages(manifest, baseRevision);
   const dbPrepare = dbPrepareCommand({
@@ -501,8 +529,11 @@ export function buildArgs({
     // préparation bien plus lente n'aurait aucune explication visible.
     DB_PREPARE_STRATEGY: dbPrepare.strategy,
     SEED_COMMAND: seedCommand,
-    // Non fiable (railsbox.yml tiers) : ajouté verbatim, jamais évalué.
-    APP_ENV_MANIFEST: formatEnvFragment(manifest.env),
+    // Fragment inerte : valeurs RailsBox sûres, puis railsbox.yml tiers non
+    // fiable. Il est ajouté verbatim et jamais évalué.
+    // Les valeurs générées précèdent celles du manifeste : une déclaration
+    // explicite garde donc le dernier mot, comme DATABASE_URL historiquement.
+    APP_ENV_MANIFEST: formatEnvFragment({ ...generatedDatabaseEnv, ...manifest.env }),
     // Initialiseur d'auto-connexion, vide si le manifeste n'en demande pas.
     // Même discipline : déposé tel quel dans l'arbre applicatif, exécuté par
     // le seul guest, jamais évalué à la construction.
