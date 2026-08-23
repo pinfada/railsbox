@@ -96,3 +96,78 @@ test("le refus NOMME la marge et ce qu'elle sert, pas seulement un dépassement"
   // d'agir : il doit être servi aussi sur ce refus-ci.
   assert.match(refus, /plus_gros_repertoires/, "le refus doit montrer ce qui pèse");
 });
+
+test("la marge est contrôlée sur l'espace libre RÉEL de l'ext2, pas sur la géométrie", () => {
+  // L'incohérence que cette épreuve ferme, et que la mesure a révélée :
+  // `contenu + marge <= 512` raisonne sur la géométrie NOMINALE. Or un ext2 ne
+  // met pas toute sa géométrie à disposition — les métadonnées de ses inodes en
+  // prennent leur part.
+  //
+  // MESURÉ sur de vrais ext2 de 512 Mo peuplés de contenu aléatoire : le
+  // nominal surestime de 9 à 10 Mo, de façon stable.
+  //   contenu 241 Mo → nominal 271, réel 262
+  //   contenu 324 Mo → nominal 188, réel 179
+  //   contenu 401 Mo → nominal 111, réel 101
+  //   contenu 449 Mo → nominal  63, réel  53  ← refusé ici, accepté par l'autre
+  //
+  // Le seul chiffre qui ne ment pas est celui que le système de fichiers
+  // déclare une fois construit. Une constante estimée dérive dès que la
+  // géométrie, la taille de bloc ou le nombre d'inodes changent.
+  assert.match(
+    SCRIPT,
+    /dumpe2fs/,
+    "l'espace libre doit être LU sur le système de fichiers construit",
+  );
+  const bloc = SCRIPT.slice(SCRIPT.indexOf("dumpe2fs"));
+  assert.match(bloc, /Free blocks/i, "c'est le compte de blocs libres qui fait foi");
+  assert.match(
+    bloc,
+    /MARGE_EXECUTION_MB/,
+    "et il doit être comparé à la marge, sinon il n'est qu'affiché",
+  );
+});
+
+test("le contrôle réel a lieu APRÈS la fabrication, et échoue avant publication", () => {
+  // Une vérification qui n'arrêterait rien laisserait passer exactement ce
+  // qu'elle prétend attraper.
+  const apresMke2fs = SCRIPT.slice(SCRIPT.indexOf("mke2fs -q -t ext2"));
+  assert.match(apresMke2fs, /dumpe2fs/, "le contrôle doit suivre la fabrication");
+});
+
+test("une mesure IMPOSSIBLE arrête la construction — échec fermé", () => {
+  // La version précédente de cette épreuve cherchait « un exit 1 quelque part
+  // après le mot dumpe2fs ». Elle trouvait celui du MANQUE D'ESPACE et se
+  // déclarait satisfaite, sans rien prouver du chemin qu'elle visait. Même
+  // famille d'assertion trop lâche que celle déjà corrigée plus haut.
+  //
+  // On isole donc le bloc qui traite l'absence de mesure, et on vérifie CE
+  // bloc. Une garde de sûreté qui ne sait pas mesurer doit arrêter : laisser
+  // passer avec « marge non vérifiée » revient à n'avoir aucune garde, avec en
+  // prime la fausse assurance d'en avoir une.
+  const debut = SCRIPT.indexOf('if [ -z "$BLOCS_LIBRES" ]');
+  assert.ok(debut !== -1, "le cas « mesure impossible » doit être traité explicitement");
+  const bloc = SCRIPT.slice(debut, SCRIPT.indexOf(["", "fi", ""].join("\n"), debut));
+
+  assert.match(bloc, /exit 1/, "il doit arrêter la construction");
+  assert.match(bloc, /rm -f/, "et retirer le disque, qui ne doit pas être publié");
+  assert.doesNotMatch(bloc, /non vérifiée/, "surtout pas continuer en le signalant");
+});
+
+test("dumpe2fs est un PRÉREQUIS, et sa sortie est lue en locale C", () => {
+  // Sans le prérequis, un outil manquant désarme silencieusement la garde.
+  assert.match(
+    SCRIPT,
+    /command -v dumpe2fs >\/dev\/null \|\|/,
+    "dumpe2fs doit être exigé au même titre que mke2fs",
+  );
+  // Sans LC_ALL=C, les étiquettes sont traduites sous une autre locale et les
+  // motifs ne collent plus : la garde se croirait incapable de mesurer sur un
+  // disque parfaitement sain — et, échec fermé oblige, refuserait à tort.
+  assert.match(SCRIPT, /LC_ALL=C dumpe2fs/, "la sortie doit être forcée en locale C");
+  // Un seul appel : deux invocations pourraient lire deux états différents.
+  assert.equal(
+    (SCRIPT.match(/dumpe2fs -h/g) ?? []).length,
+    1,
+    "dumpe2fs ne doit être invoqué qu'une fois",
+  );
+});
