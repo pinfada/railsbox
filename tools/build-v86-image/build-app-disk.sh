@@ -72,6 +72,10 @@ done
 [ -n "$APP_DIR" ] || { echo "Usage : build-app-disk.sh <dossier-app> [options]" >&2; exit 2; }
 command -v docker >/dev/null || { echo "docker introuvable" >&2; exit 1; }
 command -v mke2fs >/dev/null || { echo "mke2fs introuvable (apt install e2fsprogs)" >&2; exit 1; }
+# dumpe2fs vient du même paquet que mke2fs, mais il est exigé À PART : la
+# garde d'espace libre en dépend, et une garde de sûreté ne doit pas pouvoir
+# être désarmée par un outil manquant.
+command -v dumpe2fs >/dev/null || { echo "dumpe2fs introuvable (apt install e2fsprogs)" >&2; exit 1; }
 command -v node >/dev/null || { echo "node introuvable" >&2; exit 1; }
 [ -f "$APP_DIR/Gemfile" ] || { echo "Pas d'application Rails ici : $APP_DIR" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || {
@@ -512,36 +516,60 @@ mke2fs -q -t ext2 -b 4096 -m 0 -d "$WORK_DIR/app" "$OUTPUT_DIR/$NAME-app.ext2" "
 # LE SEUL CHIFFRE QUI NE MENT PAS.
 #
 # La garde d'avant raisonnait sur la géométrie NOMINALE : « contenu + marge
-# ≤ 512 ». Or un ext2 de 512 Mo n'offre pas 512 Mo — les métadonnées de ses
-# 32 768 inodes en prennent leur part. Mesuré : ~495 Mo réellement libres sur un
-# disque vide. À 448 Mo de contenu, la garde annonçait donc 64 Mo de marge alors
-# qu'il en restait 47.
+# ≤ 512 ». Or un ext2 ne met pas toute sa géométrie à disposition — les
+# métadonnées de ses inodes en prennent leur part.
 #
-# On lit maintenant ce que le système de fichiers DÉCLARE, une fois construit.
-# Une constante estimée dériverait au premier changement de géométrie, de taille
-# de bloc ou de nombre d'inodes ; ce compte-ci suit.
-BLOCS_LIBRES="$(dumpe2fs -h "$OUTPUT_DIR/$NAME-app.ext2" 2>/dev/null | awk -F: '/^Free blocks/ { gsub(/ /, "", $2); print $2 }')"
-TAILLE_BLOC="$(dumpe2fs -h "$OUTPUT_DIR/$NAME-app.ext2" 2>/dev/null | awk -F: '/^Block size/ { gsub(/ /, "", $2); print $2 }')"
-if [ -n "$BLOCS_LIBRES" ] && [ -n "$TAILLE_BLOC" ]; then
-  LIBRE_REEL_MB=$((BLOCS_LIBRES * TAILLE_BLOC / 1048576))
-  echo "  Espace libre RÉEL dans l'ext2 : ${LIBRE_REEL_MB} Mo (marge exigée ${MARGE_EXECUTION_MB} Mo)"
-  if [ "$LIBRE_REEL_MB" -lt "$MARGE_EXECUTION_MB" ]; then
-    echo "✗ Le disque construit ne laisse que ${LIBRE_REEL_MB} Mo libres," >&2
-    echo "  moins que la marge d'exécution de ${MARGE_EXECUTION_MB} Mo." >&2
-    echo >&2
-    echo "  Ce contrôle-ci lit le système de fichiers RÉEL, là où le contrôle" >&2
-    echo "  précédent estimait depuis la géométrie nominale. Il est donc" >&2
-    echo "  possible de passer l'un et d'échouer ici : c'est ce chiffre qui" >&2
-    echo "  décide, parce que c'est celui que le guest rencontrera." >&2
-    echo >&2
-    plus_gros_repertoires "$WORK_DIR/app" >&2
-    rm -f "$OUTPUT_DIR/$NAME-app.ext2"
-    exit 1
-  fi
-else
-  # Un dumpe2fs muet ne doit pas faire passer un disque pour sain : on le dit,
-  # sans arrêter une construction que rien ne prouve mauvaise.
-  echo "  ⚠ Espace libre réel non mesurable (dumpe2fs muet) : marge non vérifiée." >&2
+# MESURÉ sur de vrais ext2 de 512 Mo peuplés de contenu aléatoire : le nominal
+# surestime de 9 à 10 Mo, de façon stable.
+#   contenu 241 Mo → nominal 271, réel 262
+#   contenu 324 Mo → nominal 188, réel 179
+#   contenu 449 Mo → nominal  63, réel  53
+#
+# On lit donc ce que le système de fichiers DÉCLARE, une fois construit. Une
+# constante estimée dériverait au premier changement de géométrie, de taille de
+# bloc ou de nombre d'inodes ; ce compte-ci suit.
+#
+# LC_ALL=C : les étiquettes de dumpe2fs sont traduites sous une autre locale, et
+# les motifs ci-dessous ne colleraient plus — la garde se croirait alors
+# incapable de mesurer, sur un disque parfaitement sain.
+#
+# UN SEUL APPEL : deux invocations pourraient lire deux états différents, et
+# c'est de toute façon un aller-retour inutile sur un fichier de 512 Mo.
+FICHE_EXT2="$(LC_ALL=C dumpe2fs -h "$OUTPUT_DIR/$NAME-app.ext2" 2>/dev/null || true)"
+BLOCS_LIBRES="$(printf '%s
+' "$FICHE_EXT2" | awk -F: '/^Free blocks/ { gsub(/ /, "", $2); print $2 }')"
+TAILLE_BLOC="$(printf '%s
+' "$FICHE_EXT2" | awk -F: '/^Block size/ { gsub(/ /, "", $2); print $2 }')"
+
+# ÉCHEC FERMÉ. Une garde de sûreté qui ne sait pas mesurer doit arrêter, pas
+# laisser passer : « marge non vérifiée » sur un disque publié revient à n'avoir
+# aucune garde, avec en prime la fausse assurance d'en avoir une.
+if [ -z "$BLOCS_LIBRES" ] || [ -z "$TAILLE_BLOC" ]; then
+  echo "✗ Espace libre du disque applicatif non mesurable." >&2
+  echo "  dumpe2fs n'a rendu ni compte de blocs libres ni taille de bloc sur" >&2
+  echo "  $OUTPUT_DIR/$NAME-app.ext2." >&2
+  echo >&2
+  echo "  La construction s'arrête : sans cette mesure, rien ne garantit que le" >&2
+  echo "  guest pourra écrire, et un disque publié dans cet état échouerait au" >&2
+  echo "  démarrage chez le visiteur." >&2
+  rm -f "$OUTPUT_DIR/$NAME-app.ext2"
+  exit 1
+fi
+
+LIBRE_REEL_MB=$((BLOCS_LIBRES * TAILLE_BLOC / 1048576))
+echo "  Espace libre RÉEL dans l'ext2 : ${LIBRE_REEL_MB} Mo (marge exigée ${MARGE_EXECUTION_MB} Mo)"
+if [ "$LIBRE_REEL_MB" -lt "$MARGE_EXECUTION_MB" ]; then
+  echo "✗ Le disque construit ne laisse que ${LIBRE_REEL_MB} Mo libres," >&2
+  echo "  moins que la marge d'exécution de ${MARGE_EXECUTION_MB} Mo." >&2
+  echo >&2
+  echo "  Ce contrôle-ci lit le système de fichiers RÉEL, là où le contrôle" >&2
+  echo "  précédent estimait depuis la géométrie nominale. Il est donc" >&2
+  echo "  possible de passer l'un et d'échouer ici : c'est ce chiffre qui" >&2
+  echo "  décide, parce que c'est celui que le guest rencontrera." >&2
+  echo >&2
+  plus_gros_repertoires "$WORK_DIR/app" >&2
+  rm -f "$OUTPUT_DIR/$NAME-app.ext2"
+  exit 1
 fi
 
 APP_DISK_BYTES=$(stat -c%s "$OUTPUT_DIR/$NAME-app.ext2")

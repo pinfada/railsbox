@@ -132,6 +132,42 @@ test("le contrôle réel a lieu APRÈS la fabrication, et échoue avant publicat
   // qu'elle prétend attraper.
   const apresMke2fs = SCRIPT.slice(SCRIPT.indexOf("mke2fs -q -t ext2"));
   assert.match(apresMke2fs, /dumpe2fs/, "le contrôle doit suivre la fabrication");
-  const controle = apresMke2fs.slice(apresMke2fs.indexOf("dumpe2fs"));
-  assert.match(controle.slice(0, 1200), /exit 1/, "et interrompre la construction");
+});
+
+test("une mesure IMPOSSIBLE arrête la construction — échec fermé", () => {
+  // La version précédente de cette épreuve cherchait « un exit 1 quelque part
+  // après le mot dumpe2fs ». Elle trouvait celui du MANQUE D'ESPACE et se
+  // déclarait satisfaite, sans rien prouver du chemin qu'elle visait. Même
+  // famille d'assertion trop lâche que celle déjà corrigée plus haut.
+  //
+  // On isole donc le bloc qui traite l'absence de mesure, et on vérifie CE
+  // bloc. Une garde de sûreté qui ne sait pas mesurer doit arrêter : laisser
+  // passer avec « marge non vérifiée » revient à n'avoir aucune garde, avec en
+  // prime la fausse assurance d'en avoir une.
+  const debut = SCRIPT.indexOf('if [ -z "$BLOCS_LIBRES" ]');
+  assert.ok(debut !== -1, "le cas « mesure impossible » doit être traité explicitement");
+  const bloc = SCRIPT.slice(debut, SCRIPT.indexOf(["", "fi", ""].join("\n"), debut));
+
+  assert.match(bloc, /exit 1/, "il doit arrêter la construction");
+  assert.match(bloc, /rm -f/, "et retirer le disque, qui ne doit pas être publié");
+  assert.doesNotMatch(bloc, /non vérifiée/, "surtout pas continuer en le signalant");
+});
+
+test("dumpe2fs est un PRÉREQUIS, et sa sortie est lue en locale C", () => {
+  // Sans le prérequis, un outil manquant désarme silencieusement la garde.
+  assert.match(
+    SCRIPT,
+    /command -v dumpe2fs >\/dev\/null \|\|/,
+    "dumpe2fs doit être exigé au même titre que mke2fs",
+  );
+  // Sans LC_ALL=C, les étiquettes sont traduites sous une autre locale et les
+  // motifs ne collent plus : la garde se croirait incapable de mesurer sur un
+  // disque parfaitement sain — et, échec fermé oblige, refuserait à tort.
+  assert.match(SCRIPT, /LC_ALL=C dumpe2fs/, "la sortie doit être forcée en locale C");
+  // Un seul appel : deux invocations pourraient lire deux états différents.
+  assert.equal(
+    (SCRIPT.match(/dumpe2fs -h/g) ?? []).length,
+    1,
+    "dumpe2fs ne doit être invoqué qu'une fois",
+  );
 });
