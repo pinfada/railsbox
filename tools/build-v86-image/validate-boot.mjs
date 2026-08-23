@@ -10,13 +10,16 @@
 // n'importe quelle application.
 //
 // Sort en 0 dès qu'une réponse HTTP traverse le pont série, en 1 sinon.
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { V86 } from "v86";
 
+import { buildDiskImages, memoryBytes } from "../../public/shared/v86-config.js";
+
 import {
   buildRequestFrames,
+  buildRestartFrame,
   buildTimeSyncFrame,
   createLineAssembler,
   createResponseAssembler,
@@ -57,20 +60,42 @@ export function artifactPath(reference) {
 }
 
 /**
+ * Traduit les références web d'une configuration en fichiers locaux, tout en
+ * conservant exactement la topologie mono-disque ou split du navigateur.
+ * @param {Record<string, any>} config
+ * @returns {ReturnType<typeof buildDiskImages>}
+ */
+export function localDiskImages(config) {
+  return buildDiskImages({
+    ...config,
+    disk: artifactPath(config.disk),
+    appDisk: config.appDisk ? artifactPath(config.appDisk) : undefined,
+  });
+}
+
+/** Refuse immédiatement une configuration qui référence un artefact absent. */
+async function assertArtifactsExist(config) {
+  const references = [config.kernel, config.initrd, config.disk, config.appDisk].filter(Boolean);
+  await Promise.all(references.map((reference) => access(artifactPath(reference))));
+}
+
+/**
  * Ouvre un pont série minimal (requêtes sans corps) sur un émulateur v86.
  * @param {any} emulator instance V86 démarrée
  * @param {(line: string) => void} onLog rappel pour les lignes de console
- * @returns {{syncClock: () => void, request: (path: string) => Promise<Uint8Array>}} pont
+ * @returns {{syncClock: () => void, restartApplication: () => Promise<void>, request: (path: string) => Promise<Uint8Array>}} pont
  */
 function createBridge(emulator, onLog) {
   /** @type {Map<string, {resolve: Function, reject: Function, timer: any}>} */
   const pending = new Map();
+  const acks = new Map();
   let nextId = 1;
 
   const assembler = createResponseAssembler({
     onResponse: (id, bytes) => settle(id, { bytes }),
     onError: (id, code) => settle(id, { code }),
     onLog,
+    onAck: (id) => acks.get(id)?.(),
   });
   const lines = createLineAssembler((line) => assembler.handleLine(line));
   emulator.add_listener("serial0-output-byte", (byte) => lines.feedByte(byte));
@@ -91,6 +116,24 @@ function createBridge(emulator, onLog) {
 
   return {
     syncClock: () => emulator.serial0_send(buildTimeSyncFrame(Date.now() / 1000)),
+    restartApplication() {
+      const id = String(nextId++);
+      const acked = new Promise(
+        /** @param {(value?: void) => void} resolvePromise */ (resolvePromise, reject) => {
+          const timer = setTimeout(() => {
+            acks.delete(id);
+            reject(new Error("redémarrage non acquitté par la VM"));
+          }, PROBE_TIMEOUT_MS);
+          acks.set(id, () => {
+            clearTimeout(timer);
+            acks.delete(id);
+            resolvePromise();
+          });
+        },
+      );
+      emulator.serial0_send(buildRestartFrame(id));
+      return acked;
+    },
     request(path) {
       const id = String(nextId++);
       // x-forwarded-proto: https — même en-tête que le Service Worker. Sans
@@ -127,10 +170,12 @@ function sleep(milliseconds) {
  * Sonde l'application jusqu'à obtenir une réponse HTTP complète.
  * @param {{syncClock: () => void, request: (path: string) => Promise<Uint8Array>}} bridge pont série
  * @param {string} probePath chemin HTTP à sonder
+ * @param {(error: Error) => Promise<void>} [onUnavailable] action au premier refus applicatif
  * @returns {Promise<{headText: string, bodyBytes: Uint8Array, attempt: number}>} réponse obtenue
  * @throws {Error} si l'application ne répond jamais dans le budget imparti
  */
-async function waitForApplication(bridge, probePath) {
+async function waitForApplication(bridge, probePath, onUnavailable) {
+  let unavailableHandled = false;
   for (let attempt = 1; attempt <= READY_MAX_ATTEMPTS; attempt += 1) {
     bridge.syncClock();
     try {
@@ -138,6 +183,10 @@ async function waitForApplication(bridge, probePath) {
       const { headText, bodyBytes } = splitHttpResponse(raw);
       return { headText, bodyBytes, attempt };
     } catch (error) {
+      if (!unavailableHandled && onUnavailable && /code 7\b/.test(error.message)) {
+        unavailableHandled = true;
+        await onUnavailable(error);
+      }
       if (attempt % 6 === 0) log(`sonde n°${attempt} : ${error.message}`);
     }
     await sleep(READY_INTERVAL_MS);
@@ -156,25 +205,28 @@ async function main() {
   const configPath = isAbsolute(configName) ? configName : join(DISKS_DIR, configName);
   const config = JSON.parse(await readFile(configPath, "utf8"));
   const probePath = pathFlag === -1 ? `${config.mountPath ?? "/app"}/` : args[pathFlag + 1];
+  await assertArtifactsExist(config);
 
   log(
     `image « ${config.name ?? "?"} » du ${config.builtAt ?? "?"} — boot à FROID (sans instantané)`,
   );
-  const emulator = new V86({
-    wasm_path: join(V86_BUILD_DIR, "v86.wasm"),
-    memory_size: (config.memoryMb ?? 1024) * 1024 * 1024,
-    vga_memory_size: 8 * 1024 * 1024,
-    bios: { url: join(VENDOR_DIR, "seabios.bin") },
-    vga_bios: { url: join(VENDOR_DIR, "vgabios.bin") },
-    bzimage: { url: artifactPath(config.kernel) },
-    initrd: { url: artifactPath(config.initrd) },
-    cmdline: config.cmdline,
-    hda: { url: artifactPath(config.disk), async: true, size: config.diskSize },
-    autostart: true,
-    disable_speaker: true,
-    disable_keyboard: true,
-    disable_mouse: true,
-  });
+  const emulator = new V86(
+    /** @type {any} */ ({
+      wasm_path: join(V86_BUILD_DIR, "v86.wasm"),
+      memory_size: memoryBytes(config),
+      vga_memory_size: 8 * 1024 * 1024,
+      bios: { url: join(VENDOR_DIR, "seabios.bin") },
+      vga_bios: { url: join(VENDOR_DIR, "vgabios.bin") },
+      bzimage: { url: artifactPath(config.kernel) },
+      initrd: { url: artifactPath(config.initrd) },
+      cmdline: config.cmdline,
+      ...localDiskImages(config),
+      autostart: true,
+      disable_speaker: true,
+      disable_keyboard: true,
+      disable_mouse: true,
+    }),
+  );
 
   const bridge = createBridge(emulator, (line) => {
     if (/error|fatal|Listening on|pont serie pret|\[init\]/i.test(line)) {
@@ -183,7 +235,16 @@ async function main() {
   });
 
   const startedAt = Date.now();
-  const response = await waitForApplication(bridge, probePath);
+  const response = await waitForApplication(
+    bridge,
+    probePath,
+    config.appDisk
+      ? async () => {
+          log("configuration split : montage de /app et démarrage de Puma (trame RST)…");
+          await bridge.restartApplication();
+        }
+      : undefined,
+  );
   const seconds = Math.round((Date.now() - startedAt) / 1000);
   await shutdown(emulator);
 
@@ -215,7 +276,9 @@ async function shutdown(emulator) {
   await sleep(SHUTDOWN_SETTLE_MS);
 }
 
-main().catch((error) => {
-  process.stderr.write(`[validate] ÉCHEC : ${error.message}\n`);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`[validate] ÉCHEC : ${error.message}\n`);
+    process.exit(1);
+  });
+}
