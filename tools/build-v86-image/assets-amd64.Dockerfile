@@ -22,11 +22,14 @@
 
 ARG RUBY_VERSION=3.3.12
 ARG BUN_ASSETS=0
+ARG NODE_SERIES=22
+
+FROM --platform=linux/amd64 node:${NODE_SERIES}-bookworm-slim AS node-runtime
 
 # Branche Bun conditionnelle : une application npm/pnpm/yarn ne doit pas même
 # résoudre l'image Bun. Le substitut ne fournit qu'un chemin copiable ; il
 # n'est jamais exécuté lorsque BUN_ASSETS=0.
-FROM --platform=linux/amd64 node:22-bookworm-slim AS bun-0
+FROM node-runtime AS bun-0
 RUN ln -s /bin/true /usr/local/bin/bun
 FROM --platform=linux/amd64 oven/bun:1.4-slim AS bun-1
 FROM bun-${BUN_ASSETS} AS bun-runtime
@@ -68,8 +71,8 @@ RUN set -eu; \
 # bibliothèques système, aucun dépôt tiers à ajouter, et la version est choisie
 # par nous plutôt que par la distribution. npm et npx sont des scripts Node,
 # d'où les liens.
-COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
-COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 # Bun n'appartient pas à Corepack. Sa série est fournie par l'étage conditionnel
 # ci-dessus et fixée par railsbox. Le runtime ne sert qu'à cet étage amd64.
 COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
@@ -121,6 +124,13 @@ COPY Gemfile* ./
 RUN bundle install
 
 COPY . .
+
+# Un checkout Windows peut convertir en CRLF un script pourtant versionné avec
+# un shebang Unix. Linux chercherait alors `node\r`, `ruby\r` ou `sh\r`. On ne
+# touche qu'à la PREMIÈRE ligne des fichiers concernés, dans la copie de build.
+RUN set -eu; \
+    cr="$(printf '\r')"; \
+    find . -type f -exec sh -c 'cr=$1; shift; for file do first="$(head -n 1 "$file" 2>/dev/null || true)"; case "$first" in "#!"*"$cr") sed -i "1s/\r$//" "$file" ;; esac; done' sh "$cr" {} +
 
 # Dépendances front. La commande vient de l'auto-détection : `npm ci` quand un
 # package-lock.json est versionné, `npm install` sinon (diagnostic émis).
@@ -234,6 +244,10 @@ if ! find . \( -path ./node_modules -o -path ./.git -o -path ./tmp -o -path ./lo
   | awk -v exportes="${ASSET_OUTPUT_DIRS}" '
       BEGIN { total = split(exportes, liste, " ") }
       {
+        # Un fichier modifié à la racine ne désigne aucun répertoire d'assets
+        # exportable. Le signaler comme « . » proposerait une configuration
+        # volontairement refusée par le validateur de chemins.
+        if ($0 == ".") next
         for (i = 1; i <= total; i++)
           if ($0 == liste[i] || index($0, liste[i] "/") == 1) next
         print

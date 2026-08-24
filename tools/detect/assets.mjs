@@ -186,6 +186,51 @@ export const PACKAGE_MANAGERS = Object.freeze(["npm", "pnpm", "yarn", "bun"]);
 /** Gestionnaire retenu quand rien n'impose autre chose. */
 export const DEFAULT_PACKAGE_MANAGER = "npm";
 
+/** Séries Node fournies par l'étage de précompilation amd64. */
+export const SUPPORTED_NODE_SERIES = Object.freeze(["22", "24"]);
+
+/** Série conservée pour les applications qui ne déclarent rien. */
+export const DEFAULT_NODE_SERIES = "22";
+
+/**
+ * Choisit une série Node dans une contrainte `engines.node` courante.
+ * La valeur rendue vient toujours de la liste fermée ci-dessus : une chaîne
+ * tierce ne devient jamais un nom d'image Docker.
+ * @param {unknown} requirement valeur brute de package.json#engines.node
+ * @returns {{series: string, supported: boolean, declared: string|null}}
+ */
+export function resolveNodeSeries(requirement) {
+  if (typeof requirement !== "string" || requirement.trim() === "") {
+    return { series: DEFAULT_NODE_SERIES, supported: true, declared: null };
+  }
+  const declared = requirement.trim();
+  if (declared === "*") return { series: DEFAULT_NODE_SERIES, supported: true, declared };
+
+  const accepts = (series, clause) => {
+    const major = Number(series);
+    const tokens = [
+      ...clause.matchAll(/(\^|~|>=|<=|>|<|=)?\s*v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?/gi),
+    ];
+    if (tokens.length === 0) return false;
+    return tokens.every(([, operator = "", rawMajor, minor]) => {
+      const wanted = Number(rawMajor);
+      if (operator === ">=") return major >= wanted;
+      if (operator === ">") return major > wanted || (major === wanted && minor !== undefined);
+      if (operator === "<=") return major <= wanted;
+      if (operator === "<") return major < wanted;
+      return major === wanted;
+    });
+  };
+
+  const candidates = SUPPORTED_NODE_SERIES.filter((series) =>
+    declared.split("||").some((clause) => accepts(series, clause)),
+  );
+  const series = candidates.includes(DEFAULT_NODE_SERIES)
+    ? DEFAULT_NODE_SERIES
+    : (candidates[0] ?? DEFAULT_NODE_SERIES);
+  return { series, supported: candidates.length > 0, declared };
+}
+
 /**
  * Forme du champ `packageManager` (convention Corepack) : `nom@X.Y.Z`, avec
  * une pré-version et une empreinte facultatives. Volontairement STRICTE — la
@@ -353,6 +398,8 @@ export function planPackageManager({ lockfiles = [], packageManager, yarnLock } 
  * @property {string} install commande d'installation, vide sans package.json
  * @property {string} prepare génération de sources à exécuter avant la précompilation
  * @property {string} manager gestionnaire de paquets front (`npm`, `pnpm`, `yarn` ou `bun`)
+ * @property {string|null} nodeRequirement contrainte `engines.node` déclarée
+ * @property {string} nodeSeries série Node choisie dans la liste prise en charge
  * @property {readonly string[]} output répertoires remontés de l'étage amd64 vers le disque
  */
 
@@ -363,7 +410,7 @@ export function planPackageManager({ lockfiles = [], packageManager, yarnLock } 
  * fusion d'un railsbox.yml, par exemple), elle conserve la commande
  * d'installation déjà déduite des verrous — que le manifeste ne transporte pas
  * — ainsi que les répertoires de sortie déjà retenus.
- * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, prepare?: string, manager?: string, packageManager?: unknown, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[], yarnLock?: unknown}} input contexte d'analyse
+ * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, prepare?: string, manager?: string, packageManager?: unknown, nodeRequirement?: unknown, nodeSeries?: string, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[], yarnLock?: unknown}} input contexte d'analyse
  * @returns {{plan: AssetPlan, findings: Finding[]}} plan gelé et diagnostics
  */
 export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yarnLock } = {}) {
@@ -385,9 +432,26 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yar
   const install = npm ? assets?.install || gestionnaire.install : "";
   const prepare = assets?.prepare || assetPrepareCommand(resolved);
   const manager = npm ? (assets?.manager ?? gestionnaire.manager) : DEFAULT_PACKAGE_MANAGER;
+  const node = assets?.nodeSeries
+    ? {
+        series: assets.nodeSeries,
+        supported: true,
+        declared: typeof assets.nodeRequirement === "string" ? assets.nodeRequirement : null,
+      }
+    : resolveNodeSeries(assets?.nodeRequirement);
 
   /** @type {Finding[]} */
   const findings = npm ? [...gestionnaire.findings] : [];
+  if (npm && !node.supported) {
+    findings.push(
+      createFinding(
+        SEVERITY.BLOCKING,
+        "unsupported-node-version",
+        `package.json exige Node « ${node.declared} » ; railsbox fournit les séries ${SUPPORTED_NODE_SERIES.join(", ")} sur l'étage d'assets.`,
+        { required: node.declared, supported: [...SUPPORTED_NODE_SERIES] },
+      ),
+    );
+  }
   if (stage === ASSET_STAGE.HOST) {
     findings.push(
       createFinding(
@@ -416,6 +480,8 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yar
       install,
       prepare,
       manager,
+      nodeRequirement: node.declared,
+      nodeSeries: node.series,
       output: Object.freeze(output),
     }),
     findings,

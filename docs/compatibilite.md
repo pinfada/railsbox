@@ -10,13 +10,13 @@ Ce que railsbox prend en charge, ce qu'il refuse explicitement, et les limites q
 
 | | État |
 | --- | --- |
-| **Ruby** | base publique `3.3-r2` : Ruby 3.3.12. Ruby 3.4.3 est qualifié localement sur une base complète, mais ne devient utilisable par le workflow public qu'après publication et référencement de cette base. |
+| **Ruby** | base publique `3.3-r2` : Ruby 3.3.12. Ruby 3.4.3 et 4.0.3 sont qualifiés localement sur des bases complètes, mais ne deviennent utilisables par le workflow public qu'après publication et référencement de ces bases. |
 | **SQLite** | validé de bout en bout : `rails new` + Propshaft + importmap, publié et bootant en ligne |
 | **PostgreSQL** | pris en charge sur la voie découplée, à partir de la base `3.3-r2` (la valeur par défaut du workflow) |
 | **MySQL / MariaDB** | non supporté : la construction s'arrête avec un rapport explicite |
 | **importmap, Propshaft, Sprockets** | précompilés dans le disque i386, ou sur l'étage amd64 quand Terser/ExecJS exige un moteur JavaScript |
 | **Tailwind, dart-sass** | précompilés sur un étage amd64, copiés dans le disque i386 |
-| **Chaînes npm** (esbuild, cssbundling, jsbundling) | même étage amd64 : installation puis vos scripts de build |
+| **Chaînes npm** (esbuild, cssbundling, jsbundling) | même étage amd64 : installation puis vos scripts de build. Node 22 reste le défaut ; Node 24 est sélectionné quand `package.json#engines.node` l'exige. |
 | **pnpm** | pris en charge via Corepack, à condition que `package.json` déclare `packageManager` — c'est Corepack qui en lit la version, railsbox n'en extrait qu'un identifiant validé |
 | **Bun** | pris en charge en série 1.4 quand `bun.lock` ou `bun.lockb` est présent, avec installation gelée par `--frozen-lockfile` |
 | **Redis, Sidekiq** | détectés depuis le `Gemfile.lock`, présents dans la base |
@@ -39,9 +39,9 @@ Ce que railsbox prend en charge, ce qu'il refuse explicitement, et les limites q
 ## Ce que la campagne d'applications réelles a validé
 
 RailsBox ne considère pas un simple boot comme une preuve suffisante. RailSmart,
-Ember Vault, Hackatime, if-me et Human Essentials ont servi de candidats de
+Ember Vault, Hackatime, if-me, Human Essentials et CASA ont servi de candidats de
 qualification sans modification de leur dépôt. Ensemble, ils ont exercé Rails
-8, Warden/Devise, SQLite et PostgreSQL multi-base, Sprockets/importmap,
+8, Ruby 4.0, Node 24, Warden/Devise, SQLite et PostgreSQL multi-base, Sprockets/importmap,
 Active Storage, Terser/ExecJS, les routes sous préfixe et des jeux de seeds
 volumineux.
 
@@ -50,6 +50,12 @@ Le cas le plus lourd à ce jour, Human Essentials, a produit 167 assets et
 306 Mo sur 512 Mo, avec 199 Mo réellement libres. Le premier boot v86 a pris
 266 s ; la restauration du delta validé a répondu en 22 s avec un HTTP 200 sous
 le préfixe public réel.
+
+CASA a validé Rails 8.0.5.1 sur Ruby 4.0.3, une chaîne npm/Tailwind sous
+Node 24 et PostgreSQL. Son disque contient 1 164 enregistrements et 367 Mo de
+données sur 512 Mo. Après un premier boot de 262 s, son delta se restaure et
+répond dans Chromium en 20,2 s ; rendu, navigation et assets passent les quatre
+contrôles de bout en bout.
 
 Cette campagne prouve une compatibilité large avec les monolithes Rails
 conventionnels ; elle ne prouve pas statistiquement « toutes » ou « la plupart »

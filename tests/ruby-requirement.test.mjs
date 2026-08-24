@@ -96,6 +96,7 @@ test("build-app-disk confie la référence complète au détecteur", () => {
 
 test("baseRubyVersion ne répond que pour une base publiée", () => {
   assert.equal(baseRubyVersion("3.3-r2"), "3.3.12");
+  assert.equal(baseRubyVersion("4.0"), "4.0.3");
   assert.equal(baseRubyVersion("4.0-r9"), null);
 });
 
@@ -104,6 +105,7 @@ test("resolveBase ne suppose RIEN quand la base n'est pas précisée", () => {
   // supposer 3.3-r2 refuserait à tort une application d'une autre série.
   assert.deepEqual(resolveBase(undefined), { version: null, ruby: null });
   assert.deepEqual(resolveBase("3.3-r2"), { version: "3.3-r2", ruby: "3.3.12" });
+  assert.deepEqual(resolveBase("railsbox-base-4.0"), { version: "4.0", ruby: "4.0.3" });
 });
 
 test("detectApp, lui, vise la base par défaut du workflow", async () => {

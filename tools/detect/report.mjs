@@ -122,6 +122,10 @@ export const REMEDIES = Object.freeze({
     "Prévoyez une compilation longue, ou excluez la gem du groupe installé dans la VM.",
   "invalid-package-json":
     "Corrigez la syntaxe JSON de package.json, sinon les scripts d'assets ne seront pas exécutés.",
+  "unsupported-node-version":
+    "Utilisez une série Node prise en charge par railsbox, ou ajoutez d'abord cette série à " +
+    "SUPPORTED_NODE_SERIES et validez l'image officielle correspondante. La contrainte engines.node " +
+    "reste respectée : railsbox ne la contourne pas avec --force.",
   "npm-lockfile-absent":
     "Versionnez un package-lock.json (`npm install` puis commit) : l'étage amd64 installe " +
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",

@@ -609,12 +609,14 @@ function detectAssets(packageJson) {
   // (planPackageManager) : la lecture d'un fichier tiers ne doit rien décider,
   // et la validation vit à un seul endroit.
   const packageManager = typeof parsed?.packageManager === "string" ? parsed.packageManager : null;
+  const nodeRequirement = typeof parsed?.engines?.node === "string" ? parsed.engines.node : null;
   return {
     assets: Object.freeze({
       npm: true,
       scripts: Object.freeze(scripts),
       tools: Object.freeze(tools),
       packageManager,
+      nodeRequirement,
     }),
     findings: [],
   };

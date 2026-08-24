@@ -492,10 +492,27 @@ test("buildArgs décrit l'installation npm d'une application cssbundling", () =>
 
   // Assert
   assert.equal(args.NPM_ASSETS, "1");
+  assert.equal(args.NODE_SERIES, "22");
   assert.equal(args.BUN_ASSETS, "0");
   assert.equal(args.HOST_ASSETS, "1");
   assert.equal(args.ASSET_SCRIPTS, "build:css");
   assert.equal(args.NPM_INSTALL_COMMAND, "npm ci --no-audit --no-fund");
+});
+
+test("buildArgs transmet la série Node détectée à l'image d'assets", () => {
+  const args = buildArgs({
+    manifest: {
+      ruby: "4.0.3",
+      database: "postgresql",
+      assets: { npm: true, scripts: ["build"], nodeRequirement: "24.x", nodeSeries: "24" },
+      services: {},
+    },
+    specs: new Map([["jsbundling-rails", "1.3.1"]]),
+    hasSeeds: false,
+    appName: "node24",
+  });
+
+  assert.equal(args.NODE_SERIES, "24");
 });
 
 test("buildArgs transmet la préparation de sources détectée", () => {
@@ -997,6 +1014,23 @@ test("TOUT étage qui compile des gems accepte EXTRA_PACKAGES, et on le lui pass
   const appDockerfile = readFileSync("tools/build-v86-image/base/app.Dockerfile", "utf8");
   assert.match(appDockerfile, /ARG BUILD_ONLY_SYSTEM_PACKAGES=""/);
   assert.match(appDockerfile, /apt-get purge -y --auto-remove -- \$\{BUILD_ONLY_SYSTEM_PACKAGES\}/);
+});
+
+test("les copies de build neutralisent les shebangs CRLF sans toucher au dépôt", () => {
+  for (const path of [
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+    "tools/build-v86-image/Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(path, "utf8");
+    assert.match(dockerfile, /case "\$first" in "#!"\*"\$cr"\)/, path);
+    assert.match(dockerfile, /sed -i "1s\/\\r\$\/\/"/, path);
+  }
+});
+
+test("la récolte d'assets ignore les fichiers modifiés à la racine", () => {
+  const dockerfile = readFileSync("tools/build-v86-image/assets-amd64.Dockerfile", "utf8");
+  assert.match(dockerfile, /if \(\$0 == "\."\) next/);
 });
 
 test("les deux étages d'assets conservent la trace complète des erreurs", () => {

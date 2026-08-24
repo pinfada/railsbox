@@ -461,7 +461,7 @@ export function splitPackages(manifest, baseRevision) {
  * `public/assets` — il ne relance rien.
  * @param {Manifest} manifest manifeste fusionné
  * @param {Map<string, string>} specs gems résolues du Gemfile.lock
- * @returns {{npm: boolean, scripts: string[], stage: string, install: string, prepare: string, manager: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
+ * @returns {{npm: boolean, scripts: string[], stage: string, install: string, prepare: string, manager: string, nodeSeries: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
  */
 export function assetsPlan(manifest, specs) {
   const { plan } = planAssets({ assets: manifest.assets, specs });
@@ -472,6 +472,7 @@ export function assetsPlan(manifest, specs) {
     install: plan.install,
     prepare: plan.prepare,
     manager: plan.manager,
+    nodeSeries: plan.nodeSeries,
     binaryGems: [...plan.binaryGems],
     precompile: plan.stage === ASSET_STAGE.GUEST,
     output: [...plan.output],
@@ -568,6 +569,7 @@ export function buildArgs({
     PG_DATABASE_URL: withPostgres ? postgres.url : "",
     WITH_REDIS: manifest.services?.redis ? "1" : "0",
     NPM_ASSETS: assets.npm ? "1" : "0",
+    NODE_SERIES: assets.nodeSeries,
     BUN_ASSETS: assets.manager === "bun" ? "1" : "0",
     ASSET_SCRIPTS: assets.scripts.join(" "),
     // Génération de sources exigée par une gem connue (par exemple les helpers

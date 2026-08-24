@@ -18,13 +18,15 @@
 
 ARG RUBY_VERSION=3.3.10
 ARG BUN_ASSETS=0
+ARG NODE_SERIES=22
 # 1 : les assets sont précompilés sur l'étage amd64 (chaîne npm et/ou gem à
 # exécutable précompilé). 0 : cet étage est entièrement sauté.
 ARG HOST_ASSETS=0
 # 1 : l'application a un package.json (donc des dépendances front à installer).
 ARG NPM_ASSETS=0
 
-FROM --platform=linux/amd64 node:22-bookworm-slim AS bun-0
+FROM --platform=linux/amd64 node:${NODE_SERIES}-bookworm-slim AS node-runtime
+FROM node-runtime AS bun-0
 RUN ln -s /bin/true /usr/local/bin/bun
 FROM --platform=linux/amd64 oven/bun:1.4-slim AS bun-1
 FROM bun-${BUN_ASSETS} AS bun-runtime
@@ -51,8 +53,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # bibliothèques système, aucun dépôt tiers à ajouter, et la version est choisie
 # par nous plutôt que par la distribution. npm et npx sont des scripts Node,
 # d'où les liens.
-COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
-COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 # Bun n'est pas fourni par Corepack. L'étage conditionnel ne sélectionne son
 # image officielle que lorsque la détection a réellement retenu Bun.
 COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
@@ -119,6 +121,9 @@ COPY Gemfile* ./
 RUN bundle install
 
 COPY . .
+RUN set -eu; \
+    cr="$(printf '\r')"; \
+    find . -type f -exec sh -c 'cr=$1; shift; for file do first="$(head -n 1 "$file" 2>/dev/null || true)"; case "$first" in "#!"*"$cr") sed -i "1s/\r$//" "$file" ;; esac; done' sh "$cr" {} +
 # node_modules est exclu par le .dockerignore de l'application : installation
 # complète nécessaire aux scripts de build. La commande vient de
 # l'auto-détection (`npm ci` avec un verrou, `npm install` sinon) et reste vide
@@ -252,6 +257,9 @@ RUN bundle lock --add-platform x86-linux ruby && bundle install
 RUN find "$(gem env home)" -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
 
 COPY . .
+RUN set -eu; \
+    cr="$(printf '\r')"; \
+    find . -type f -exec sh -c 'cr=$1; shift; for file do first="$(head -n 1 "$file" 2>/dev/null || true)"; case "$first" in "#!"*"$cr") sed -i "1s/\r$//" "$file" ;; esac; done' sh "$cr" {} +
 COPY --from=assets /app/public/assets ./public/assets
 COPY --from=assets /app/app/assets/builds ./app/assets/builds
 ARG ACTIVE_STORAGE_INITIALIZER=""

@@ -134,6 +134,12 @@ RUN bundle lock --add-platform x86-linux ruby && bundle install
 RUN find ${BUNDLE_PATH} -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
 
 COPY . .
+
+# Neutralise le CR ajouté aux shebangs par certains checkouts Windows, sans
+# modifier le dépôt source ni normaliser aveuglément les fichiers binaires.
+RUN set -eu; \
+    cr="$(printf '\r')"; \
+    find . -type f -exec sh -c 'cr=$1; shift; for file do first="$(head -n 1 "$file" 2>/dev/null || true)"; case "$first" in "#!"*"$cr") sed -i "1s/\r$//" "$file" ;; esac; done' sh "$cr" {} +
 # COPY . . a rétabli le Gemfile.lock du dépôt : on ré-ajoute la plateforme i386,
 # sinon bundle exec refuse le bundle pourtant installé.
 RUN bundle lock --add-platform x86-linux ruby && bundle check

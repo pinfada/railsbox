@@ -146,6 +146,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMA
   --build-arg "PG_VERSION=${PG_VERSION:-15}" \
   --build-arg "WITH_REDIS=$WITH_REDIS" \
   --build-arg "NPM_ASSETS=$NPM_ASSETS" \
+  --build-arg "NODE_SERIES=${NODE_SERIES:-22}" \
   --build-arg "BUN_ASSETS=${BUN_ASSETS:-0}" \
   --build-arg "HOST_ASSETS=$HOST_ASSETS" \
   --build-arg "NPM_INSTALL_COMMAND=$NPM_INSTALL_COMMAND" \

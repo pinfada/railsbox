@@ -6,6 +6,7 @@ import {
   binaryAssetGems,
   npmInstallCommand,
   planAssets,
+  resolveNodeSeries,
 } from "../tools/detect/assets.mjs";
 import { REMEDIES } from "../tools/detect/report.mjs";
 
@@ -135,6 +136,26 @@ test("planAssets sans argument rend un plan vide plutôt qu'une exception", () =
 });
 
 // --- Installation des dépendances front --------------------------------------
+
+test("la série Node suit engines.node sans changer le défaut historique", () => {
+  assert.deepEqual(resolveNodeSeries(null), { series: "22", supported: true, declared: null });
+  assert.equal(resolveNodeSeries("24.x").series, "24");
+  assert.equal(resolveNodeSeries("^20.19.0 || >=22.12.0").series, "22");
+  assert.equal(resolveNodeSeries(">=24 <25").series, "24");
+});
+
+test("une série Node absente est refusée avant npm", () => {
+  const { plan, findings } = planAssets({
+    assets: { npm: true, nodeRequirement: ">=26" },
+    specs: specs(["jsbundling-rails"]),
+    lockfiles: ["package-lock.json"],
+  });
+
+  assert.equal(plan.nodeSeries, "22");
+  const finding = findings.find((entry) => entry.code === "unsupported-node-version");
+  assert.equal(finding.severity, "blocking");
+  assert.ok(REMEDIES["unsupported-node-version"]);
+});
 
 test("npmInstallCommand exige un verrou npm pour une installation reproductible", () => {
   // Arrange / Act / Assert
