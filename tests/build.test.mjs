@@ -17,6 +17,7 @@ import {
   defaultAppName,
   binaryAssetGems,
   extraPackages,
+  buildOnlyPackages,
   formatAssignments,
   formatEnvFragment,
   postgresNamedDatabaseEnv,
@@ -156,6 +157,27 @@ test("extraPackages fournit les en-têtes libwebp que webp-ffi compile", () => {
     assert.ok(packages.includes(paquet), `${paquet} doit être installé`);
   }
   assert.ok(!packages.includes("libvips-dev"), "ceux de libvips ne le doivent pas");
+});
+
+test("extraPackages fournit le repli Node de sass-embedded sur i386", () => {
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "sass-embedded", systemLibs: ["nodejs"] }],
+  };
+
+  assert.deepEqual(extraPackages(manifest), ["libsqlite3-dev", "nodejs", "npm"]);
+  assert.deepEqual(buildOnlyPackages(manifest), ["npm"]);
+  assert.deepEqual(splitPackages(manifest, "3.3-r3").buildOnly, ["npm"]);
+});
+
+test("un paquet transitoire déclaré reste disponible à l'exécution", () => {
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "sass-embedded", systemLibs: ["nodejs"] }],
+    systemPackages: ["npm"],
+  };
+
+  assert.deepEqual(buildOnlyPackages(manifest), []);
 });
 
 test("extraPackages traduit libvips en paquets de RUNTIME, sans les en-têtes", () => {
@@ -912,6 +934,15 @@ test("TOUT étage qui compile des gems accepte EXTRA_PACKAGES, et on le lui pass
       `${chemin} doit transmettre EXTRA_PACKAGES`,
     );
   }
+
+  const decouple = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+  assert.match(decouple, /case "\$paquet" in nodejs\|npm\) continue/);
+  assert.match(decouple, /--build-arg "EXTRA_PACKAGES=\$ASSET_EXTRA_PACKAGES"/);
+  assert.match(decouple, /--build-arg "BUILD_ONLY_SYSTEM_PACKAGES=/);
+
+  const appDockerfile = readFileSync("tools/build-v86-image/base/app.Dockerfile", "utf8");
+  assert.match(appDockerfile, /ARG BUILD_ONLY_SYSTEM_PACKAGES=""/);
+  assert.match(appDockerfile, /apt-get purge -y --auto-remove -- \$\{BUILD_ONLY_SYSTEM_PACKAGES\}/);
 });
 
 test("une valeur non reconnue retombe sur le chargement du schéma", () => {

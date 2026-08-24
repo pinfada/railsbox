@@ -144,7 +144,7 @@ const PANEL = Object.freeze([
       npm: false,
       binaryGems: ["dartsass-rails"],
       scripts: [],
-      nativeGems: ["nokogiri", "sqlite3"],
+      nativeGems: ["nokogiri", "sass-embedded", "sqlite3"],
       services: { redis: false, sidekiq: false },
     },
   },

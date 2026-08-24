@@ -40,6 +40,11 @@ export const NATIVE_GEMS = Object.freeze({
   rmagick: Object.freeze(["libmagickwand"]),
   "ruby-filemagic": Object.freeze(["libmagic"]),
   "ruby-vips": Object.freeze(["libvips"]),
+  // sass-embedded ne publie plus de binaire x86-linux pour ses versions
+  // récentes. Sa gem générique installe alors l'implémentation JavaScript au
+  // build et l'exécute avec Node : npm et node sont donc une vraie dépendance
+  // du bundle i386, même quand les assets ont déjà été produits sur amd64.
+  "sass-embedded": Object.freeze(["nodejs"]),
   sassc: Object.freeze(["libsass"]),
   sqlite3: Object.freeze(["libsqlite3"]),
   vips: Object.freeze(["libvips"]),

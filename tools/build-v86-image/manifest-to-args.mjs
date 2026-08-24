@@ -30,6 +30,8 @@ import {
   buildActiveStorageInitializer,
 } from "./active-storage.mjs";
 import { buildForceSslInitializer } from "./force-ssl.mjs";
+import { buildPrecompiledAssetsInitializer } from "./precompiled-assets.mjs";
+import { buildRelativeRoutesInitializer } from "./relative-routes.mjs";
 import { formatReport, hasBlocking } from "../detect/report.mjs";
 import { requiredBaseRevision, unsupportedPackages } from "./split-config.mjs";
 
@@ -196,10 +198,22 @@ const SYSTEM_LIB_PACKAGES = Object.freeze({
   libwebp: Object.freeze(["libwebp-dev", "libjpeg62-turbo-dev", "libpng-dev", "libtiff-dev"]),
   libxml2: Object.freeze(["libxml2-dev"]),
   libxslt: Object.freeze(["libxslt1-dev"]),
+  // Repli officiel de sass-embedded sur les architectures sans binaire Dart
+  // Sass précompilé. npm installe l'hôte JavaScript pendant `bundle install` ;
+  // Node reste disponible si la gem est appelée à l'exécution.
+  nodejs: Object.freeze(["nodejs", "npm"]),
   // libsass : sassc compile sa copie embarquée, aucun paquet système utile.
   libsass: Object.freeze([]),
   // libmysqlclient : MySQL est bloqué en amont par la détection.
   libmysqlclient: Object.freeze([]),
+});
+
+/**
+ * Paquets requis pendant la compilation d'une gem, mais pas par son exécution.
+ * Ils sont installés avec la surcouche puis retirés avant sa relocalisation.
+ */
+const SYSTEM_LIB_BUILD_ONLY_PACKAGES = Object.freeze({
+  nodejs: Object.freeze(["npm"]),
 });
 
 /** Paquets Debian propres à chaque base de données supportée. */
@@ -357,6 +371,26 @@ export function extraPackages(manifest) {
 }
 
 /**
+ * Liste les paquets transitoires issus de la détection des gems natives.
+ * Une déclaration explicite dans railsbox.yml signifie que l'application les
+ * appelle elle-même à l'exécution : elle garde donc toujours la priorité.
+ * @param {Manifest} manifest manifeste fusionné
+ * @returns {string[]} noms de paquets, triés et sans doublon
+ */
+export function buildOnlyPackages(manifest) {
+  const declared = new Set(validateSystemPackages(manifest.systemPackages ?? []).packages);
+  const packages = new Set();
+  for (const gem of manifest.nativeGems ?? []) {
+    for (const lib of gem.systemLibs ?? []) {
+      for (const name of SYSTEM_LIB_BUILD_ONLY_PACKAGES[lib] ?? []) {
+        if (!declared.has(name)) packages.add(name);
+      }
+    }
+  }
+  return [...packages].sort();
+}
+
+/**
  * Répartit les paquets réclamés entre la base mutualisée et la surcouche
  * applicative (ADR 0006).
  *
@@ -365,18 +399,19 @@ export function extraPackages(manifest) {
  * de CETTE application. La base ne grossit que pour le dénominateur commun.
  * @param {Manifest} manifest manifeste fusionné
  * @param {string} [baseRevision] révision de base épinglée (défaut : la plus récente)
- * @returns {{all: string[], base: string[], overlay: string[], hint: string|null}} répartition et conseil d'épingle
+ * @returns {{all: string[], base: string[], overlay: string[], buildOnly: string[], hint: string|null}} répartition et conseil d'épingle
  */
 export function splitPackages(manifest, baseRevision) {
   const all = extraPackages(manifest);
   const overlay = unsupportedPackages(all, baseRevision);
   const base = all.filter((name) => !overlay.includes(name));
+  const buildOnly = buildOnlyPackages(manifest).filter((name) => overlay.includes(name));
   // Une surcouche coûte au disque applicatif de CETTE sandbox ; le même paquet
   // dans une base plus récente ne coûte que les morceaux réellement lus d'un
   // rootfs mutualisé. Quand les deux sont possibles, l'épingle est meilleure —
   // on le dit plutôt que de laisser le mainteneur payer sans le savoir.
   const hint = requiredBaseRevision(overlay);
-  return { all, base, overlay, hint };
+  return { all, base, overlay, buildOnly, hint };
 }
 
 /**
@@ -500,6 +535,10 @@ export function buildArgs({
     // amd64, et HOST_ASSETS sélectionne l'étage côté Dockerfile.
     ASSETS_STAGE: assets.stage,
     HOST_ASSETS: assets.stage === ASSET_STAGE.HOST ? "1" : "0",
+    PRECOMPILED_ASSETS_INITIALIZER: buildPrecompiledAssetsInitializer({
+      enabled: assets.stage === ASSET_STAGE.HOST,
+    }),
+    RELATIVE_ROUTES_INITIALIZER: buildRelativeRoutesInitializer(),
     NPM_INSTALL_COMMAND: assets.install,
     // Gestionnaire de paquets front, sous forme d'IDENTIFIANT SEUL. La version
     // déclarée par l'application n'entre jamais ici : elle
@@ -527,6 +566,9 @@ export function buildArgs({
     // activé dans le guest — la base mutualisée n'a pas à grossir pour une
     // application. Vide dans le cas courant, où la base suffit.
     SYSTEM_PACKAGES: paquets.overlay.join(" "),
+    // Outils nécessaires au seul bundle install. Ils sont purgés, avec leurs
+    // dépendances devenues orphelines, avant de relocaliser la surcouche.
+    BUILD_ONLY_SYSTEM_PACKAGES: paquets.buildOnly.join(" "),
     // Révision de base qui absorberait tout ou partie de la surcouche. Le
     // rootfs mutualisé est téléchargé par morceaux, à la demande ; la surcouche,
     // elle, occupe le disque applicatif de cette sandbox et le sien seulement.

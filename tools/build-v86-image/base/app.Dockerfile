@@ -138,6 +138,27 @@ COPY . .
 # sinon bundle exec refuse le bundle pourtant installé.
 RUN bundle lock --add-platform x86-linux ruby && bundle check
 
+# Certains replis de gems ont besoin d'un gestionnaire de paquets uniquement
+# pour leur installation. Le résultat utile vit ensuite dans vendor/bundle ;
+# conserver tout l'outil et ses dépendances étoufferait le disque applicatif.
+ARG BUILD_ONLY_SYSTEM_PACKAGES=""
+RUN <<'RIB_SYSTEME_BUILD_ONLY'
+set -eu
+if [ -z "${BUILD_ONLY_SYSTEM_PACKAGES}" ]; then exit 0; fi
+for nom in ${BUILD_ONLY_SYSTEM_PACKAGES}; do
+  case "$nom" in
+    [a-z0-9]*) ;;
+    *) echo "[build] nom de paquet transitoire refusé : ${nom}" >&2; exit 1 ;;
+  esac
+  case "$nom" in
+    *[!a-z0-9+.-]*) echo "[build] nom de paquet transitoire refusé : ${nom}" >&2; exit 1 ;;
+  esac
+done
+echo "[build] retrait des paquets de compilation : ${BUILD_ONLY_SYSTEM_PACKAGES}"
+# shellcheck disable=SC2086
+apt-get purge -y --auto-remove -- ${BUILD_ONLY_SYSTEM_PACKAGES}
+RIB_SYSTEME_BUILD_ONLY
+
 # Relocalisation de la surcouche (ADR 0006). Les paquets sont installés dans
 # /usr, qui vit sur le rootfs de base — disque séparé, immuable, mutualisé. On
 # recopie donc les fichiers des paquets NOUVELLEMENT installés sous
@@ -281,6 +302,18 @@ if [ -n "${ACTIVE_STORAGE_INITIALIZER}" ]; then
 fi
 RIB_ACTIVE_STORAGE
 
+# Les helpers Rails generent des URL prefixees par RAILS_RELATIVE_URL_ROOT,
+# tandis que RouteSet#recognize_path attend un chemin interne. Quelques
+# applications repassent directement une URL de helper a cette API. Le shim
+# reproduit alors le retrait de SCRIPT_NAME effectue par le serveur web.
+ARG RELATIVE_ROUTES_INITIALIZER=""
+RUN <<'RIB_RELATIVE_ROUTES'
+set -eu
+mkdir -p config/initializers
+printf '%s\n' "${RELATIVE_ROUTES_INITIALIZER}" > config/initializers/zzz_railsbox_relative_routes.rb
+ruby -c config/initializers/zzz_railsbox_relative_routes.rb
+RIB_RELATIVE_ROUTES
+
 # Assets précompilés sur l'étage amd64 (tailwindcss-ruby, dartsass-ruby et les
 # chaînes npm n'ont aucun binaire i386 — voir assets-amd64.Dockerfile). Le
 # contexte nommé « railsbox-assets » est TOUJOURS fourni par build-app-disk.sh :
@@ -300,6 +333,7 @@ COPY --from=railsbox-assets . ./
 # chargé — relancer ici échouerait précisément sur les binaires absents.
 ARG ASSET_PRECOMPILE=1
 ARG HOST_ASSETS=0
+ARG PRECOMPILED_ASSETS_INITIALIZER=""
 # Le bloc `env:` du railsbox.yml vaut aussi PENDANT la construction. Toute
 # étape qui DÉMARRE l'application — assets:precompile, la préparation de la base,
 # les seeds —
@@ -328,6 +362,9 @@ if [ "${HOST_ASSETS}" = 1 ]; then
     echo "[build] AUCUN asset reçu de l'étage amd64 — construction interrompue" >&2
     exit 1
   fi
+  mkdir -p config/initializers
+  printf '%s\n' "${PRECOMPILED_ASSETS_INITIALIZER}" > config/initializers/zzz_railsbox_precompiled_assets.rb
+  ruby -c config/initializers/zzz_railsbox_precompiled_assets.rb
   echo "[build] ${fichiers} assets précompilés reçus de l'étage amd64"
 elif [ "${ASSET_PRECOMPILE}" = 1 ]; then
   bundle exec rails assets:precompile

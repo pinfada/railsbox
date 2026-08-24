@@ -547,7 +547,9 @@ test("parseLockSpecs ne retient que les gems résolues, pas leurs dépendances",
 });
 
 test("les gems natives connues portent leurs bibliothèques système", () => {
-  const specs = parseLockSpecs(lockWith(["nokogiri", "pg", "ruby-vips", "sassc", "bcrypt"]));
+  const specs = parseLockSpecs(
+    lockWith(["nokogiri", "pg", "ruby-vips", "sass-embedded", "sassc", "bcrypt"]),
+  );
 
   const { nativeGems } = collectNativeGems(specs);
   const byName = new Map(nativeGems.map((gem) => [gem.name, gem.systemLibs]));
@@ -555,6 +557,7 @@ test("les gems natives connues portent leurs bibliothèques système", () => {
   assert.deepEqual([...byName.get("nokogiri")], ["libxml2", "libxslt"]);
   assert.deepEqual([...byName.get("pg")], ["libpq"]);
   assert.deepEqual([...byName.get("ruby-vips")], ["libvips"]);
+  assert.deepEqual([...byName.get("sass-embedded")], ["nodejs"]);
   assert.deepEqual([...byName.get("sassc")], ["libsass"]);
   assert.deepEqual([...byName.get("bcrypt")], []);
 });

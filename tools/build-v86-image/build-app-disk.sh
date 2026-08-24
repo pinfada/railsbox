@@ -272,7 +272,17 @@ echo "  Environnement applicatif : $ENV_COUNT variable(s)"
 echo "  Montée sous : ${MOUNT_PREFIX}/app"
 echo "  Assets : précompilation « ${ASSETS_STAGE:-aucun} »${BINARY_ASSET_GEMS:+ (${BINARY_ASSET_GEMS})}"
 if [ -n "${SYSTEM_PACKAGES:-}" ]; then
-  echo "  Surcouche système : ${SYSTEM_PACKAGES} (installée sur le disque applicatif)"
+  RUNTIME_SYSTEM_PACKAGES=""
+  for paquet in ${SYSTEM_PACKAGES}; do
+    case " ${BUILD_ONLY_SYSTEM_PACKAGES:-} " in *" $paquet "*) continue ;; esac
+    RUNTIME_SYSTEM_PACKAGES="${RUNTIME_SYSTEM_PACKAGES:+$RUNTIME_SYSTEM_PACKAGES }$paquet"
+  done
+  if [ -n "$RUNTIME_SYSTEM_PACKAGES" ]; then
+    echo "  Surcouche système : ${RUNTIME_SYSTEM_PACKAGES} (installée sur le disque applicatif)"
+  fi
+  if [ -n "${BUILD_ONLY_SYSTEM_PACKAGES:-}" ]; then
+    echo "  Outils de compilation transitoires : ${BUILD_ONLY_SYSTEM_PACKAGES} (retirés avant l'export)"
+  fi
   if [ -n "${SYSTEM_PACKAGES_HINT:-}" ]; then
     echo "    ↪ la base ${SYSTEM_PACKAGES_HINT} en fournit tout ou partie : l'épingler coûterait"
     echo "      moins cher (rootfs mutualisé, lu par morceaux) que la surcouche, qui pèse"
@@ -379,11 +389,21 @@ if [ "${ASSETS_STAGE:-aucun}" = "amd64" ]; then
   # l'ARG côté Dockerfile et l'étage n'exporterait plus rien.
   ASSET_OUTPUT_DIRS="${ASSET_OUTPUT_DIRS:-public/assets app/assets/builds}"
   echo "  Répertoires exportés : $ASSET_OUTPUT_DIRS"
+  # L'étage copie déjà Node 22 et npm depuis l'image officielle. Les réinstaller
+  # avec les paquets Debian (Node 18 + tout l'écosystème npm empaqueté) ne sert
+  # ni la compilation des gems ni celle du front et invalide inutilement son
+  # cache. Ils restent bien dans SYSTEM_PACKAGES pour le guest i386 quand une
+  # gem, telle sass-embedded, en a besoin à l'exécution.
+  ASSET_EXTRA_PACKAGES=""
+  for paquet in ${EXTRA_PACKAGES:-}; do
+    case "$paquet" in nodejs|npm) continue ;; esac
+    ASSET_EXTRA_PACKAGES="${ASSET_EXTRA_PACKAGES:+$ASSET_EXTRA_PACKAGES }$paquet"
+  done
   docker build --platform linux/amd64 $NO_CACHE -f "$SCRIPT_DIR/assets-amd64.Dockerfile" \
     --build-arg "RUBY_VERSION=$RUBY_VERSION" \
     --build-arg "NPM_ASSETS=${NPM_ASSETS:-0}" \
     --build-arg "BUN_ASSETS=${BUN_ASSETS:-0}" \
-    --build-arg "EXTRA_PACKAGES=${EXTRA_PACKAGES:-}" \
+    --build-arg "EXTRA_PACKAGES=$ASSET_EXTRA_PACKAGES" \
     --build-arg "NPM_INSTALL_COMMAND=${NPM_INSTALL_COMMAND:-}" \
     --build-arg "PACKAGE_MANAGER=${PACKAGE_MANAGER:-npm}" \
     --build-arg "ASSET_PREPARE_COMMAND=${ASSET_PREPARE_COMMAND:-}" \
@@ -433,6 +453,8 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "BASE_IMAGE=$BASE_IMAGE" \
   --build-arg "ASSET_PRECOMPILE=${ASSET_PRECOMPILE:-0}" \
   --build-arg "HOST_ASSETS=${HOST_ASSETS:-0}" \
+  --build-arg "PRECOMPILED_ASSETS_INITIALIZER=${PRECOMPILED_ASSETS_INITIALIZER:-}" \
+  --build-arg "RELATIVE_ROUTES_INITIALIZER=${RELATIVE_ROUTES_INITIALIZER:-}" \
   --build-arg "WITH_REDIS=${WITH_REDIS:-0}" \
   --build-arg "DATABASE=$DATABASE" \
   --build-arg "WITH_POSTGRES=${WITH_POSTGRES:-0}" \
@@ -448,6 +470,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "FORCE_SSL_INITIALIZER=$FORCE_SSL_INITIALIZER" \
   --build-arg "ACTIVE_STORAGE_INITIALIZER=${ACTIVE_STORAGE_INITIALIZER:-}" \
   --build-arg "SYSTEM_PACKAGES=${SYSTEM_PACKAGES:-}" \
+  --build-arg "BUILD_ONLY_SYSTEM_PACKAGES=${BUILD_ONLY_SYSTEM_PACKAGES:-}" \
   --build-arg "APP_DISK_MB=$APP_DISK_MB" \
   --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \
   "$BUILD_CONTEXT"
