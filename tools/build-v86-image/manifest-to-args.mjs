@@ -323,6 +323,45 @@ export function dbPrepareCommand(input = {}) {
 /** Commande de seed par défaut, utilisée quand `db/seeds.rb` existe. */
 const DEFAULT_SEED = "bundle exec rails db:seed";
 
+// Certaines applications livrent un vrai jeu de démonstration, mais le
+// protègent explicitement contre une exécution en production. RailsBox construit
+// pourtant toujours la base avec la configuration de production : c'est celle
+// que le guest utilisera. Dans ce cas précis, on conserve donc l'application et
+// sa connexion en production, et on ne change que la valeur observée par
+// `Rails.env` pendant le chargement du fichier de seeds.
+function nonProductionSeedCommand(gemfileSource) {
+  // `staging` est le meilleur environnement de seed quand l'application le
+  // déclare : contrairement à development/test, ses gems restent installées
+  // dans l'image. Rails ne les charge toutefois pas lors d'un boot production,
+  // d'où le Bundler.require explicite et limité à ce groupe.
+  const staging =
+    typeof gemfileSource === "string" &&
+    /\bgroup\s*(?:\([^)]*\bstaging\b[^)]*\)|[^\n]*\bstaging\b[^\n]*\bdo\b)/.test(gemfileSource);
+  const environment = staging ? "staging" : "development";
+  const requireGroup = staging ? "Bundler.require(:staging); " : "";
+  return (
+    `bundle exec rails runner '${requireGroup}Rails.application.load_tasks; ` +
+    `Rails.instance_variable_set(:@_env, ` +
+    `ActiveSupport::EnvironmentInquirer.new("${environment}")); Rails.application.load_seed'`
+  );
+}
+
+/**
+ * Détecte un db/seeds.rb qui quitte explicitement en production.
+ *
+ * La règle reste volontairement étroite : elle couvre les deux idiomes Ruby
+ * usuels (`return if ...` et bloc `if ... return end`) sans réinterpréter une
+ * condition applicative plus complexe.
+ * @param {string|null|undefined} source contenu de db/seeds.rb
+ * @returns {boolean}
+ */
+export function seedsRefuseProduction(source) {
+  if (typeof source !== "string" || source.trim() === "") return false;
+  const direct = /\breturn\b[^\n;]*\bif\s+Rails\.env\.production\?/;
+  const block = /\bif\s+Rails\.env\.production\?[\s\S]{0,1000}?\breturn\b[\s\S]{0,300}?\bend\b/;
+  return direct.test(source) || block.test(source);
+}
+
 /**
  * Résout une version de Ruby en version complète téléchargeable.
  * @param {string|null|undefined} version version détectée (`3.3.12`, `3.2`, ...)
@@ -461,7 +500,7 @@ export function formatEnvFragment(env) {
 
 /**
  * Construit la table des arguments de construction Docker.
- * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, appName: string, baseRevision?: string, mountPrefix?: string, buildIdentity?: string}} input contexte d'analyse
+ * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, seedsSource?: string|null, gemfileSource?: string|null, appName: string, baseRevision?: string, mountPrefix?: string, buildIdentity?: string}} input contexte d'analyse
  * @returns {Record<string, string>} arguments prêts à passer en `--build-arg`
  * @throws {Error} si la version de Ruby ne peut pas être résolue
  */
@@ -469,6 +508,8 @@ export function buildArgs({
   manifest,
   specs,
   hasSeeds,
+  seedsSource,
+  gemfileSource,
   appName,
   baseRevision,
   mountPrefix = "",
@@ -476,7 +517,13 @@ export function buildArgs({
 }) {
   const ruby = resolveRubyVersion(manifest.ruby);
   const assets = assetsPlan(manifest, specs);
-  const seedCommand = manifest.seed?.command ?? (hasSeeds ? DEFAULT_SEED : "");
+  const seedCommand =
+    manifest.seed?.command ??
+    (hasSeeds
+      ? seedsRefuseProduction(seedsSource)
+        ? nonProductionSeedCommand(gemfileSource)
+        : DEFAULT_SEED
+      : "");
   const withPostgres = manifest.database === "postgresql";
   const postgres = postgresSettings(appName);
   const generatedDatabaseEnv = withPostgres
@@ -652,7 +699,8 @@ export async function analyzeApp(appDir, appName, options = {}) {
     findings.push(...merged.findings);
   }
 
-  const [lock, seeds] = await Promise.all([
+  const [gemfile, lock, seeds] = await Promise.all([
+    readOptionalFile(join(appDir, "Gemfile")),
     readOptionalFile(join(appDir, "Gemfile.lock")),
     readOptionalFile(join(appDir, "db", "seeds.rb")),
   ]);
@@ -725,6 +773,8 @@ export async function analyzeApp(appDir, appName, options = {}) {
     manifest,
     specs,
     hasSeeds: seeds !== null && seeds.trim() !== "",
+    seedsSource: seeds,
+    gemfileSource: gemfile,
     appName: appName ?? defaultAppName(appDir),
     // La base épinglée décide de la frontière base / surcouche (ADR 0006) ;
     // c'est la même valeur qui fixe le Ruby du guest, d'où une seule option.

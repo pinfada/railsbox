@@ -79,6 +79,16 @@ test("dartsass-rails bascule lui aussi sur l'étage amd64", () => {
   assert.equal(plan.stage, ASSET_STAGE.HOST);
 });
 
+test("terser bascule sur l'étage amd64 pour disposer d'un moteur ExecJS", () => {
+  const plan = planAssets({
+    assets: { npm: false, scripts: [] },
+    specs: specs(["sprockets-rails", "terser"]),
+  }).plan;
+
+  assert.equal(plan.stage, ASSET_STAGE.HOST);
+  assert.deepEqual([...plan.binaryGems], ["terser"]);
+});
+
 test("une chaîne npm impose l'étage amd64, même sans gem à binaire", () => {
   // Arrange / Act
   const { plan } = planAssets({

@@ -101,7 +101,8 @@ RUN set -eu; \
 # version exacte demandée. C'est aussi ce shim que `jsbundling-rails`
 # retrouvera pour son `javascript:install`.
 ARG PACKAGE_MANAGER="npm"
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    EXECJS_RUNTIME=Node
 RUN set -eu; \
     case "$PACKAGE_MANAGER" in \
       npm) : ;; \
@@ -173,7 +174,7 @@ touch /tmp/rib-repere
 # vient d'une table fermée de la détection, pas d'une valeur du dépôt.
 if [ -n "${ASSET_PREPARE_COMMAND}" ]; then sh -c "${ASSET_PREPARE_COMMAND}"; fi
 for script in ${ASSET_SCRIPTS}; do "${PACKAGE_MANAGER}" run "$script"; done
-bundle exec rails assets:precompile
+bundle exec rails assets:precompile --trace
 RIB_ASSETS
 
 # Récolte : ce qui redescend dans le disque i386, et ce qui va être perdu.

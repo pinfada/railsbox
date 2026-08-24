@@ -564,6 +564,60 @@ test("buildArgs préfère la commande de seed déclarée dans railsbox.yml", () 
   assert.equal(args.SEED_COMMAND, "bin/rails demo:seed");
 });
 
+test("buildArgs charge en environnement non-production des seeds qui refusent production", () => {
+  const manifest = { ruby: "3.3.12", database: "sqlite3", services: {} };
+  const args = buildArgs({
+    manifest,
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: [
+      "if Rails.env.production?",
+      '  Rails.logger.info "Seeds disabled in production"',
+      "  return",
+      "end",
+      "Post.create!(title: 'Démo')",
+    ].join("\n"),
+    appName: "demo",
+  });
+
+  assert.match(args.SEED_COMMAND, /rails runner/);
+  assert.match(args.SEED_COMMAND, /EnvironmentInquirer\.new\("development"\)/);
+  assert.match(args.SEED_COMMAND, /Rails\.application\.load_tasks/);
+  assert.match(args.SEED_COMMAND, /Rails\.application\.load_seed/);
+});
+
+test("une commande de seed explicite reste prioritaire sur le garde production", () => {
+  const manifest = {
+    ruby: "3.3.12",
+    database: "sqlite3",
+    services: {},
+    seed: { command: "bin/rails demo:seed" },
+  };
+  const args = buildArgs({
+    manifest,
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: "return if Rails.env.production?\nPost.create!\n",
+    appName: "demo",
+  });
+
+  assert.equal(args.SEED_COMMAND, "bin/rails demo:seed");
+});
+
+test("les seeds protégés chargent le groupe staging quand le Gemfile le prévoit", () => {
+  const args = buildArgs({
+    manifest: { ruby: "3.3.12", database: "sqlite3", services: {} },
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: "return if Rails.env.production?\n",
+    gemfileSource: "group :development, :test, :staging do\n  gem 'faker'\nend\n",
+    appName: "demo",
+  });
+
+  assert.match(args.SEED_COMMAND, /Bundler\.require\(:staging\)/);
+  assert.match(args.SEED_COMMAND, /EnvironmentInquirer\.new\("staging"\)/);
+});
+
 // --- Analyse complète d'une application --------------------------------------
 
 test("analyzeApp produit des arguments exploitables pour une application importmap", async () => {
@@ -943,6 +997,21 @@ test("TOUT étage qui compile des gems accepte EXTRA_PACKAGES, et on le lui pass
   const appDockerfile = readFileSync("tools/build-v86-image/base/app.Dockerfile", "utf8");
   assert.match(appDockerfile, /ARG BUILD_ONLY_SYSTEM_PACKAGES=""/);
   assert.match(appDockerfile, /apt-get purge -y --auto-remove -- \$\{BUILD_ONLY_SYSTEM_PACKAGES\}/);
+});
+
+test("les deux étages d'assets conservent la trace complète des erreurs", () => {
+  for (const chemin of [
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ]) {
+    assert.match(readFileSync(chemin, "utf8"), /rails assets:precompile --trace/);
+  }
+});
+
+test("l'étage amd64 impose Node à ExecJS malgré le substitut Bun", () => {
+  const dockerfile = readFileSync("tools/build-v86-image/assets-amd64.Dockerfile", "utf8");
+
+  assert.match(dockerfile, /EXECJS_RUNTIME=Node/);
 });
 
 test("une valeur non reconnue retombe sur le chargement du schéma", () => {

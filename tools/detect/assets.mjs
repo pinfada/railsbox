@@ -48,16 +48,17 @@ export const ASSET_PIPELINE_GEMS = Object.freeze([
 ]);
 
 /**
- * Gems dont la précompilation passe par un EXÉCUTABLE publié par plateforme,
- * et jamais pour i386. Les enveloppes Rails et les gems de binaire sont toutes
- * deux listées : le Gemfile.lock résout les deux, et nommer précisément ce qui
- * a déclenché l'étage amd64 vaut mieux qu'un raccourci.
+ * Gems dont la précompilation exige un OUTIL absent du guest i386. Cela couvre
+ * les exécutables sans variante i386 et les enveloppes ExecJS, comme terser,
+ * qui ont besoin d'un moteur JavaScript. Les nommer précisément dans le plan
+ * vaut mieux qu'un échec tardif pendant assets:precompile.
  */
 export const BINARY_ASSET_GEMS = Object.freeze([
   "dartsass-rails",
   "dartsass-ruby",
   "tailwindcss-rails",
   "tailwindcss-ruby",
+  "terser",
 ]);
 
 /**

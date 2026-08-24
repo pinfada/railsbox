@@ -367,7 +367,7 @@ if [ "${HOST_ASSETS}" = 1 ]; then
   ruby -c config/initializers/zzz_railsbox_precompiled_assets.rb
   echo "[build] ${fichiers} assets précompilés reçus de l'étage amd64"
 elif [ "${ASSET_PRECOMPILE}" = 1 ]; then
-  bundle exec rails assets:precompile
+  bundle exec rails assets:precompile --trace
 else
   echo "[build] aucun pipeline d'assets détecté"
 fi
