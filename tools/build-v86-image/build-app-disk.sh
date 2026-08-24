@@ -163,14 +163,23 @@ APP_DIR="$(cd "$APP_DIR" && pwd)"
 # Dockerfile n'existent pas sans lui.
 export DOCKER_BUILDKIT=1
 
-# Révision de base épinglée, tirée du tag de --base. Elle décide de la frontière
+# Révision de base épinglée, tirée du tag ou du nom local de --base. Elle décide de la frontière
 # entre ce que la base mutualisée fournit déjà et ce que la surcouche doit
 # installer sur le disque applicatif (ADR 0006). Un tag hors convention (image
-# locale sans tag, empreinte sha256) laisse la répartition se faire sur la base
+# empreinte sha256) laisse la répartition se faire sur la base
 # la plus récente que connaît le dépôt — les sondes Docker plus bas rattrapent
 # alors le cas.
 BASE_REVISION=""
-case "$BASE_IMAGE" in *:*) BASE_REVISION="${BASE_IMAGE##*:}" ;; esac
+case "$BASE_IMAGE" in
+  *:*)
+    base_suffix="${BASE_IMAGE##*:}"
+    case "$base_suffix" in */*) ;; *) BASE_REVISION="$base_suffix" ;; esac
+    ;;
+esac
+if [ -z "$BASE_REVISION" ]; then
+  base_name="${BASE_IMAGE##*/}"
+  case "$base_name" in railsbox-base-*) BASE_REVISION="${base_name#railsbox-base-}" ;; esac
+fi
 
 echo "→ Analyse de l'application ($APP_DIR)…"
 ARGS_FILE="$(mktemp)"
@@ -190,7 +199,7 @@ trap 'rm -rf "$WORK_DIR" "$ARGS_FILE"' EXIT
 # --mount-prefix : le chemin PUBLIC de la sandbox entre dans le nom du marqueur
 # d'auto-connexion, qui doit être propre à cette sandbox (voir auto-login.mjs).
 if ! node "$SCRIPT_DIR/manifest-to-args.mjs" "$APP_DIR" "$NAME" \
-     ${BASE_REVISION:+--base "$BASE_REVISION"} \
+     ${BASE_IMAGE:+--base "$BASE_IMAGE"} \
      --mount-prefix "$MOUNT_PREFIX" > "$ARGS_FILE"; then
   echo "✗ Construction refusée : voir le rapport ci-dessus." >&2
   exit 1
