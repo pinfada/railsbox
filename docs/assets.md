@@ -8,20 +8,26 @@ Pourquoi certaines chaînes de construction passent par un étage amd64, et ce q
 
 ## Où sont précompilés les assets
 
-Le guest est un **i386**, et deux familles d'outils d'assets ne publient aucun
-binaire pour cette architecture : les gems à exécutable précompilé
-(`tailwindcss-ruby` dont dépend tailwindcss-rails, `dartsass-ruby`) et les
-chaînes npm (esbuild, sass). Elles produisent pourtant du CSS et du JS
+Le guest est un **i386**, et plusieurs familles d'outils d'assets n'y disposent
+pas d'un binaire ou d'un moteur utilisable : les gems à exécutable précompilé
+(`tailwindcss-ruby` dont dépend tailwindcss-rails, `dartsass-ruby`), les
+enveloppes ExecJS comme `terser`, et les chaînes npm (esbuild, sass). Elles
+produisent pourtant du CSS et du JS
 **ordinaires**, indépendants de l'architecture — on les exécute donc sur un
 **étage amd64**, et le disque i386 ne reçoit que `public/assets`. Le guest
 n'exécute jamais ces binaires.
+
+L'étage amd64 impose explicitement Node à ExecJS. Il embarque aussi un
+substitut `bun` inerte pour garder une structure Docker stable quand Bun n'est
+pas utilisé ; sans ce choix explicite, ExecJS pouvait prendre ce substitut pour
+un runtime valide et échouer sans message utile pendant la minification.
 
 L'auto-détection classe seule chaque application :
 
 | Ce qu'elle trouve | Étage retenu | Ce qui tourne |
 | --- | --- | --- |
 | propshaft/sprockets + importmap | `i386` | `assets:precompile` dans le disque applicatif |
-| tailwindcss-rails, dartsass-rails | `amd64` | `assets:precompile` sur l'hôte, copie de `public/assets` |
+| tailwindcss-rails, dartsass-rails, terser | `amd64` | `assets:precompile` sur l'hôte avec Node, copie de `public/assets` |
 | `package.json` (jsbundling/cssbundling) | `amd64` | installation verrouillée npm, pnpm, yarn ou Bun + scripts de build, puis `assets:precompile` |
 | aucun pipeline | `aucun` | rien |
 

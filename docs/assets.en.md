@@ -8,10 +8,11 @@ Why some build chains go through an amd64 stage, and what that means for your ap
 
 ## Where assets are precompiled
 
-The guest is **i386**, and two families of asset tools publish no binary for that
-architecture: gems with a precompiled executable (`tailwindcss-ruby`, which
-tailwindcss-rails depends on, and `dartsass-ruby`) and npm toolchains (esbuild,
-sass). Yet they produce **ordinary** CSS and JS, independent of the architecture
+The guest is **i386**, and several families of asset tools have no usable binary
+or runtime there: gems with a precompiled executable (`tailwindcss-ruby`, which
+tailwindcss-rails depends on, and `dartsass-ruby`), ExecJS wrappers such as
+`terser`, and npm toolchains (esbuild, sass). Yet they produce **ordinary** CSS
+and JS, independent of the architecture
 — so they run on an **amd64 stage**, and the i386 disk receives only
 `public/assets`. The guest never executes those binaries.
 
@@ -20,7 +21,7 @@ Auto-detection classifies each application on its own:
 | What it finds | Stage picked | What runs |
 | --- | --- | --- |
 | propshaft/sprockets + importmap | `i386` | `assets:precompile` inside the application disk |
-| tailwindcss-rails, dartsass-rails | `amd64` | `assets:precompile` on the host, then `public/assets` is copied |
+| tailwindcss-rails, dartsass-rails, terser | `amd64` | `assets:precompile` on the host with Node, then `public/assets` is copied |
 | `package.json` (jsbundling/cssbundling) | `amd64` | locked npm, pnpm, Yarn or Bun install + build scripts, then `assets:precompile` |
 | no pipeline | `aucun` (none) | nothing |
 
@@ -28,6 +29,11 @@ The amd64 stage sets exactly the same `RAILS_RELATIVE_URL_ROOT` as the
 application disk, so URLs baked into CSS carry the **full public prefix**
 (`/repo/app/assets/…`), under the site and not at the domain root — otherwise the
 Service Worker could not even catch them.
+
+The amd64 stage explicitly selects Node for ExecJS. It also carries an inert
+`bun` placeholder so the Docker stage keeps a stable shape when Bun is unused;
+without the explicit runtime, ExecJS could mistake that placeholder for a valid
+engine and fail during minification without a useful message.
 
 A Tailwind variant of the demo application serves as the test bench — a
 seven-file overlay on `demo/`, like `demo-pg`:

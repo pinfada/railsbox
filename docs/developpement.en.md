@@ -41,6 +41,38 @@ statically instead of crossing the serial bridge (performance lever number one):
 wsl -e sh tools/extract-assets.sh   # → public/disks/assets/ + appstatic/
 ```
 
+### Qualifying a third-party Rails application
+
+The procedure below prevents “Puma started” from being mistaken for “the demo
+works”. Keep the candidate repository clean: every reusable fix belongs in
+RailsBox; an actual application-specific requirement belongs in the maintainer's
+`railsbox.yml`, never in a hidden local patch.
+
+1. Clone the candidate outside RailsBox and record its exact commit.
+2. Read the auto-detection report: Ruby from both the repository and the base,
+   database, secondary schemas, assets, services, seeds and authentication.
+3. Fix a gap through a general rule with a regression test; never encode the
+   candidate's name in the engine.
+4. Build the application disk under its real public prefix, then check the row
+   count after seeds, the size breakdown and at least 64 MB of free margin.
+5. Capture the delta and validate it in a real VM under the same prefix.
+6. Open the sandbox and check the public page, assets, a demo sign-in and at
+   least one domain read and write.
+7. Run `npm run check`, confirm the candidate repository is still clean, and
+   only then commit RailsBox.
+
+```bash
+wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP" \
+  --name "$NAME" --base "$BASE" --mount-prefix "/$NAME"
+node tools/build-v86-image/make-delta-snapshot.mjs \
+  --name "$NAME" --base "$BASE_ARTIFACTS" --mount-path "/$NAME/app"
+node tools/build-v86-image/validate-split.mjs \
+  "$NAME-split-config.json" --path "/$NAME/app/"
+```
+
+HTTP 200 is necessary, not sufficient. Qualification is complete only when demo
+data exists and the visitor's intended journey actually works.
+
 ### Three offline test levels, all required before a commit
 
 | Command | Scope | Dependencies |

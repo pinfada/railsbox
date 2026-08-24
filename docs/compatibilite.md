@@ -10,10 +10,11 @@ Ce que railsbox prend en charge, ce qu'il refuse explicitement, et les limites q
 
 | | État |
 | --- | --- |
+| **Ruby** | base publique `3.3-r2` : Ruby 3.3.12. Ruby 3.4.3 est qualifié localement sur une base complète, mais ne devient utilisable par le workflow public qu'après publication et référencement de cette base. |
 | **SQLite** | validé de bout en bout : `rails new` + Propshaft + importmap, publié et bootant en ligne |
 | **PostgreSQL** | pris en charge sur la voie découplée, à partir de la base `3.3-r2` (la valeur par défaut du workflow) |
 | **MySQL / MariaDB** | non supporté : la construction s'arrête avec un rapport explicite |
-| **importmap, Propshaft, Sprockets** | précompilés dans le disque i386 |
+| **importmap, Propshaft, Sprockets** | précompilés dans le disque i386, ou sur l'étage amd64 quand Terser/ExecJS exige un moteur JavaScript |
 | **Tailwind, dart-sass** | précompilés sur un étage amd64, copiés dans le disque i386 |
 | **Chaînes npm** (esbuild, cssbundling, jsbundling) | même étage amd64 : installation puis vos scripts de build |
 | **pnpm** | pris en charge via Corepack, à condition que `package.json` déclare `packageManager` — c'est Corepack qui en lit la version, railsbox n'en extrait qu'un identifiant validé |
@@ -34,3 +35,25 @@ Ce que railsbox prend en charge, ce qu'il refuse explicitement, et les limites q
 | **Réseau sortant** | inexistant. C'est aussi une propriété du modèle de démonstration — voir [`SECURITY.md`](../SECURITY.md). |
 | **Débit du pont** | tuyau étroit et partagé, suffisant pour du Turbo/HTML. Les assets précompilés ne l'empruntent pas : extraits de l'image, ils sont servis statiquement par le Service Worker. |
 | **Persistance** | aucune, par conception. Chaque visiteur écrit dans sa copie, qui disparaît avec l'onglet. |
+
+## Ce que la campagne d'applications réelles a validé
+
+RailsBox ne considère pas un simple boot comme une preuve suffisante. RailSmart,
+Ember Vault, Hackatime, if-me et Human Essentials ont servi de candidats de
+qualification sans modification de leur dépôt. Ensemble, ils ont exercé Rails
+8, Warden/Devise, SQLite et PostgreSQL multi-base, Sprockets/importmap,
+Active Storage, Terser/ExecJS, les routes sous préfixe et des jeux de seeds
+volumineux.
+
+Le cas le plus lourd à ce jour, Human Essentials, a produit 167 assets et
+16 017 enregistrements sur deux bases PostgreSQL. Son disque applicatif occupe
+306 Mo sur 512 Mo, avec 199 Mo réellement libres. Le premier boot v86 a pris
+266 s ; la restauration du delta validé a répondu en 22 s avec un HTTP 200 sous
+le préfixe public réel.
+
+Cette campagne prouve une compatibilité large avec les monolithes Rails
+conventionnels ; elle ne prouve pas statistiquement « toutes » ou « la plupart »
+des applications Rails. Restent hors de l'enveloppe garantie : MySQL/MariaDB,
+WebSockets, réseau sortant indispensable, SPA figée sur `/`, version Ruby sans
+base publiée et application qui ne tient pas sur le disque avec sa marge
+d'exécution.

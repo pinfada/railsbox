@@ -374,6 +374,19 @@ les coûts mesurés et ce qui reste refusé sont dans
 `seed.command` tourne **à la construction**, avant la capture de l'instantané :
 le visiteur trouve donc la base déjà peuplée, sans attendre.
 
+Quand la commande n'est pas déclarée et que `db/seeds.rb` quitte explicitement
+en production (`return if Rails.env.production?`, ou le bloc `if` équivalent),
+RailsBox conserve le boot, la configuration et les connexions en production,
+mais charge ce fichier avec un `Rails.env` non-production. Si le Gemfile déclare
+un groupe `staging`, il est préféré et chargé explicitement — ce qui rend
+disponibles les dépendances de démonstration comme Faker ou FactoryBot. La
+détection reste volontairement étroite et une `seed.command` déclarée garde
+toujours la priorité.
+
+Après les seeds, RailsBox compte réellement les lignes des tables métier. Une
+commande verte qui n'a rien inséré produit donc un avertissement de base vide au
+lieu d'une sandbox silencieusement inutilisable.
+
 `seed.auto_login` accepte un identifiant — une **adresse e-mail** ou un **id
 numérique**, cherché dans le modèle **`User`**, résolu strictement et sans
 repli silencieux — ou `true` pour le premier utilisateur (`User.first`). Si

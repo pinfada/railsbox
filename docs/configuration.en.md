@@ -319,6 +319,18 @@ build time to those who need it.
 `seed.command` runs **at build time**, before the snapshot is captured, so the
 visitor finds the database already populated with no wait.
 
+When no command is declared and `db/seeds.rb` explicitly exits in production
+(`return if Rails.env.production?`, or the equivalent `if` block), RailsBox
+keeps the boot, configuration and database connections in production but loads
+that file with a non-production `Rails.env`. If the Gemfile declares a
+`staging` group, it is preferred and explicitly loaded, making demo dependencies
+such as Faker or FactoryBot available. Detection is deliberately narrow, and an
+explicit `seed.command` always keeps priority.
+
+After seeding, RailsBox counts actual rows in application tables. A successful
+command that inserted nothing therefore raises an empty-database warning rather
+than silently shipping an unusable sandbox.
+
 `seed.auto_login` accepts an identifier — an **email address** or a **numeric
 id**, looked up on the **`User`** model, resolved strictly with no silent
 fallback — or `true` for the first user (`User.first`). If your user model is

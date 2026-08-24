@@ -10,10 +10,11 @@ What railsbox supports, what it refuses explicitly, and the limits that follow f
 
 | | Status |
 | --- | --- |
+| **Ruby** | public base `3.3-r2`: Ruby 3.3.12. Ruby 3.4.3 is qualified locally on a complete base, but becomes usable by the public workflow only after that base is published and registered. |
 | **SQLite** | validated end to end: `rails new` + Propshaft + importmap, published and booting online |
 | **PostgreSQL** | supported on the split base/app path, from base `3.3-r2` onward (the workflow default) |
 | **MySQL / MariaDB** | not supported: the build stops with an explicit report |
-| **importmap, Propshaft, Sprockets** | precompiled inside the i386 disk |
+| **importmap, Propshaft, Sprockets** | precompiled inside the i386 disk, or on the amd64 stage when Terser/ExecJS needs a JavaScript runtime |
 | **Tailwind, dart-sass** | precompiled on an amd64 stage, copied into the i386 disk |
 | **npm toolchains** (esbuild, cssbundling, jsbundling) | same amd64 stage: install, then your build scripts |
 | **pnpm** | supported through Corepack, provided `package.json` declares `packageManager` — Corepack reads the version itself; railsbox only extracts a validated identifier |
@@ -33,3 +34,23 @@ What railsbox supports, what it refuses explicitly, and the limits that follow f
 | **Outbound networking** | nonexistent. That is also a property of the demo model — see [`SECURITY.md`](../SECURITY.md). |
 | **Bridge throughput** | a narrow, shared pipe; fine for Turbo/HTML. Precompiled assets do not use it: extracted from the image, they are served statically by the Service Worker. |
 | **Persistence** | none, by design. Every visitor writes to their own copy, which disappears with the tab. |
+
+## What the real-application qualification campaign proved
+
+RailsBox does not treat a successful boot as sufficient evidence. RailSmart,
+Ember Vault, Hackatime, if-me and Human Essentials were used as qualification
+candidates without modifying their repositories. Together they exercised Rails
+8, Warden/Devise, SQLite and multi-database PostgreSQL, Sprockets/importmap,
+Active Storage, Terser/ExecJS, prefixed routes and large seed datasets.
+
+The largest case so far, Human Essentials, produced 167 assets and 16,017
+records across two PostgreSQL databases. Its application disk uses 306 MB out
+of 512 MB, leaving 199 MB of actual free space. The first v86 boot took 266 s;
+restoring the validated delta returned HTTP 200 under the real public prefix in
+22 s.
+
+This campaign demonstrates broad compatibility with conventional Rails
+monoliths; it is not statistical proof of “all” or “most” Rails applications.
+The guaranteed envelope still excludes MySQL/MariaDB, WebSockets, mandatory
+outbound networking, SPAs pinned to `/`, Ruby versions without a published base,
+and applications that cannot fit on the disk with the runtime safety margin.

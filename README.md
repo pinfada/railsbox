@@ -112,7 +112,7 @@ dépôt selon votre application. Le détail est dans
 
 |                          |                                                                                                     |
 | ------------------------ | ----------------------------------------------------------------------------------------------------- |
-| **Ruby**                 | 3.3.12 (fourni par la base `3.3-r2`, non modifiable)                                                   |
+| **Ruby**                 | 3.3.12 publié (`3.3-r2`) ; 3.4.3 qualifié localement, en attente d'une base publique                  |
 | **Bases de données**     | SQLite et PostgreSQL ; MySQL/MariaDB refusé avec un rapport explicite                                  |
 | **Gestionnaires front**  | npm, pnpm et yarn via Corepack ; Bun 1.4 depuis `bun.lock` ou `bun.lockb`                               |
 | **Assets**               | importmap, Propshaft, Sprockets, Tailwind, dart-sass, chaînes npm (esbuild, cssbundling, jsbundling)   |
@@ -130,9 +130,10 @@ Le détail, les révisions de base et ce qui demande une adaptation de votre cod
   N'embarquez jamais de vrais secrets ni de vraies données
   ([`SECURITY.md`](SECURITY.md)).
 - **Le temps de démarrage varie.** Environ 20–25 s pour la démonstration de
-  référence ; jusqu'à 78 s mesurés sur l'application Zealot, selon la taille de
-  l'instantané, le réseau et le processeur. Le démarrage ne casse pas, il
-  s'allonge.
+  référence. Une grosse application Rails 8/PostgreSQL a demandé 266 s au
+  premier boot émulé, puis 22 s depuis son instantané pré-calculé. C'est la
+  restauration publiée qu'utilise le visiteur ; un boot à froid reste un outil
+  de diagnostic.
 - **Aucun réseau sortant.** Une gem qui appelle un service distant au démarrage
   échouera ; l'analyse le signale avant la construction.
 - **Aucune persistance partagée.** Chaque visiteur écrit dans sa copie, qui
