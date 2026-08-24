@@ -63,8 +63,9 @@ export const BINARY_ASSET_GEMS = Object.freeze([
 /**
  * Verrous de dépendances front reconnus, et gestionnaire correspondant.
  *
- * railsbox exécute npm, pnpm et yarn. Bun est SIGNALÉ, pas exécuté, et
- * l'installation retombe alors sur npm.
+ * railsbox exécute npm, pnpm, yarn et bun. Bun n'est pas fourni par Corepack :
+ * railsbox fixe sa série dans l'image d'assets, comme il fixe déjà Node 22.
+ * Son verrou suffit donc à sélectionner une installation reproductible.
  *
  * Cette note disait auparavant que railsbox n'installait qu'avec npm, au
  * motif qu'embarquer trois gestionnaires coûterait plus que cela ne
@@ -111,6 +112,9 @@ const NPM_INSTALL = "npm install --no-audit --no-fund";
  */
 const PNPM_INSTALL = "pnpm install --frozen-lockfile";
 
+/** Installation Bun reproductible, depuis le verrou texte ou binaire. */
+const BUN_INSTALL = "bun install --frozen-lockfile";
+
 /**
  * Installation Yarn Classic (1.x). Même exigence que pnpm : un verrou périmé
  * doit ARRÊTER la construction, jamais être réécrit en silence.
@@ -123,6 +127,28 @@ const YARN_CLASSIC_INSTALL = "yarn install --frozen-lockfile";
  * confusion qui tenait yarn dehors.
  */
 const YARN_BERRY_INSTALL = "yarn install --immutable";
+
+/**
+ * Générateurs de sources front fournis par des gems connues. Les commandes
+ * sont entièrement possédées par railsbox : aucun texte du dépôt tiers ne
+ * traverse cette table jusqu'au shell.
+ */
+const ASSET_PREPARE_BY_GEM = Object.freeze({
+  js_from_routes: "JS_FROM_ROUTES_FORCE=true bundle exec rake js_from_routes:generate",
+});
+
+/**
+ * Commande de préparation des sources front exigée par les gems résolues.
+ * @param {Map<string, string>} specs gems résolues du Gemfile.lock
+ * @returns {string} commande fermée, ou chaîne vide
+ */
+export function assetPrepareCommand(specs) {
+  if (!(specs instanceof Map)) return "";
+  return Object.entries(ASSET_PREPARE_BY_GEM)
+    .filter(([gem]) => specs.has(gem))
+    .map(([, command]) => command)
+    .join(" && ");
+}
 
 /** Première ligne d'un verrou Yarn Classic. */
 const YARN_CLASSIC_MARQUEUR = /^#\s*yarn lockfile v1\s*$/m;
@@ -154,7 +180,7 @@ export function yarnGeneration(contenu) {
  * argument de build, donc dans une commande. La version, elle, n'y entre
  * jamais — Corepack la lit lui-même dans le `package.json` du projet.
  */
-export const PACKAGE_MANAGERS = Object.freeze(["npm", "pnpm", "yarn"]);
+export const PACKAGE_MANAGERS = Object.freeze(["npm", "pnpm", "yarn", "bun"]);
 
 /** Gestionnaire retenu quand rien n'impose autre chose. */
 export const DEFAULT_PACKAGE_MANAGER = "npm";
@@ -223,7 +249,8 @@ export function npmInstallCommand(lockfiles) {
  *    défaut. Berry exige un `packageManager` déclaré, pour la même raison que
  *    pnpm : sans version, Corepack retomberait sur Yarn 1, qui refuserait ce
  *    verrou. Génération indéterminée : repli npm, jamais de devinette.
- * 4. Un gestionnaire hors liste (bun) est signalé, pas exécuté.
+ * 4. Un verrou Bun sélectionne le Bun fourni par railsbox. Sans verrou, une
+ *    simple déclaration Bun ne suffit pas : le repli npm historique demeure.
  * @param {{ lockfiles?: readonly string[], packageManager?: unknown, yarnLock?: unknown }} input
  * @returns {{ manager: string, install: string, findings: Finding[] }}
  */
@@ -248,6 +275,11 @@ export function planPackageManager({ lockfiles = [], packageManager, yarnLock } 
 
   const declare = parsePackageManager(packageManager);
   const aVerrouPnpm = verrous.includes("pnpm-lock.yaml");
+  const aVerrouBun = verrous.includes("bun.lock") || verrous.includes("bun.lockb");
+
+  if (aVerrouBun) {
+    return { manager: "bun", install: BUN_INSTALL, findings };
+  }
 
   if (declare && declare.name === "pnpm" && aVerrouPnpm) {
     return { manager: "pnpm", install: PNPM_INSTALL, findings };
@@ -301,7 +333,7 @@ export function planPackageManager({ lockfiles = [], packageManager, yarnLock } 
         SEVERITY.WARNING,
         "package-manager-non-execute",
         `Gestionnaire « ${declare.name} » déclaré : railsbox ne l'exécute pas et installe avec ` +
-          "npm. Seuls npm, pnpm et yarn sont pris en charge.",
+          "npm. Seuls npm, pnpm, yarn et bun sont pris en charge.",
         { packageManagerDeclare: declare.name },
       ),
     );
@@ -318,7 +350,8 @@ export function planPackageManager({ lockfiles = [], packageManager, yarnLock } 
  * @property {readonly string[]} tools outils front déclarés dans package.json
  * @property {readonly string[]} binaryGems gems d'assets à binaire précompilé
  * @property {string} install commande d'installation, vide sans package.json
- * @property {string} manager gestionnaire de paquets front (`npm` ou `pnpm`)
+ * @property {string} prepare génération de sources à exécuter avant la précompilation
+ * @property {string} manager gestionnaire de paquets front (`npm`, `pnpm`, `yarn` ou `bun`)
  * @property {readonly string[]} output répertoires remontés de l'étage amd64 vers le disque
  */
 
@@ -329,7 +362,7 @@ export function planPackageManager({ lockfiles = [], packageManager, yarnLock } 
  * fusion d'un railsbox.yml, par exemple), elle conserve la commande
  * d'installation déjà déduite des verrous — que le manifeste ne transporte pas
  * — ainsi que les répertoires de sortie déjà retenus.
- * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, manager?: string, packageManager?: unknown, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[], yarnLock?: unknown}} input contexte d'analyse
+ * @param {{assets?: {npm?: boolean, scripts?: readonly string[], tools?: readonly string[], install?: string, prepare?: string, manager?: string, packageManager?: unknown, output?: readonly string[]}, specs?: Map<string, string>, lockfiles?: readonly string[], outputDirs?: readonly string[], yarnLock?: unknown}} input contexte d'analyse
  * @returns {{plan: AssetPlan, findings: Finding[]}} plan gelé et diagnostics
  */
 export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yarnLock } = {}) {
@@ -349,6 +382,7 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yar
     packageManager: assets?.packageManager,
   });
   const install = npm ? assets?.install || gestionnaire.install : "";
+  const prepare = assets?.prepare || assetPrepareCommand(resolved);
   const manager = npm ? (assets?.manager ?? gestionnaire.manager) : DEFAULT_PACKAGE_MANAGER;
 
   /** @type {Finding[]} */
@@ -358,7 +392,7 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yar
       createFinding(
         SEVERITY.INFO,
         "assets-amd64-stage",
-        `Assets précompilés sur un étage amd64 (${hostReasons({ npm, binaryGems }).join(", ")}) : ` +
+        `Assets précompilés sur un étage amd64 (${hostReasons({ npm, binaryGems, manager }).join(", ")}) : ` +
           "le guest i386 n'exécutera aucun binaire d'assets.",
         { binaryGems, npm },
       ),
@@ -379,6 +413,7 @@ export function planAssets({ assets, specs, lockfiles = [], outputDirs = [], yar
       tools: Object.freeze(tools),
       binaryGems: Object.freeze(binaryGems),
       install,
+      prepare,
       manager,
       output: Object.freeze(output),
     }),
@@ -398,13 +433,13 @@ function chooseStage({ npm, binaryGems, pipeline }) {
 
 /**
  * Énumère ce qui impose l'étage amd64, pour un diagnostic qui explique.
- * @param {{npm: boolean, binaryGems: readonly string[]}} indices indices de classification
+ * @param {{npm: boolean, binaryGems: readonly string[], manager: string}} indices indices de classification
  * @returns {string[]} raisons lisibles
  */
-function hostReasons({ npm, binaryGems }) {
+function hostReasons({ npm, binaryGems, manager }) {
   const reasons = [];
   if (binaryGems.length > 0) reasons.push(binaryGems.join(", "));
-  if (npm) reasons.push("chaîne npm");
+  if (npm) reasons.push(`chaîne ${manager}`);
   return reasons;
 }
 

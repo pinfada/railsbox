@@ -13,8 +13,10 @@ import {
   RANGE_HORS_FICHIER,
   RANGE_PLAGE,
   estCoquilleNue,
+  normalizeServeBasePath,
   parseRange,
   resolveSafePath,
+  stripServeBasePath,
 } from "./tools/serve-logic.mjs";
 import {
   CHEMIN_ETAT,
@@ -29,6 +31,7 @@ import {
 } from "./tools/simuler-session.mjs";
 
 const PORT = Number(process.env.PORT ?? 8080);
+const PUBLIC_BASE_PATH = normalizeServeBasePath(process.env.RAILSBOX_BASE_PATH);
 // Bord authentifiant simulé (RAILSBOX_SIMULER_AUTH=1). ÉTEINT PAR DÉFAUT, et
 // c'est la seule chose à retenir : hors de ce mode, pas une réponse de ce
 // serveur ne change. Voir tools/simuler-session.mjs pour le contrat simulé.
@@ -217,7 +220,27 @@ function appliquerBordSimule(request, response, urlPath) {
 }
 
 async function handleRequest(request, response) {
-  const urlPath = request.url ?? "/";
+  const requestedPath = request.url ?? "/";
+  const requestedPathname = requestedPath.split("?")[0];
+  if (PUBLIC_BASE_PATH !== "/" && requestedPathname === "/") {
+    response.writeHead(302, { Location: `${PUBLIC_BASE_PATH}/`, ...ISOLATION_HEADERS });
+    response.end();
+    return;
+  }
+  if (PUBLIC_BASE_PATH !== "/" && requestedPathname === PUBLIC_BASE_PATH) {
+    const query = requestedPath.includes("?")
+      ? requestedPath.slice(requestedPath.indexOf("?"))
+      : "";
+    response.writeHead(302, { Location: `${PUBLIC_BASE_PATH}/${query}`, ...ISOLATION_HEADERS });
+    response.end();
+    return;
+  }
+  const urlPath = stripServeBasePath(requestedPath, PUBLIC_BASE_PATH);
+  if (urlPath === null) {
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...ISOLATION_HEADERS });
+    response.end(`Introuvable: ${requestedPath}`);
+    return;
+  }
 
   if (SIMULATION.active && appliquerBordSimule(request, response, urlPath)) return;
 
@@ -267,7 +290,8 @@ async function handleRequest(request, response) {
 }
 
 createServer(handleRequest).listen(PORT, () => {
-  console.log(`railsbox servi sur http://localhost:${PORT} (COOP/COEP + Range actifs)`);
+  const baseUrl = `http://localhost:${PORT}${PUBLIC_BASE_PATH === "/" ? "" : PUBLIC_BASE_PATH}/`;
+  console.log(`railsbox servi sur ${baseUrl} (COOP/COEP + Range actifs)`);
   if (SIMULATION.active) {
     console.log(
       `bord authentifiant SIMULÉ : session de ${SIMULATION.ttlMs} ms ` +

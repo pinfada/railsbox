@@ -17,11 +17,17 @@
 #   docker build --platform linux/386 -f <ce fichier> --build-arg … -t <tag> <app>
 
 ARG RUBY_VERSION=3.3.10
+ARG BUN_ASSETS=0
 # 1 : les assets sont précompilés sur l'étage amd64 (chaîne npm et/ou gem à
 # exécutable précompilé). 0 : cet étage est entièrement sauté.
 ARG HOST_ASSETS=0
 # 1 : l'application a un package.json (donc des dépendances front à installer).
 ARG NPM_ASSETS=0
+
+FROM --platform=linux/amd64 node:22-bookworm-slim AS bun-0
+RUN ln -s /bin/true /usr/local/bin/bun
+FROM --platform=linux/amd64 oven/bun:1.4-slim AS bun-1
+FROM bun-${BUN_ASSETS} AS bun-runtime
 
 ########################################################################
 # Étage 1a : précompilation des assets (amd64)
@@ -47,13 +53,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # d'où les liens.
 COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+# Bun n'est pas fourni par Corepack. L'étage conditionnel ne sélectionne son
+# image officielle que lorsque la détection a réellement retenu Bun.
+COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
 RUN set -eu; \
     ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
     ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
     ln -sf ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
     node --version; npm --version; corepack --version
 
-# Gestionnaire de paquets front : `npm` ou `pnpm`, IDENTIFIANT SEUL. La
+# Gestionnaire de paquets front : IDENTIFIANT SEUL. La
 # version déclarée par l'application n'arrive jamais jusqu'ici — Corepack la
 # lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
 # une chaîne tierce dans une commande.
@@ -82,6 +91,7 @@ RUN set -eu; \
       pnpm|yarn) \
         corepack enable "$PACKAGE_MANAGER"; \
         command -v "$PACKAGE_MANAGER" >/dev/null ;; \
+      bun) command -v bun >/dev/null; bun --version ;; \
       *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
     esac
 
@@ -140,11 +150,13 @@ ENV RAILS_ENV=production \
 #    rand …), légitimement exécutés au sourcing. Cet étage est jetable
 #    (écarté de l'image finale), l'éventuelle rotation ici est sans effet.
 ARG ASSET_SCRIPTS=""
+ARG ASSET_PREPARE_COMMAND=""
 ARG APP_ENV_MANIFEST=""
 ARG APP_ENV_TRUSTED=""
 RUN printf '%s\n' "$APP_ENV_MANIFEST" > /tmp/app-env.sh \
     && printf '%s\n' "$APP_ENV_TRUSTED" >> /tmp/app-env.sh \
     && set -a && . /tmp/app-env.sh && set +a \
+    && if [ -n "$ASSET_PREPARE_COMMAND" ]; then sh -c "$ASSET_PREPARE_COMMAND"; fi \
     && for script in $ASSET_SCRIPTS; do "$PACKAGE_MANAGER" run "$script"; done \
     && bundle exec rails assets:precompile \
     && rm -f /tmp/app-env.sh
@@ -242,6 +254,12 @@ RUN find "$(gem env home)" -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' 
 COPY . .
 COPY --from=assets /app/public/assets ./public/assets
 COPY --from=assets /app/app/assets/builds ./app/assets/builds
+ARG ACTIVE_STORAGE_INITIALIZER=""
+RUN if [ -n "${ACTIVE_STORAGE_INITIALIZER}" ]; then \
+      mkdir -p config/initializers storage && \
+      printf '%s\n' "${ACTIVE_STORAGE_INITIALIZER}" > config/initializers/zzz_railsbox_active_storage.rb && \
+      ruby -c config/initializers/zzz_railsbox_active_storage.rb; \
+    fi
 # COPY . . vient de rétablir le Gemfile.lock du dépôt (plateformes x86_64
 # uniquement) : on ré-ajoute la plateforme i386, sinon bundle exec refuse le
 # bundle pourtant déjà installé (LoadError sur la première gem venue).
@@ -627,6 +645,7 @@ if [ "$RIB_WITH_REDIS" = 1 ]; then
 fi
 
 . /opt/rib/env.sh
+export RAILSBOX_SANDBOX=1
 cd /app
 
 echo "[init] demarrage Puma (monte sous \$RAILS_RELATIVE_URL_ROOT)..."

@@ -7,11 +7,31 @@ import {
   RANGE_IGNORE,
   RANGE_PLAGE,
   estCoquilleNue,
+  normalizeServeBasePath,
   parseRange,
   resolveSafePath,
+  stripServeBasePath,
 } from "../tools/serve-logic.mjs";
 
 const PUBLIC_DIR = resolve("/srv/railsbox/public");
+
+test("le serveur local peut reproduire un sous-répertoire GitHub Pages", () => {
+  assert.equal(normalizeServeBasePath("hackatime/"), "/hackatime");
+  assert.equal(stripServeBasePath("/hackatime/main.js?v=3", "/hackatime"), "/main.js?v=3");
+  assert.equal(stripServeBasePath("/hackatime/", "/hackatime"), "/");
+  assert.equal(
+    stripServeBasePath("/disks/hackatime-app.ext2", "/hackatime"),
+    "/disks/hackatime-app.ext2",
+  );
+  assert.equal(stripServeBasePath("/autre/main.js", "/hackatime"), null);
+});
+
+test("le chemin de publication local refuse les formes ambiguës", () => {
+  assert.equal(normalizeServeBasePath(undefined), "/");
+  assert.equal(stripServeBasePath("/main.js", "/"), "/main.js");
+  assert.throws(() => normalizeServeBasePath("../hackatime"), /invalide/);
+  assert.throws(() => normalizeServeBasePath("hackatime?x=1"), /invalide/);
+});
 
 test("resolveSafePath sert les fichiers sous la racine publique", () => {
   assert.equal(resolveSafePath("/main.js", PUBLIC_DIR), join(PUBLIC_DIR, "main.js"));

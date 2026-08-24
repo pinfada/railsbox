@@ -146,9 +146,11 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMA
   --build-arg "PG_VERSION=${PG_VERSION:-15}" \
   --build-arg "WITH_REDIS=$WITH_REDIS" \
   --build-arg "NPM_ASSETS=$NPM_ASSETS" \
+  --build-arg "BUN_ASSETS=${BUN_ASSETS:-0}" \
   --build-arg "HOST_ASSETS=$HOST_ASSETS" \
   --build-arg "NPM_INSTALL_COMMAND=$NPM_INSTALL_COMMAND" \
   --build-arg "PACKAGE_MANAGER=${PACKAGE_MANAGER:-npm}" \
+  --build-arg "ASSET_PREPARE_COMMAND=${ASSET_PREPARE_COMMAND:-}" \
   --build-arg "ASSET_SCRIPTS=$ASSET_SCRIPTS" \
   --build-arg "ASSET_PRECOMPILE=$ASSET_PRECOMPILE" \
   --build-arg "EXTRA_PACKAGES=$EXTRA_PACKAGES" \
@@ -158,6 +160,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMA
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "APP_ENV_TRUSTED=$APP_ENV_TRUSTED" \
+  --build-arg "ACTIVE_STORAGE_INITIALIZER=${ACTIVE_STORAGE_INITIALIZER:-}" \
   "$APP_DIR"
 
 ########################################################################

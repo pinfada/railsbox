@@ -361,7 +361,7 @@ function field(label, value) {
 function describeAssets(assets) {
   if (!assets) return null;
   const pipeline = assets.npm
-    ? `npm — scripts : ${listOr(assets.scripts, "aucun")} — outils : ${listOr(assets.tools, "aucun")}`
+    ? `${assets.manager ?? "npm"} — scripts : ${listOr(assets.scripts, "aucun")} — outils : ${listOr(assets.tools, "aucun")}`
     : "importmap/sprockets (pas de package.json)";
   const stage = STAGE_LABELS[assets.stage ?? ""];
   if (!stage) return pipeline;

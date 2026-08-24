@@ -25,6 +25,10 @@ import { validateSystemPackages } from "../detect/paquets-systeme.mjs";
 import { randomUUID } from "node:crypto";
 
 import { buildAutoLoginInitializer } from "./auto-login.mjs";
+import {
+  KEEP_VARIABLE as KEEP_ACTIVE_STORAGE_VARIABLE,
+  buildActiveStorageInitializer,
+} from "./active-storage.mjs";
 import { buildForceSslInitializer } from "./force-ssl.mjs";
 import { formatReport, hasBlocking } from "../detect/report.mjs";
 import { requiredBaseRevision, unsupportedPackages } from "./split-config.mjs";
@@ -383,7 +387,7 @@ export function splitPackages(manifest, baseRevision) {
  * `public/assets` — il ne relance rien.
  * @param {Manifest} manifest manifeste fusionné
  * @param {Map<string, string>} specs gems résolues du Gemfile.lock
- * @returns {{npm: boolean, scripts: string[], stage: string, install: string, manager: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
+ * @returns {{npm: boolean, scripts: string[], stage: string, install: string, prepare: string, manager: string, binaryGems: string[], precompile: boolean, output: string[]}} plan d'assets
  */
 export function assetsPlan(manifest, specs) {
   const { plan } = planAssets({ assets: manifest.assets, specs });
@@ -392,6 +396,7 @@ export function assetsPlan(manifest, specs) {
     scripts: [...plan.scripts],
     stage: plan.stage,
     install: plan.install,
+    prepare: plan.prepare,
     manager: plan.manager,
     binaryGems: [...plan.binaryGems],
     precompile: plan.stage === ASSET_STAGE.GUEST,
@@ -443,6 +448,7 @@ export function buildArgs({
     ? postgresNamedDatabaseEnv(appName, manifest.databaseNames)
     : {};
   const keepForceSsl = manifest.env?.[KEEP_FORCE_SSL_VARIABLE] === KEEP_FORCE_SSL_VALUE;
+  const keepActiveStorage = manifest.env?.[KEEP_ACTIVE_STORAGE_VARIABLE] === "1";
   const paquets = splitPackages(manifest, baseRevision);
   const dbPrepare = dbPrepareCommand({
     strategy: manifest.databasePrepare,
@@ -480,7 +486,12 @@ export function buildArgs({
     PG_DATABASE_URL: withPostgres ? postgres.url : "",
     WITH_REDIS: manifest.services?.redis ? "1" : "0",
     NPM_ASSETS: assets.npm ? "1" : "0",
+    BUN_ASSETS: assets.manager === "bun" ? "1" : "0",
     ASSET_SCRIPTS: assets.scripts.join(" "),
+    // Génération de sources exigée par une gem connue (par exemple les helpers
+    // TypeScript de js_from_routes). Cette commande vient d'une table fermée
+    // de railsbox, jamais du manifeste tiers.
+    ASSET_PREPARE_COMMAND: assets.prepare,
     // Précompilation dans le guest i386 : seulement quand aucun outil n'exige
     // l'étage amd64 (importmap/propshaft pur).
     ASSET_PRECOMPILE: assets.precompile ? "1" : "0",
@@ -490,8 +501,8 @@ export function buildArgs({
     ASSETS_STAGE: assets.stage,
     HOST_ASSETS: assets.stage === ASSET_STAGE.HOST ? "1" : "0",
     NPM_INSTALL_COMMAND: assets.install,
-    // Gestionnaire de paquets front, sous forme d'IDENTIFIANT SEUL (`npm` ou
-    // `pnpm`). La version déclarée par l'application n'entre jamais ici : elle
+    // Gestionnaire de paquets front, sous forme d'IDENTIFIANT SEUL. La version
+    // déclarée par l'application n'entre jamais ici : elle
     // vient d'un package.json tiers, et c'est Corepack qui la lit lui-même
     // dans le projet. Ce qui traverse est donc une valeur d'une liste fermée,
     // jamais une chaîne d'origine tierce.
@@ -551,6 +562,9 @@ export function buildArgs({
     // d'un concern ou d'une gem, et le critère du projet est qu'une
     // application NON MODIFIÉE fonctionne.
     FORCE_SSL_INITIALIZER: buildForceSslInitializer({ enabled: !keepForceSsl }),
+    ACTIVE_STORAGE_INITIALIZER: buildActiveStorageInitializer({
+      enabled: specs.has("activestorage") && !keepActiveStorage,
+    }),
   };
 }
 

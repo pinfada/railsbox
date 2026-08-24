@@ -268,6 +268,19 @@ else
 fi
 RIB_FORCE_SSL
 
+# La VM n'a aucun réseau sortant. Active Storage reçoit donc un service Disk
+# propre à la sandbox, injecté seulement quand la gem est présente.
+ARG ACTIVE_STORAGE_INITIALIZER=""
+RUN <<'RIB_ACTIVE_STORAGE'
+set -eu
+if [ -n "${ACTIVE_STORAGE_INITIALIZER}" ]; then
+  mkdir -p config/initializers storage
+  printf '%s\n' "${ACTIVE_STORAGE_INITIALIZER}" > config/initializers/zzz_railsbox_active_storage.rb
+  ruby -c config/initializers/zzz_railsbox_active_storage.rb
+  echo "[build] Active Storage redirigé vers le disque local de la sandbox"
+fi
+RIB_ACTIVE_STORAGE
+
 # Assets précompilés sur l'étage amd64 (tailwindcss-ruby, dartsass-ruby et les
 # chaînes npm n'ont aucun binaire i386 — voir assets-amd64.Dockerfile). Le
 # contexte nommé « railsbox-assets » est TOUJOURS fourni par build-app-disk.sh :
@@ -351,6 +364,7 @@ ARG SEED_OPTIONAL=0
 ARG APP_ENV_MANIFEST=""
 RUN <<'RIB_DB'
 set -eu
+export RAILSBOX_SANDBOX=1
 if [ "${WITH_REDIS}" = 1 ]; then
   redis-server --daemonize yes --port 6379 --save '' --appendonly no
   # Même raison qu'au boot du guest : les seeds enfilent souvent des jobs, et

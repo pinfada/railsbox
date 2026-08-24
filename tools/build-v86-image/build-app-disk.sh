@@ -373,9 +373,11 @@ if [ "${ASSETS_STAGE:-aucun}" = "amd64" ]; then
   docker build --platform linux/amd64 $NO_CACHE -f "$SCRIPT_DIR/assets-amd64.Dockerfile" \
     --build-arg "RUBY_VERSION=$RUBY_VERSION" \
     --build-arg "NPM_ASSETS=${NPM_ASSETS:-0}" \
+    --build-arg "BUN_ASSETS=${BUN_ASSETS:-0}" \
     --build-arg "EXTRA_PACKAGES=${EXTRA_PACKAGES:-}" \
     --build-arg "NPM_INSTALL_COMMAND=${NPM_INSTALL_COMMAND:-}" \
     --build-arg "PACKAGE_MANAGER=${PACKAGE_MANAGER:-npm}" \
+    --build-arg "ASSET_PREPARE_COMMAND=${ASSET_PREPARE_COMMAND:-}" \
     --build-arg "ASSET_SCRIPTS=${ASSET_SCRIPTS:-}" \
     --build-arg "ASSET_OUTPUT_DIRS=$ASSET_OUTPUT_DIRS" \
     --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
@@ -435,6 +437,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "AUTO_LOGIN_INITIALIZER=$AUTO_LOGIN_INITIALIZER" \
   --build-arg "FORCE_SSL_INITIALIZER=$FORCE_SSL_INITIALIZER" \
+  --build-arg "ACTIVE_STORAGE_INITIALIZER=${ACTIVE_STORAGE_INITIALIZER:-}" \
   --build-arg "SYSTEM_PACKAGES=${SYSTEM_PACKAGES:-}" \
   --build-arg "APP_DISK_MB=$APP_DISK_MB" \
   --build-arg "MOUNT_PREFIX=$MOUNT_PREFIX" \

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ASSET_STAGE,
+  assetPrepareCommand,
   binaryAssetGems,
   npmInstallCommand,
   planAssets,
@@ -99,6 +100,18 @@ test("sans pipeline d'assets, il n'y a rien à précompiler", () => {
   // Assert
   assert.equal(plan.stage, ASSET_STAGE.NONE);
   assert.deepEqual(findings, []);
+});
+
+test("js_from_routes génère ses helpers avant le bundler", () => {
+  const resolved = specs(["propshaft", "js_from_routes"]);
+  const { plan } = planAssets({ assets: { npm: true }, specs: resolved });
+
+  assert.equal(
+    assetPrepareCommand(resolved),
+    "JS_FROM_ROUTES_FORCE=true bundle exec rake js_from_routes:generate",
+  );
+  assert.equal(plan.prepare, assetPrepareCommand(resolved));
+  assert.equal(assetPrepareCommand(specs(["propshaft"])), "");
 });
 
 test("planAssets sans argument rend un plan vide plutôt qu'une exception", () => {

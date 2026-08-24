@@ -22,7 +22,7 @@ L'auto-détection classe seule chaque application :
 | --- | --- | --- |
 | propshaft/sprockets + importmap | `i386` | `assets:precompile` dans le disque applicatif |
 | tailwindcss-rails, dartsass-rails | `amd64` | `assets:precompile` sur l'hôte, copie de `public/assets` |
-| `package.json` (jsbundling/cssbundling) | `amd64` | `npm ci` + scripts de build, puis `assets:precompile` |
+| `package.json` (jsbundling/cssbundling) | `amd64` | installation verrouillée npm, pnpm, yarn ou Bun + scripts de build, puis `assets:precompile` |
 | aucun pipeline | `aucun` | rien |
 
 L'étage amd64 pose exactement le même `RAILS_RELATIVE_URL_ROOT` que le disque
@@ -46,11 +46,16 @@ arbitraire (`tracking-[0.35em]`), qu'aucune feuille pré-construite ne peut
 contenir. Sa présence prouve que le binaire `tailwindcss` a balayé les vues
 pendant cette construction — sur l'hôte amd64, jamais dans le guest.
 
-Deux points d'attention plutôt qu'un refus : sans `package-lock.json` (ou avec un
-verrou bun, que railsbox ne relit pas), l'installation retombe sur
-`npm install` et la construction n'est plus reproductible — c'est un
-avertissement du rapport d'analyse. Et si l'étage amd64 ne produit **aucun**
-asset, la construction s'arrête là.
+Deux points d'attention plutôt qu'un refus : sans verrou reconnu,
+l'installation retombe sur `npm install` et la construction n'est plus
+reproductible — c'est un avertissement du rapport d'analyse. `bun.lock` et
+`bun.lockb` sélectionnent Bun 1.4 avec `--frozen-lockfile`; pnpm et Yarn gardent
+leurs propres règles de version décrites dans la page de compatibilité. Et si
+l'étage amd64 ne produit **aucun** asset, la construction s'arrête là.
+
+Les sources front générées par une gem le sont avant le bundler. RailsBox
+reconnaît notamment `js_from_routes` et exécute sa tâche standard avec
+`JS_FROM_ROUTES_FORCE=true`; aucun script arbitraire du dépôt n'est interpolé.
 
 ### Ce que l'étage amd64 remonte dans la sandbox
 

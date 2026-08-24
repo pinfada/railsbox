@@ -21,6 +21,16 @@
 #     --output type=local,dest=<dossier> <app>
 
 ARG RUBY_VERSION=3.3.12
+ARG BUN_ASSETS=0
+
+# Branche Bun conditionnelle : une application npm/pnpm/yarn ne doit pas même
+# résoudre l'image Bun. Le substitut ne fournit qu'un chemin copiable ; il
+# n'est jamais exécuté lorsque BUN_ASSETS=0.
+FROM --platform=linux/amd64 node:22-bookworm-slim AS bun-0
+RUN ln -s /bin/true /usr/local/bin/bun
+FROM --platform=linux/amd64 oven/bun:1.4-slim AS bun-1
+FROM bun-${BUN_ASSETS} AS bun-runtime
+
 FROM --platform=linux/amd64 ruby:${RUBY_VERSION}-slim AS precompilation
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -60,13 +70,16 @@ RUN set -eu; \
 # d'où les liens.
 COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+# Bun n'appartient pas à Corepack. Sa série est fournie par l'étage conditionnel
+# ci-dessus et fixée par railsbox. Le runtime ne sert qu'à cet étage amd64.
+COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
 RUN set -eu; \
     ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
     ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
     ln -sf ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
     node --version; npm --version; corepack --version
 
-# Gestionnaire de paquets front : `npm` ou `pnpm`, IDENTIFIANT SEUL. La
+# Gestionnaire de paquets front : IDENTIFIANT SEUL. La
 # version déclarée par l'application n'arrive jamais jusqu'ici — Corepack la
 # lit lui-même dans le `packageManager` du projet, ce qui évite d'interpoler
 # une chaîne tierce dans une commande.
@@ -95,6 +108,7 @@ RUN set -eu; \
       pnpm|yarn) \
         corepack enable "$PACKAGE_MANAGER"; \
         command -v "$PACKAGE_MANAGER" >/dev/null ;; \
+      bun) command -v bun >/dev/null; bun --version ;; \
       *) echo "gestionnaire front inattendu : $PACKAGE_MANAGER" >&2; exit 1 ;; \
     esac
 
@@ -141,6 +155,7 @@ ENV RAILS_ENV=production \
 # démarrer sans les clés exigées par ses initializers — et assets:precompile
 # démarre l'application.
 ARG ASSET_SCRIPTS=""
+ARG ASSET_PREPARE_COMMAND=""
 ARG APP_ENV_MANIFEST=""
 RUN <<'RIB_ASSETS'
 set -eu
@@ -154,6 +169,9 @@ rm -f /tmp/app-env.sh
 # lui a été écrit ici, et nulle part ailleurs. C'est ce qui permet, plus bas,
 # de nommer les répertoires produits qui ne seront pas exportés.
 touch /tmp/rib-repere
+# Certaines gems produisent des modules consommés par le bundler. La commande
+# vient d'une table fermée de la détection, pas d'une valeur du dépôt.
+if [ -n "${ASSET_PREPARE_COMMAND}" ]; then sh -c "${ASSET_PREPARE_COMMAND}"; fi
 for script in ${ASSET_SCRIPTS}; do "${PACKAGE_MANAGER}" run "$script"; done
 bundle exec rails assets:precompile
 RIB_ASSETS

@@ -25,6 +25,15 @@ npm run test:integration  # full protocol against a REAL v86 VM under Node
 The host page reads `public/disks/v86-config.json`: with no built artifacts, it
 says so and stops there.
 
+To preview an image built for a Pages repository locally, serve the shell under
+the same prefix. This also reproduces the real Service Worker scope and avoids
+accidentally testing `/app/` instead of `/<repo>/app/`:
+
+```bash
+RAILSBOX_BASE_PATH=/my-repo npm start
+# then http://localhost:8080/my-repo/
+```
+
 After an image build, extract the precompiled assets so they are served
 statically instead of crossing the serial bridge (performance lever number one):
 

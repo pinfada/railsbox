@@ -21,7 +21,7 @@ Auto-detection classifies each application on its own:
 | --- | --- | --- |
 | propshaft/sprockets + importmap | `i386` | `assets:precompile` inside the application disk |
 | tailwindcss-rails, dartsass-rails | `amd64` | `assets:precompile` on the host, then `public/assets` is copied |
-| `package.json` (jsbundling/cssbundling) | `amd64` | `npm ci` + build scripts, then `assets:precompile` |
+| `package.json` (jsbundling/cssbundling) | `amd64` | locked npm, pnpm, Yarn or Bun install + build scripts, then `assets:precompile` |
 | no pipeline | `aucun` (none) | nothing |
 
 The amd64 stage sets exactly the same `RAILS_RELATIVE_URL_ROOT` as the
@@ -45,10 +45,16 @@ looks inside the CSS **served by the VM** for an arbitrary-value utility
 proves the `tailwindcss` binary scanned the views during this very build — on
 the amd64 host, never in the guest.
 
-Two warnings rather than a refusal: without a `package-lock.json` (or with a
-bun lockfile, which railsbox does not read), installation falls back to
-`npm install` and the build is no longer reproducible — the analysis report says
-so. And if the amd64 stage produces **no** asset at all, the build stops there.
+Two warnings rather than a refusal: without a recognised lockfile, installation
+falls back to `npm install` and the build is no longer reproducible — the
+analysis report says so. `bun.lock` and `bun.lockb` select Bun 1.4 with
+`--frozen-lockfile`; pnpm and Yarn keep the version rules documented on the
+compatibility page. And if the amd64 stage produces **no** asset at all, the
+build stops there.
+
+Front-end sources supplied by a gem are generated before the bundler runs.
+RailsBox notably recognises `js_from_routes` and invokes its standard task with
+`JS_FROM_ROUTES_FORCE=true`; no arbitrary repository command is interpolated.
 
 ### What the amd64 stage ships back into the sandbox
 

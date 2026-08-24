@@ -470,9 +470,49 @@ test("buildArgs décrit l'installation npm d'une application cssbundling", () =>
 
   // Assert
   assert.equal(args.NPM_ASSETS, "1");
+  assert.equal(args.BUN_ASSETS, "0");
   assert.equal(args.HOST_ASSETS, "1");
   assert.equal(args.ASSET_SCRIPTS, "build:css");
   assert.equal(args.NPM_INSTALL_COMMAND, "npm ci --no-audit --no-fund");
+});
+
+test("buildArgs transmet la préparation de sources détectée", () => {
+  const args = buildArgs({
+    manifest: {
+      ruby: "3.3.12",
+      database: "sqlite3",
+      assets: {
+        npm: true,
+        scripts: [],
+        prepare: "JS_FROM_ROUTES_FORCE=true bundle exec rake js_from_routes:generate",
+      },
+      services: {},
+    },
+    specs: new Map([["js_from_routes", "4.1.0"]]),
+    hasSeeds: false,
+    appName: "routes",
+  });
+
+  assert.equal(
+    args.ASSET_PREPARE_COMMAND,
+    "JS_FROM_ROUTES_FORCE=true bundle exec rake js_from_routes:generate",
+  );
+});
+
+test("buildArgs n'active l'image Bun que pour un plan Bun", () => {
+  const args = buildArgs({
+    manifest: {
+      ruby: "3.3.12",
+      database: "sqlite3",
+      assets: { npm: true, scripts: [], manager: "bun", install: "bun install --frozen-lockfile" },
+      services: {},
+    },
+    specs: new Map(),
+    hasSeeds: false,
+    appName: "bun-app",
+  });
+
+  assert.equal(args.BUN_ASSETS, "1");
 });
 
 test("buildArgs laisse la commande de seed vide sans db/seeds.rb", () => {

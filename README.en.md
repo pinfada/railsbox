@@ -112,7 +112,7 @@ depending on your application. Details in
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
 | **Ruby**               | 3.3.12 (provided by base `3.3-r2`, not configurable)                                                |
 | **Databases**          | SQLite and PostgreSQL; MySQL/MariaDB refused with an explicit report                                |
-| **Front-end managers** | npm, pnpm and yarn through Corepack; bun is reported, not executed                                  |
+| **Front-end managers** | npm, pnpm and yarn through Corepack; Bun 1.4 from `bun.lock` or `bun.lockb`                           |
 | **Assets**             | importmap, Propshaft, Sprockets, Tailwind, dart-sass, npm chains (esbuild, cssbundling, jsbundling) |
 | **Not supported**      | outbound network, ActionCable and WebSockets                                                        |
 

@@ -25,6 +25,16 @@ npm run test:integration  # protocole complet contre une VRAIE VM v86 sous Node
 La page hôte lit `public/disks/v86-config.json` : sans artefacts construits, elle
 le dit et s'arrête là.
 
+Pour prévisualiser localement une image construite pour un dépôt Pages, servez
+la coquille sous le même préfixe. Cela reproduit aussi la portée réelle du
+Service Worker et évite de tester par erreur `/app/` à la place de
+`/<depot>/app/` :
+
+```bash
+RAILSBOX_BASE_PATH=/mon-depot npm start
+# puis http://localhost:8080/mon-depot/
+```
+
 Après un build d'image, extrayez les assets précompilés pour qu'ils soient servis
 statiquement au lieu de traverser le pont série (levier de performance n°1) :
 
