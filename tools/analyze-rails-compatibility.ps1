@@ -133,8 +133,11 @@ function Get-ContenuLocal {
         $chemin = Join-Path $Racine $relatif
         if (Test-Path $chemin) { Get-Content $chemin -Raw -ErrorAction SilentlyContinue } else { '' }
     }
-    $licence = & $lire 'LICENSE'
-    if (-not $licence) { $licence = & $lire 'LICENSE.md' }
+    $licence = ''
+    foreach ($nomLicence in @('LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'LICENCE.md', 'LICENCE.txt', 'COPYING', 'COPYING.md', 'COPYING.txt')) {
+        $licence = & $lire $nomLicence
+        if ($licence) { break }
+    }
 
     [PSCustomObject]@{
         Nom         = (Resolve-Path $Racine).Path

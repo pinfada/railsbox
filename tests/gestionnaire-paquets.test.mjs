@@ -28,6 +28,7 @@ import {
   yarnGeneration,
 } from "../tools/detect/assets.mjs";
 import { SEVERITY } from "../tools/detect/findings.mjs";
+import { formatReport } from "../tools/detect/report.mjs";
 
 const codes = (findings) => findings.map((f) => f.code);
 const bloquants = (findings) => findings.filter((f) => f.severity === SEVERITY.BLOCKING);
@@ -84,13 +85,29 @@ test("un verrou pnpm SANS packageManager avertit fort et n'invente aucune versio
 });
 
 test("un packageManager déclaré pour un gestionnaire non exécuté est signalé", () => {
-  // Yarn est sorti de cette liste : ses deux générations sont désormais
-  // distinguées par le contenu du verrou. Bun reste refusé.
-  for (const nom of ["bun"]) {
+  for (const nom of ["deno"]) {
     const plan = planPackageManager({ packageManager: `${nom}@1.2.3` });
     assert.equal(plan.manager, "npm", `${nom} ne doit pas être exécuté`);
     assert.ok(codes(plan.findings).includes("package-manager-non-execute"), nom);
   }
+});
+
+test("un verrou Bun texte ou binaire installe avec Bun en mode verrouillé", () => {
+  for (const verrou of ["bun.lock", "bun.lockb"]) {
+    const plan = planPackageManager({ lockfiles: [verrou] });
+
+    assert.equal(plan.manager, "bun", verrou);
+    assert.equal(plan.install, "bun install --frozen-lockfile", verrou);
+    assert.deepEqual(plan.findings, [], `aucun diagnostic sur le chemin nominal ${verrou}`);
+  }
+});
+
+test("Bun déclaré SANS verrou conserve le repli npm", () => {
+  const plan = planPackageManager({ packageManager: "bun@1.4.0" });
+
+  assert.equal(plan.manager, "npm");
+  assert.equal(plan.install, "npm install --no-audit --no-fund");
+  assert.deepEqual(plan.findings, []);
 });
 
 test("un yarn déclaré SANS verrou installe avec npm, comme pnpm dans le même cas", () => {
@@ -189,6 +206,32 @@ test("l'avertissement « verrou npm absent » ne vise plus une installation pnpm
 
   assert.equal(plan.manager, "pnpm");
   assert.ok(!codes(findings).includes("npm-lockfile-absent"));
+});
+
+test("l'avertissement « verrou npm absent » ne vise pas une installation Bun", () => {
+  const { plan, findings } = planAssets({
+    assets: { npm: true },
+    lockfiles: ["bun.lock"],
+  });
+
+  assert.equal(plan.manager, "bun");
+  assert.equal(plan.install, "bun install --frozen-lockfile");
+  assert.ok(!codes(findings).includes("npm-lockfile-absent"));
+});
+
+test("le rapport annonce le gestionnaire réellement exécuté", () => {
+  const { plan } = planAssets({ assets: { npm: true }, lockfiles: ["bun.lock"] });
+  const report = formatReport({ manifest: { ruby: "3.3.12", assets: plan }, findings: [] });
+
+  assert.match(report, /Assets\s+: bun — scripts/);
+});
+
+test("seule une installation Bun active son image de runtime", () => {
+  const bun = planAssets({ assets: { npm: true }, lockfiles: ["bun.lock"] }).plan;
+  const npm = planAssets({ assets: { npm: true }, lockfiles: ["package-lock.json"] }).plan;
+
+  assert.equal(bun.manager, "bun");
+  assert.equal(npm.manager, "npm");
 });
 
 test("sans package.json, aucun gestionnaire n'est imposé", () => {

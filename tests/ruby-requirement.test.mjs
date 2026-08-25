@@ -12,6 +12,7 @@
 // partie.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -82,12 +83,21 @@ test("parseBaseVersion lit les trois écritures de référence qui circulent", (
   assert.equal(parseBaseVersion("3.3-r2"), "3.3-r2");
   assert.equal(parseBaseVersion("ghcr.io/pinfada/railsbox-base:3.3-r2"), "3.3-r2");
   assert.equal(parseBaseVersion("railsbox-base-3.3"), "3.3");
+  assert.equal(parseBaseVersion("railsbox-base-3.4-local"), "3.4-local");
   assert.equal(parseBaseVersion(null), null);
   assert.equal(parseBaseVersion("   "), null);
 });
 
+test("build-app-disk confie la référence complète au détecteur", () => {
+  const script = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+
+  assert.match(script, /\$\{BASE_IMAGE:\+--base "\$BASE_IMAGE"\}/);
+});
+
 test("baseRubyVersion ne répond que pour une base publiée", () => {
   assert.equal(baseRubyVersion("3.3-r2"), "3.3.12");
+  assert.equal(baseRubyVersion("4.0"), "4.0.3");
+  assert.equal(baseRubyVersion("4.0.6"), "4.0.6");
   assert.equal(baseRubyVersion("4.0-r9"), null);
 });
 
@@ -96,6 +106,7 @@ test("resolveBase ne suppose RIEN quand la base n'est pas précisée", () => {
   // supposer 3.3-r2 refuserait à tort une application d'une autre série.
   assert.deepEqual(resolveBase(undefined), { version: null, ruby: null });
   assert.deepEqual(resolveBase("3.3-r2"), { version: "3.3-r2", ruby: "3.3.12" });
+  assert.deepEqual(resolveBase("railsbox-base-4.0"), { version: "4.0", ruby: "4.0.3" });
 });
 
 test("detectApp, lui, vise la base par défaut du workflow", async () => {

@@ -25,11 +25,20 @@ import { SEVERITY, createFinding } from "./findings.mjs";
  * comme les autres est le seul moyen de refuser AVANT de construire.
  */
 export const NATIVE_GEMS = Object.freeze({
+  // Cette gem Ruby pure appelle l'exécutable `file` pour détecter les types
+  // MIME et lève au premier attachement s'il n'est pas installé.
+  active_storage_validations: Object.freeze(["file-command"]),
   bcrypt: Object.freeze([]),
   charlock_holmes: Object.freeze(["libicu"]),
+  // commonmarker 2.x compile son extension Rust avec rb-sys/bindgen sur les
+  // plateformes sans binaire précompilé. bindgen exige libclang au build.
+  commonmarker: Object.freeze(["libclang"]),
   curb: Object.freeze(["libcurl"]),
   ffi: Object.freeze(["libffi"]),
   grpc: Object.freeze([]),
+  // Aucun binaire x86-linux n'est publié. La gem télécharge et compile un
+  // Node/V8 complet (plus de 100 Mo de sources) sur i386.
+  "libv8-node": Object.freeze([]),
   // mini_magick n'a pas d'extension native : elle appelle `convert`/`magick`.
   // Sans le paquet imagemagick, l'échec est un ENOENT à l'exécution.
   mini_magick: Object.freeze(["imagemagick"]),
@@ -40,6 +49,11 @@ export const NATIVE_GEMS = Object.freeze({
   rmagick: Object.freeze(["libmagickwand"]),
   "ruby-filemagic": Object.freeze(["libmagic"]),
   "ruby-vips": Object.freeze(["libvips"]),
+  // sass-embedded ne publie plus de binaire x86-linux pour ses versions
+  // récentes. Sa gem générique installe alors l'implémentation JavaScript au
+  // build et l'exécute avec Node : npm et node sont donc une vraie dépendance
+  // du bundle i386, même quand les assets ont déjà été produits sur amd64.
+  "sass-embedded": Object.freeze(["nodejs"]),
   sassc: Object.freeze(["libsass"]),
   sqlite3: Object.freeze(["libsqlite3"]),
   vips: Object.freeze(["libvips"]),
@@ -54,6 +68,7 @@ export const NATIVE_GEMS = Object.freeze({
 
 /** Gems dont la compilation i386 est si longue qu'elle mérite un avertissement. */
 const HEAVY_NATIVE_GEMS = Object.freeze(["grpc"]);
+const UNSUPPORTED_I386_GEMS = Object.freeze(["libv8-node"]);
 
 // Une spec de gem résolue est indentée de 4 espaces exactement ; ses
 // dépendances le sont de 6, et la section DEPENDENCIES de 2. Cette contrainte
@@ -102,6 +117,18 @@ export function collectNativeGems(specs) {
   for (const name of Object.keys(NATIVE_GEMS).sort()) {
     if (!specs.has(name)) continue;
     nativeGems.push(Object.freeze({ name, systemLibs: NATIVE_GEMS[name] }));
+    if (UNSUPPORTED_I386_GEMS.includes(name)) {
+      findings.push(
+        createFinding(
+          SEVERITY.BLOCKING,
+          "gem-i386-non-supportee",
+          `La gem « ${name} » ne publie pas de binaire x86-linux et tente de compiler Node/V8 ` +
+            "entièrement sur i386. Ce chemin est trop lourd et non fiable pour la sandbox.",
+          { gem: name },
+        ),
+      );
+      continue;
+    }
     if (!HEAVY_NATIVE_GEMS.includes(name)) continue;
     findings.push(
       createFinding(

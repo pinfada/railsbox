@@ -16,7 +16,9 @@ import {
   buildArgs,
   defaultAppName,
   binaryAssetGems,
+  bundleWithoutForSeeds,
   extraPackages,
+  buildOnlyPackages,
   formatAssignments,
   formatEnvFragment,
   postgresNamedDatabaseEnv,
@@ -24,7 +26,60 @@ import {
   splitPackages,
 } from "../tools/build-v86-image/manifest-to-args.mjs";
 
+test("les chemins i386 garantissent Puma sans inclure tout le groupe test", () => {
+  for (const chemin of [
+    "tools/build-v86-image/base/app.Dockerfile",
+    "tools/build-v86-image/Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(chemin, "utf8");
+    assert.match(dockerfile, /if ! bundle exec puma --version/);
+    assert.match(dockerfile, /gem "puma"/);
+  }
+});
+
 // --- Fixtures partagées ------------------------------------------------------
+
+test("les groupes Bundler des gems utilisées par les seeds sont inclus", () => {
+  const gemfile = `
+group :development, :test do
+  gem "database_cleaner"
+  gem "faker"
+end
+group :development do
+  gem "listen"
+end
+`;
+
+  assert.equal(bundleWithoutForSeeds(gemfile, "require 'database_cleaner'\nFaker::Name.name"), "");
+  assert.equal(bundleWithoutForSeeds(gemfile, "Listen.to('.')"), "test");
+  assert.equal(bundleWithoutForSeeds(gemfile, "User.create!"), "development:test");
+});
+
+test("les seeds dépendant de groupes exclus les chargent hors production", () => {
+  const args = buildArgs({
+    manifest: { ruby: "3.3.12", database: "sqlite3", assets: {}, services: {} },
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: "require 'database_cleaner'\nFaker::Name.name",
+    gemfileSource: 'group :development, :test do\n  gem "database_cleaner"\n  gem "faker"\nend\n',
+    appName: "demo",
+  });
+
+  assert.equal(args.BUNDLE_WITHOUT, "");
+  assert.match(args.SEED_COMMAND, /^RAILS_ENV=development RACK_ENV=development /);
+  assert.match(args.SEED_COMMAND, /Bundler\.require\(:development, :test\)/);
+});
+
+test("les scripts transmettent une liste BUNDLE_WITHOUT volontairement vide", () => {
+  for (const path of [
+    "tools/build-v86-image/build.sh",
+    "tools/build-v86-image/build-app-disk.sh",
+  ]) {
+    const script = readFileSync(path, "utf8");
+    assert.match(script, /\$\{BUNDLE_WITHOUT-development:test\}/, path);
+    assert.doesNotMatch(script, /\$\{BUNDLE_WITHOUT:-development:test\}/, path);
+  }
+});
 
 const createdDirs = [];
 
@@ -95,6 +150,18 @@ test("resolveRubyVersion refuse une série inconnue plutôt que de deviner", () 
   assert.throws(() => resolveRubyVersion("2.7"), /railsbox\.yml/);
 });
 
+test("une plage Ruby compatible réutilise la base par défaut", async () => {
+  const dir = await createApp({
+    Gemfile:
+      'source "https://rubygems.org"\nruby ">= 3.2.0", "< 4.1.0"\ngem "rails"\ngem "sqlite3"\n',
+    "config/database.yml": "production:\n  adapter: sqlite3\n",
+  });
+
+  const analysis = await analyzeApp(dir, "demo");
+
+  assert.equal(analysis.args.RUBY_VERSION, DEFAULT_RUBY_VERSION);
+});
+
 // --- Paquets système ---------------------------------------------------------
 
 test("extraPackages joint les paquets de la base et ceux des gems natives", () => {
@@ -134,6 +201,16 @@ test("extraPackages n'installe ni PostgreSQL ni Redis pour une application sqlit
   assert.deepEqual(packages, ["libsqlite3-dev"]);
 });
 
+test("extraPackages fournit file à active_storage_validations", () => {
+  const packages = extraPackages({
+    database: "sqlite3",
+    nativeGems: [{ name: "active_storage_validations", systemLibs: ["file-command"] }],
+    services: { redis: false },
+  });
+
+  assert.deepEqual(packages, ["file", "libsqlite3-dev"]);
+});
+
 test("extraPackages fournit les en-têtes libwebp que webp-ffi compile", () => {
   // webp-ffi est une liaison FFI qui compile POURTANT une extension : sans
   // `libwebp-dev`, `bundle install` s'arrête sur « fatal error:
@@ -156,6 +233,37 @@ test("extraPackages fournit les en-têtes libwebp que webp-ffi compile", () => {
     assert.ok(packages.includes(paquet), `${paquet} doit être installé`);
   }
   assert.ok(!packages.includes("libvips-dev"), "ceux de libvips ne le doivent pas");
+});
+
+test("extraPackages fournit le repli Node de sass-embedded sur i386", () => {
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "sass-embedded", systemLibs: ["nodejs"] }],
+  };
+
+  assert.deepEqual(extraPackages(manifest), ["libsqlite3-dev", "nodejs", "npm"]);
+  assert.deepEqual(buildOnlyPackages(manifest), ["npm"]);
+  assert.deepEqual(splitPackages(manifest, "3.3-r3").buildOnly, ["npm"]);
+});
+
+test("commonmarker reçoit libclang uniquement pendant sa compilation", () => {
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "commonmarker", systemLibs: ["libclang"] }],
+  };
+
+  assert.deepEqual(extraPackages(manifest), ["libclang-dev", "libsqlite3-dev"]);
+  assert.deepEqual(buildOnlyPackages(manifest), ["libclang-dev"]);
+});
+
+test("un paquet transitoire déclaré reste disponible à l'exécution", () => {
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "sass-embedded", systemLibs: ["nodejs"] }],
+    systemPackages: ["npm"],
+  };
+
+  assert.deepEqual(buildOnlyPackages(manifest), []);
 });
 
 test("extraPackages traduit libvips en paquets de RUNTIME, sans les en-têtes", () => {
@@ -470,9 +578,66 @@ test("buildArgs décrit l'installation npm d'une application cssbundling", () =>
 
   // Assert
   assert.equal(args.NPM_ASSETS, "1");
+  assert.equal(args.NODE_SERIES, "22");
+  assert.equal(args.BUN_ASSETS, "0");
   assert.equal(args.HOST_ASSETS, "1");
   assert.equal(args.ASSET_SCRIPTS, "build:css");
   assert.equal(args.NPM_INSTALL_COMMAND, "npm ci --no-audit --no-fund");
+});
+
+test("buildArgs transmet la série Node détectée à l'image d'assets", () => {
+  const args = buildArgs({
+    manifest: {
+      ruby: "4.0.3",
+      database: "postgresql",
+      assets: { npm: true, scripts: ["build"], nodeRequirement: "24.x", nodeSeries: "24" },
+      services: {},
+    },
+    specs: new Map([["jsbundling-rails", "1.3.1"]]),
+    hasSeeds: false,
+    appName: "node24",
+  });
+
+  assert.equal(args.NODE_SERIES, "24");
+});
+
+test("buildArgs transmet la préparation de sources détectée", () => {
+  const args = buildArgs({
+    manifest: {
+      ruby: "3.3.12",
+      database: "sqlite3",
+      assets: {
+        npm: true,
+        scripts: [],
+        prepare: "JS_FROM_ROUTES_FORCE=true bundle exec rake js_from_routes:generate",
+      },
+      services: {},
+    },
+    specs: new Map([["js_from_routes", "4.1.0"]]),
+    hasSeeds: false,
+    appName: "routes",
+  });
+
+  assert.equal(
+    args.ASSET_PREPARE_COMMAND,
+    "JS_FROM_ROUTES_FORCE=true bundle exec rake js_from_routes:generate",
+  );
+});
+
+test("buildArgs n'active l'image Bun que pour un plan Bun", () => {
+  const args = buildArgs({
+    manifest: {
+      ruby: "3.3.12",
+      database: "sqlite3",
+      assets: { npm: true, scripts: [], manager: "bun", install: "bun install --frozen-lockfile" },
+      services: {},
+    },
+    specs: new Map(),
+    hasSeeds: false,
+    appName: "bun-app",
+  });
+
+  assert.equal(args.BUN_ASSETS, "1");
 });
 
 test("buildArgs laisse la commande de seed vide sans db/seeds.rb", () => {
@@ -500,6 +665,60 @@ test("buildArgs préfère la commande de seed déclarée dans railsbox.yml", () 
 
   // Assert
   assert.equal(args.SEED_COMMAND, "bin/rails demo:seed");
+});
+
+test("buildArgs charge en environnement non-production des seeds qui refusent production", () => {
+  const manifest = { ruby: "3.3.12", database: "sqlite3", services: {} };
+  const args = buildArgs({
+    manifest,
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: [
+      "if Rails.env.production?",
+      '  Rails.logger.info "Seeds disabled in production"',
+      "  return",
+      "end",
+      "Post.create!(title: 'Démo')",
+    ].join("\n"),
+    appName: "demo",
+  });
+
+  assert.match(args.SEED_COMMAND, /rails runner/);
+  assert.match(args.SEED_COMMAND, /^RAILS_ENV=development RACK_ENV=development /);
+  assert.match(args.SEED_COMMAND, /Rails\.application\.load_tasks/);
+  assert.match(args.SEED_COMMAND, /Rails\.application\.load_seed/);
+});
+
+test("une commande de seed explicite reste prioritaire sur le garde production", () => {
+  const manifest = {
+    ruby: "3.3.12",
+    database: "sqlite3",
+    services: {},
+    seed: { command: "bin/rails demo:seed" },
+  };
+  const args = buildArgs({
+    manifest,
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: "return if Rails.env.production?\nPost.create!\n",
+    appName: "demo",
+  });
+
+  assert.equal(args.SEED_COMMAND, "bin/rails demo:seed");
+});
+
+test("les seeds protégés chargent le groupe staging quand le Gemfile le prévoit", () => {
+  const args = buildArgs({
+    manifest: { ruby: "3.3.12", database: "sqlite3", services: {} },
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: "return if Rails.env.production?\n",
+    gemfileSource: "group :development, :test, :staging do\n  gem 'faker'\nend\n",
+    appName: "demo",
+  });
+
+  assert.match(args.SEED_COMMAND, /Bundler\.require\(:staging\)/);
+  assert.match(args.SEED_COMMAND, /^RAILS_ENV=staging RACK_ENV=staging /);
 });
 
 // --- Analyse complète d'une application --------------------------------------
@@ -872,6 +1091,81 @@ test("TOUT étage qui compile des gems accepte EXTRA_PACKAGES, et on le lui pass
       `${chemin} doit transmettre EXTRA_PACKAGES`,
     );
   }
+
+  const decouple = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+  assert.match(decouple, /case "\$paquet" in nodejs\|npm\) continue/);
+  assert.match(decouple, /--build-arg "EXTRA_PACKAGES=\$ASSET_EXTRA_PACKAGES"/);
+  assert.match(decouple, /--build-arg "BUILD_ONLY_SYSTEM_PACKAGES=/);
+
+  const appDockerfile = readFileSync("tools/build-v86-image/base/app.Dockerfile", "utf8");
+  assert.match(appDockerfile, /ARG BUILD_ONLY_SYSTEM_PACKAGES=""/);
+  assert.match(appDockerfile, /apt-get purge -y --auto-remove -- \$\{BUILD_ONLY_SYSTEM_PACKAGES\}/);
+});
+
+test("les bundles fondés sur un gemspec reçoivent leurs métadonnées avant l'installation", () => {
+  for (const path of [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(path, "utf8");
+    assert.match(dockerfile, /--mount=type=bind,source=\.,target=\/rib-source,ro/, path);
+    assert.match(dockerfile, /\/rib-source\/\*\.gemspec/, path);
+    assert.match(dockerfile, /cp -a \/rib-source\/lib/, path);
+  }
+});
+
+test("les étages de bundle créent un database.yml jetable quand le dépôt n'en fournit pas", () => {
+  for (const chemin of [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(chemin, "utf8");
+    assert.match(dockerfile, /! -f \/rib-source\/config\/database\.yml/, chemin);
+    assert.match(dockerfile, /adapter: %s/, chemin);
+  }
+  const script = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+  assert.match(script, /--build-arg "DATABASE=\$DATABASE"/);
+});
+
+test("la construction découplée accepte des variables explicites sans eval", () => {
+  const script = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+  assert.match(script, /--env\)\s+paire_env=/);
+  assert.match(script, /--env attend NOM=VALEUR/);
+  assert.match(script, /APP_ENV_MANIFEST="\$\{APP_ENV_MANIFEST:-\}\$\{APP_ENV_OVERRIDES\}"/);
+  assert.doesNotMatch(script, /eval[^\n]*APP_ENV_OVERRIDES/);
+});
+
+test("les copies de build neutralisent les shebangs CRLF sans toucher au dépôt", () => {
+  for (const path of [
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+    "tools/build-v86-image/Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(path, "utf8");
+    assert.match(dockerfile, /case "\$first" in "#!"\*"\$cr"\)/, path);
+    assert.match(dockerfile, /sed -i "1s\/\\r\$\/\/"/, path);
+  }
+});
+
+test("la récolte d'assets ignore les fichiers modifiés à la racine", () => {
+  const dockerfile = readFileSync("tools/build-v86-image/assets-amd64.Dockerfile", "utf8");
+  assert.match(dockerfile, /if \(\$0 == "\."\) next/);
+});
+
+test("les deux étages d'assets conservent la trace complète des erreurs", () => {
+  for (const chemin of [
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ]) {
+    assert.match(readFileSync(chemin, "utf8"), /rails assets:precompile --trace/);
+  }
+});
+
+test("l'étage amd64 impose Node à ExecJS malgré le substitut Bun", () => {
+  const dockerfile = readFileSync("tools/build-v86-image/assets-amd64.Dockerfile", "utf8");
+
+  assert.match(dockerfile, /EXECJS_RUNTIME=Node/);
 });
 
 test("une valeur non reconnue retombe sur le chargement du schéma", () => {

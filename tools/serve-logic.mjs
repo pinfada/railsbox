@@ -4,6 +4,42 @@
 import { join, normalize, sep } from "node:path";
 
 /**
+ * Normalise le sous-répertoire sous lequel le serveur local reproduit une
+ * publication GitHub Pages. La valeur vient de l'environnement du mainteneur,
+ * mais reste fermée à des segments d'URL ordinaires.
+ * @param {unknown} value
+ * @returns {string} « / » ou chemin sans barre finale
+ */
+export function normalizeServeBasePath(value) {
+  const raw = String(value ?? "").trim();
+  if (raw === "" || raw === "/") return "/";
+  const normalized = `/${raw.replace(/^\/+|\/+$/g, "")}`;
+  if (!/^\/(?:[A-Za-z0-9][A-Za-z0-9._~-]*)(?:\/[A-Za-z0-9][A-Za-z0-9._~-]*)*$/.test(normalized)) {
+    throw new Error(`RAILSBOX_BASE_PATH invalide : ${raw}`);
+  }
+  return normalized;
+}
+
+/**
+ * Retire le chemin de publication d'une requête avant de la résoudre dans
+ * public/. La query est conservée pour les modes de test du serveur.
+ * @param {string} urlPath
+ * @param {string} basePath
+ * @returns {string|null}
+ */
+export function stripServeBasePath(urlPath, basePath) {
+  if (basePath === "/") return urlPath;
+  const [pathname, query] = String(urlPath).split(/\?(.*)/s, 2);
+  // Les configurations locales historiques nomment les gros artefacts par des
+  // URL absolues /disks/… afin que le harnais Node et la coquille partagent le
+  // même fichier. Ils restent donc servis à la racine, hors du préfixe émulé.
+  if (pathname === "/disks" || pathname.startsWith("/disks/")) return urlPath;
+  if (pathname !== basePath && !pathname.startsWith(`${basePath}/`)) return null;
+  const stripped = pathname.slice(basePath.length) || "/";
+  return query === undefined ? stripped : `${stripped}?${query}`;
+}
+
+/**
  * Résout un chemin d'URL vers un chemin absolu SOUS publicDir, ou null si la
  * requête tente une traversée de répertoire. Un chemin se terminant par «/»
  * est résolu vers son index.html.

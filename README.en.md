@@ -110,9 +110,9 @@ depending on your application. Details in
 
 |                        |                                                                                                  |
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
-| **Ruby**               | 3.3.12 (provided by base `3.3-r2`, not configurable)                                                |
+| **Ruby**               | published: 3.3.12 (`3.3-r2`); 3.4.3 qualified locally, pending a public base                       |
 | **Databases**          | SQLite and PostgreSQL; MySQL/MariaDB refused with an explicit report                                |
-| **Front-end managers** | npm, pnpm and yarn through Corepack; bun is reported, not executed                                  |
+| **Front-end managers** | npm, pnpm and yarn through Corepack; Bun 1.4 from `bun.lock` or `bun.lockb`                           |
 | **Assets**             | importmap, Propshaft, Sprockets, Tailwind, dart-sass, npm chains (esbuild, cssbundling, jsbundling) |
 | **Not supported**      | outbound network, ActionCable and WebSockets                                                        |
 
@@ -126,9 +126,10 @@ The details, the base revisions, and what requires a change on your side:
 - **The whole artefact is public.** The disk image and the memory snapshot are
   downloadable by anyone, and the visitor is root inside their VM. Never ship
   real secrets or real data ([`SECURITY.md`](SECURITY.md)).
-- **Startup time varies.** Around 20–25 s for the reference demo; up to 78 s
-  measured on the Zealot application, depending on snapshot size, network and
-  CPU. Startup does not break, it stretches.
+- **Startup time varies.** Around 20–25 s for the reference demo. A large Rails
+  8/PostgreSQL application took 266 s for its first emulated boot, then 22 s
+  from its precomputed snapshot. Visitors use the published restoration path;
+  cold boot remains a diagnostic tool.
 - **No outbound network.** A gem that calls a remote service at boot will fail;
   the analysis reports it before the build.
 - **No shared persistence.** Every visitor writes to their own copy, which

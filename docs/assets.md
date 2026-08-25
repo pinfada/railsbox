@@ -8,21 +8,27 @@ Pourquoi certaines chaînes de construction passent par un étage amd64, et ce q
 
 ## Où sont précompilés les assets
 
-Le guest est un **i386**, et deux familles d'outils d'assets ne publient aucun
-binaire pour cette architecture : les gems à exécutable précompilé
-(`tailwindcss-ruby` dont dépend tailwindcss-rails, `dartsass-ruby`) et les
-chaînes npm (esbuild, sass). Elles produisent pourtant du CSS et du JS
+Le guest est un **i386**, et plusieurs familles d'outils d'assets n'y disposent
+pas d'un binaire ou d'un moteur utilisable : les gems à exécutable précompilé
+(`tailwindcss-ruby` dont dépend tailwindcss-rails, `dartsass-ruby`), les
+enveloppes ExecJS comme `terser`, et les chaînes npm (esbuild, sass). Elles
+produisent pourtant du CSS et du JS
 **ordinaires**, indépendants de l'architecture — on les exécute donc sur un
 **étage amd64**, et le disque i386 ne reçoit que `public/assets`. Le guest
 n'exécute jamais ces binaires.
+
+L'étage amd64 impose explicitement Node à ExecJS. Il embarque aussi un
+substitut `bun` inerte pour garder une structure Docker stable quand Bun n'est
+pas utilisé ; sans ce choix explicite, ExecJS pouvait prendre ce substitut pour
+un runtime valide et échouer sans message utile pendant la minification.
 
 L'auto-détection classe seule chaque application :
 
 | Ce qu'elle trouve | Étage retenu | Ce qui tourne |
 | --- | --- | --- |
 | propshaft/sprockets + importmap | `i386` | `assets:precompile` dans le disque applicatif |
-| tailwindcss-rails, dartsass-rails | `amd64` | `assets:precompile` sur l'hôte, copie de `public/assets` |
-| `package.json` (jsbundling/cssbundling) | `amd64` | `npm ci` + scripts de build, puis `assets:precompile` |
+| tailwindcss-rails, dartsass-rails, terser | `amd64` | `assets:precompile` sur l'hôte avec Node, copie de `public/assets` |
+| `package.json` (jsbundling/cssbundling) | `amd64` | installation verrouillée npm, pnpm, yarn ou Bun + scripts de build, puis `assets:precompile` |
 | aucun pipeline | `aucun` | rien |
 
 L'étage amd64 pose exactement le même `RAILS_RELATIVE_URL_ROOT` que le disque
@@ -46,11 +52,16 @@ arbitraire (`tracking-[0.35em]`), qu'aucune feuille pré-construite ne peut
 contenir. Sa présence prouve que le binaire `tailwindcss` a balayé les vues
 pendant cette construction — sur l'hôte amd64, jamais dans le guest.
 
-Deux points d'attention plutôt qu'un refus : sans `package-lock.json` (ou avec un
-verrou bun, que railsbox ne relit pas), l'installation retombe sur
-`npm install` et la construction n'est plus reproductible — c'est un
-avertissement du rapport d'analyse. Et si l'étage amd64 ne produit **aucun**
-asset, la construction s'arrête là.
+Deux points d'attention plutôt qu'un refus : sans verrou reconnu,
+l'installation retombe sur `npm install` et la construction n'est plus
+reproductible — c'est un avertissement du rapport d'analyse. `bun.lock` et
+`bun.lockb` sélectionnent Bun 1.4 avec `--frozen-lockfile`; pnpm et Yarn gardent
+leurs propres règles de version décrites dans la page de compatibilité. Et si
+l'étage amd64 ne produit **aucun** asset, la construction s'arrête là.
+
+Les sources front générées par une gem le sont avant le bundler. RailsBox
+reconnaît notamment `js_from_routes` et exécute sa tâche standard avec
+`JS_FROM_ROUTES_FORCE=true`; aucun script arbitraire du dépôt n'est interpolé.
 
 ### Ce que l'étage amd64 remonte dans la sandbox
 

@@ -28,12 +28,13 @@ SHELL ["linux32", "/bin/sh", "-c"]
 # a besoin : les URL d'assets figées dans le CSS et le JS doivent porter le
 # même préfixe que celles générées à l'exécution.
 ARG MOUNT_PREFIX=""
+ARG BUNDLE_WITHOUT="development:test"
 # Clés jetables : ce build ne sert qu'à peupler /app (bundle, assets, base). Les
 # vraies clés de session vivent dans l'env.sh figé de la base. BUNDLE_PATH pointe
 # dans l'arbre app pour que le bundle soit exporté avec lui.
 ENV RAILS_ENV=production \
     RACK_ENV=production \
-    BUNDLE_WITHOUT="development:test" \
+    BUNDLE_WITHOUT=${BUNDLE_WITHOUT} \
     BUNDLE_JOBS=4 \
     BUNDLE_FROZEN=false \
     BUNDLE_FORCE_RUBY_PLATFORM=true \
@@ -111,8 +112,18 @@ RIB_SYSTEME_INSTALL
 # Bundle d'abord (couche cachée tant que le Gemfile ne bouge pas). Le lockfile
 # du dépôt ne connaît souvent que x86_64-linux : on ajoute la plateforme i386
 # (x86-linux) + ruby pour que les gems natives compilent avec la toolchain base.
+ARG DATABASE=sqlite3
 COPY Gemfile* ./
-RUN bundle lock --add-platform x86-linux ruby && bundle install
+RUN --mount=type=bind,source=.,target=/rib-source,ro set -eu; \
+    if [ ! -f /rib-source/config/database.yml ]; then \
+      mkdir -p config; \
+      printf 'production:\n  adapter: %s\n' "$DATABASE" > config/database.yml; \
+    fi; \
+    if grep -Eq '(^|[^#[:alnum:]_])(gemspec|load_gemspec)\b' Gemfile; then \
+      for fichier in /rib-source/*.gemspec; do [ ! -f "$fichier" ] || cp "$fichier" ./; done; \
+      [ ! -d /rib-source/lib ] || cp -a /rib-source/lib ./; \
+    fi; \
+    bundle lock --add-platform x86-linux ruby && bundle install
 
 # Résidus de compilation des gems natives. Le disque applicatif est figé à
 # 512 Mo (ADR 0002) et peuplé par un `docker export`, donc par TOUT ce qui vit
@@ -134,9 +145,43 @@ RUN bundle lock --add-platform x86-linux ruby && bundle install
 RUN find ${BUNDLE_PATH} -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
 
 COPY . .
+
+# Neutralise le CR ajouté aux shebangs par certains checkouts Windows, sans
+# modifier le dépôt source ni normaliser aveuglément les fichiers binaires.
+RUN set -eu; \
+    cr="$(printf '\r')"; \
+    find . -type f -exec sh -c 'cr=$1; shift; for file do first="$(head -n 1 "$file" 2>/dev/null || true)"; case "$first" in "#!"*"$cr") sed -i "1s/\r$//" "$file" ;; esac; done' sh "$cr" {} +
 # COPY . . a rétabli le Gemfile.lock du dépôt : on ré-ajoute la plateforme i386,
 # sinon bundle exec refuse le bundle pourtant installé.
-RUN bundle lock --add-platform x86-linux ruby && bundle check
+RUN set -eu; \
+    if ! bundle exec puma --version >/dev/null 2>&1; then \
+      printf '\n# Ajout d exécution générique RailsBox (copie embarquée uniquement).\ngem "puma"\n' >> Gemfile; \
+      bundle install; \
+    fi; \
+    bundle lock --add-platform x86-linux ruby; \
+    bundle check; \
+    find ${BUNDLE_PATH} -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
+
+# Certains replis de gems ont besoin d'un gestionnaire de paquets uniquement
+# pour leur installation. Le résultat utile vit ensuite dans vendor/bundle ;
+# conserver tout l'outil et ses dépendances étoufferait le disque applicatif.
+ARG BUILD_ONLY_SYSTEM_PACKAGES=""
+RUN <<'RIB_SYSTEME_BUILD_ONLY'
+set -eu
+if [ -z "${BUILD_ONLY_SYSTEM_PACKAGES}" ]; then exit 0; fi
+for nom in ${BUILD_ONLY_SYSTEM_PACKAGES}; do
+  case "$nom" in
+    [a-z0-9]*) ;;
+    *) echo "[build] nom de paquet transitoire refusé : ${nom}" >&2; exit 1 ;;
+  esac
+  case "$nom" in
+    *[!a-z0-9+.-]*) echo "[build] nom de paquet transitoire refusé : ${nom}" >&2; exit 1 ;;
+  esac
+done
+echo "[build] retrait des paquets de compilation : ${BUILD_ONLY_SYSTEM_PACKAGES}"
+# shellcheck disable=SC2086
+apt-get purge -y --auto-remove -- ${BUILD_ONLY_SYSTEM_PACKAGES}
+RIB_SYSTEME_BUILD_ONLY
 
 # Relocalisation de la surcouche (ADR 0006). Les paquets sont installés dans
 # /usr, qui vit sur le rootfs de base — disque séparé, immuable, mutualisé. On
@@ -268,6 +313,31 @@ else
 fi
 RIB_FORCE_SSL
 
+# La VM n'a aucun réseau sortant. Active Storage reçoit donc un service Disk
+# propre à la sandbox, injecté seulement quand la gem est présente.
+ARG ACTIVE_STORAGE_INITIALIZER=""
+RUN <<'RIB_ACTIVE_STORAGE'
+set -eu
+if [ -n "${ACTIVE_STORAGE_INITIALIZER}" ]; then
+  mkdir -p config/initializers storage
+  printf '%s\n' "${ACTIVE_STORAGE_INITIALIZER}" > config/initializers/zzz_railsbox_active_storage.rb
+  ruby -c config/initializers/zzz_railsbox_active_storage.rb
+  echo "[build] Active Storage redirigé vers le disque local de la sandbox"
+fi
+RIB_ACTIVE_STORAGE
+
+# Les helpers Rails generent des URL prefixees par RAILS_RELATIVE_URL_ROOT,
+# tandis que RouteSet#recognize_path attend un chemin interne. Quelques
+# applications repassent directement une URL de helper a cette API. Le shim
+# reproduit alors le retrait de SCRIPT_NAME effectue par le serveur web.
+ARG RELATIVE_ROUTES_INITIALIZER=""
+RUN <<'RIB_RELATIVE_ROUTES'
+set -eu
+mkdir -p config/initializers
+printf '%s\n' "${RELATIVE_ROUTES_INITIALIZER}" > config/initializers/zzz_railsbox_relative_routes.rb
+ruby -c config/initializers/zzz_railsbox_relative_routes.rb
+RIB_RELATIVE_ROUTES
+
 # Assets précompilés sur l'étage amd64 (tailwindcss-ruby, dartsass-ruby et les
 # chaînes npm n'ont aucun binaire i386 — voir assets-amd64.Dockerfile). Le
 # contexte nommé « railsbox-assets » est TOUJOURS fourni par build-app-disk.sh :
@@ -287,6 +357,7 @@ COPY --from=railsbox-assets . ./
 # chargé — relancer ici échouerait précisément sur les binaires absents.
 ARG ASSET_PRECOMPILE=1
 ARG HOST_ASSETS=0
+ARG PRECOMPILED_ASSETS_INITIALIZER=""
 # Le bloc `env:` du railsbox.yml vaut aussi PENDANT la construction. Toute
 # étape qui DÉMARRE l'application — assets:precompile, la préparation de la base,
 # les seeds —
@@ -315,9 +386,12 @@ if [ "${HOST_ASSETS}" = 1 ]; then
     echo "[build] AUCUN asset reçu de l'étage amd64 — construction interrompue" >&2
     exit 1
   fi
+  mkdir -p config/initializers
+  printf '%s\n' "${PRECOMPILED_ASSETS_INITIALIZER}" > config/initializers/zzz_railsbox_precompiled_assets.rb
+  ruby -c config/initializers/zzz_railsbox_precompiled_assets.rb
   echo "[build] ${fichiers} assets précompilés reçus de l'étage amd64"
 elif [ "${ASSET_PRECOMPILE}" = 1 ]; then
-  bundle exec rails assets:precompile
+  bundle exec rails assets:precompile --trace
 else
   echo "[build] aucun pipeline d'assets détecté"
 fi
@@ -351,6 +425,7 @@ ARG SEED_OPTIONAL=0
 ARG APP_ENV_MANIFEST=""
 RUN <<'RIB_DB'
 set -eu
+export RAILSBOX_SANDBOX=1
 if [ "${WITH_REDIS}" = 1 ]; then
   redis-server --daemonize yes --port 6379 --save '' --appendonly no
   # Même raison qu'au boot du guest : les seeds enfilent souvent des jobs, et
@@ -448,7 +523,6 @@ RIB_DB
 # et ses URL d'assets à la racine du domaine, hors du site — et hors de la
 # portée du Service Worker, qui ne pourrait même pas les rattraper.
 ARG APP_ENV_MANIFEST=""
-ARG DATABASE=sqlite3
 RUN <<'RIB_APP_ENV'
 set -eu
 mkdir -p /app/.railsbox

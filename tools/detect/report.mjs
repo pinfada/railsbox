@@ -120,8 +120,16 @@ export const REMEDIES = Object.freeze({
     "database: sqlite3 dans railsbox.yml si l'application n'utilise pas PostgreSQL.",
   "heavy-native-gem":
     "Prévoyez une compilation longue, ou excluez la gem du groupe installé dans la VM.",
+  "gem-i386-non-supportee":
+    "Utilisez un runtime JavaScript système (Node) sans mini_racer/libv8-node, ou fournissez " +
+    "d'abord une variante réellement compatible x86-linux. RailsBox ne publie pas un bundle " +
+    "dont la construction native est non déterministe.",
   "invalid-package-json":
     "Corrigez la syntaxe JSON de package.json, sinon les scripts d'assets ne seront pas exécutés.",
+  "unsupported-node-version":
+    "Utilisez une série Node prise en charge par railsbox, ou ajoutez d'abord cette série à " +
+    "SUPPORTED_NODE_SERIES et validez l'image officielle correspondante. La contrainte engines.node " +
+    "reste respectée : railsbox ne la contourne pas avec --force.",
   "npm-lockfile-absent":
     "Versionnez un package-lock.json (`npm install` puis commit) : l'étage amd64 installe " +
     "les dépendances front avec npm, et lui seul rend la construction reproductible.",
@@ -134,6 +142,10 @@ export const REMEDIES = Object.freeze({
     '"amazon").to_sym) et déclarez la valeur de repli dans le bloc env: de railsbox.yml. ' +
     "Le gain dépasse la sandbox : une review app et une base de CI n'ont pas plus de réseau " +
     "vers votre bucket. Si la gem n'est pas sollicitée au démarrage, il n'y a rien à faire.",
+  "frontend-separe-absent":
+    "Fournissez le build du frontend dans public/ (avec son fichier source et sa commande de build), " +
+    "ou qualifiez ensemble les deux dépôts. Une URL qui reboucle vers Rails ne remplace pas " +
+    "l'interface absente.",
   "chemin-absolu-javascript":
     "Faites dire le préfixe par Rails, lisez-le une fois en JavaScript, préfixez les appels — " +
     "et rien ne change hors de la sandbox, où le préfixe est vide. Dans le layout : " +
@@ -361,7 +373,7 @@ function field(label, value) {
 function describeAssets(assets) {
   if (!assets) return null;
   const pipeline = assets.npm
-    ? `npm — scripts : ${listOr(assets.scripts, "aucun")} — outils : ${listOr(assets.tools, "aucun")}`
+    ? `${assets.manager ?? "npm"} — scripts : ${listOr(assets.scripts, "aucun")} — outils : ${listOr(assets.tools, "aucun")}`
     : "importmap/sprockets (pas de package.json)";
   const stage = STAGE_LABELS[assets.stage ?? ""];
   if (!stage) return pipeline;

@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import {
   chiffrerCredentials,
   contenuCredentials,
+  detecterCredentialsScalaires,
   ENV_SANDBOX,
   formaterRapport,
   genererPaire,
@@ -177,6 +178,21 @@ test("deux constructions ne partagent aucun secret", () => {
   assert.notEqual(premiere.clair, seconde.clair);
 });
 
+test("détecte uniquement les credentials scalaires secrets lus directement", async () => {
+  const racine = await contexte({
+    "app/services/chiffrement.rb": [
+      "Rails.application.credentials.fetch(:encryption_service_salt, nil)",
+      "credentials.fetch(:api_token)",
+      "Rails.application.credentials.fetch(:region, nil)",
+      "Rails.application.credentials.dig(:aws, :secret_access_key)",
+    ].join("\n"),
+  });
+
+  assert.deepEqual(detecterCredentialsScalaires(racine), ["api_token", "encryption_service_salt"]);
+  const { clair } = genererPaire((taille) => Buffer.alloc(taille, 7), ["encryption_service_salt"]);
+  assert.match(clair, /^encryption_service_salt: [0-9a-f]{64}$/m);
+});
+
 test("la paire propre à l'environnement prime la paire par défaut", async () => {
   const racine = await contexte({
     "config/credentials.yml.enc": "defaut",
@@ -224,13 +240,17 @@ test("une variable au nom voisin ne passe pas pour la clé", async () => {
 });
 
 test("sans clé, la paire est substituée et redevient lisible", async () => {
-  const racine = await contexte({ "config/credentials.yml.enc": "indéchiffrable" });
+  const racine = await contexte({
+    "config/credentials.yml.enc": "indéchiffrable",
+    "app/service.rb": "Rails.application.credentials.fetch(:encryption_service_salt, nil)",
+  });
   const resultat = substituerCredentials(racine);
   assert.equal(resultat.substituee, true);
   const cle = await readFile(join(racine, "config/master.key"), "utf8");
   const contenu = await readFile(join(racine, "config/credentials.yml.enc"), "utf8");
   assert.match(cle, /^[0-9a-f]{32}$/, "aucun saut de ligne parasite");
   assert.match(dechiffrerCommeRails(contenu, cle), /^secret_key_base: /m);
+  assert.match(dechiffrerCommeRails(contenu, cle), /^encryption_service_salt: /m);
 });
 
 test("la substitution suit la paire propre à l'environnement", async () => {

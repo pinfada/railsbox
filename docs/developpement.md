@@ -25,12 +25,55 @@ npm run test:integration  # protocole complet contre une VRAIE VM v86 sous Node
 La page hôte lit `public/disks/v86-config.json` : sans artefacts construits, elle
 le dit et s'arrête là.
 
+Pour prévisualiser localement une image construite pour un dépôt Pages, servez
+la coquille sous le même préfixe. Cela reproduit aussi la portée réelle du
+Service Worker et évite de tester par erreur `/app/` à la place de
+`/<depot>/app/` :
+
+```bash
+RAILSBOX_BASE_PATH=/mon-depot npm start
+# puis http://localhost:8080/mon-depot/
+```
+
 Après un build d'image, extrayez les assets précompilés pour qu'ils soient servis
 statiquement au lieu de traverser le pont série (levier de performance n°1) :
 
 ```bash
 wsl -e sh tools/extract-assets.sh   # → public/disks/assets/ + appstatic/
 ```
+
+### Qualifier une application Rails tierce
+
+Le mode opératoire ci-dessous évite de confondre « Puma a démarré » avec « la
+démonstration fonctionne ». Le dépôt candidat reste propre : toute correction
+généralisable appartient à RailsBox ; une vraie particularité se déclare dans
+le `railsbox.yml` du mainteneur, jamais dans une copie locale cachée.
+
+1. Cloner le dépôt candidat hors de RailsBox et relever son commit exact.
+2. Lire le rapport d'auto-détection : Ruby **du dépôt et de la base**, base de
+   données, schémas secondaires, assets, services, seeds et authentification.
+3. Corriger une lacune par une règle générale accompagnée d'un test de
+   non-régression ; ne jamais coder le nom du candidat dans le moteur.
+4. Construire le disque applicatif sous le préfixe public réel, puis vérifier le
+   nombre de lignes après seeds, la ventilation et au moins 64 Mo de marge.
+5. Capturer le delta et le valider dans une vraie VM, sous le même préfixe.
+6. Ouvrir la sandbox : contrôler la page publique, les assets, une connexion de
+   démonstration et au moins une lecture et une écriture métier.
+7. Lancer `npm run check`, vérifier que le dépôt candidat est toujours propre,
+   puis seulement committer RailsBox.
+
+```bash
+wsl -u root -e bash tools/build-v86-image/build-app-disk.sh "$APP" \
+  --name "$NAME" --base "$BASE" --mount-prefix "/$NAME"
+node tools/build-v86-image/make-delta-snapshot.mjs \
+  --name "$NAME" --base "$BASE_ARTEFACTS" --mount-path "/$NAME/app"
+node tools/build-v86-image/validate-split.mjs \
+  "$NAME-split-config.json" --path "/$NAME/app/"
+```
+
+Un HTTP 200 est nécessaire, pas suffisant. Une qualification n'est complète que
+si les données de démonstration existent et si le parcours que le visiteur doit
+essayer fonctionne réellement.
 
 ### Quatre niveaux de tests hors ligne, tous requis avant un commit
 

@@ -2,9 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ASSET_STAGE,
+  assetPrepareCommand,
   binaryAssetGems,
   npmInstallCommand,
   planAssets,
+  resolveNodeSeries,
 } from "../tools/detect/assets.mjs";
 import { REMEDIES } from "../tools/detect/report.mjs";
 
@@ -78,6 +80,16 @@ test("dartsass-rails bascule lui aussi sur l'étage amd64", () => {
   assert.equal(plan.stage, ASSET_STAGE.HOST);
 });
 
+test("terser bascule sur l'étage amd64 pour disposer d'un moteur ExecJS", () => {
+  const plan = planAssets({
+    assets: { npm: false, scripts: [] },
+    specs: specs(["sprockets-rails", "terser"]),
+  }).plan;
+
+  assert.equal(plan.stage, ASSET_STAGE.HOST);
+  assert.deepEqual([...plan.binaryGems], ["terser"]);
+});
+
 test("une chaîne npm impose l'étage amd64, même sans gem à binaire", () => {
   // Arrange / Act
   const { plan } = planAssets({
@@ -101,6 +113,18 @@ test("sans pipeline d'assets, il n'y a rien à précompiler", () => {
   assert.deepEqual(findings, []);
 });
 
+test("js_from_routes génère ses helpers avant le bundler", () => {
+  const resolved = specs(["propshaft", "js_from_routes"]);
+  const { plan } = planAssets({ assets: { npm: true }, specs: resolved });
+
+  assert.equal(
+    assetPrepareCommand(resolved),
+    "JS_FROM_ROUTES_FORCE=true bundle exec rake js_from_routes:generate",
+  );
+  assert.equal(plan.prepare, assetPrepareCommand(resolved));
+  assert.equal(assetPrepareCommand(specs(["propshaft"])), "");
+});
+
 test("planAssets sans argument rend un plan vide plutôt qu'une exception", () => {
   // Arrange / Act
   const { plan } = planAssets();
@@ -112,6 +136,26 @@ test("planAssets sans argument rend un plan vide plutôt qu'une exception", () =
 });
 
 // --- Installation des dépendances front --------------------------------------
+
+test("la série Node suit engines.node sans changer le défaut historique", () => {
+  assert.deepEqual(resolveNodeSeries(null), { series: "22", supported: true, declared: null });
+  assert.equal(resolveNodeSeries("24.x").series, "24");
+  assert.equal(resolveNodeSeries("^20.19.0 || >=22.12.0").series, "22");
+  assert.equal(resolveNodeSeries(">=24 <25").series, "24");
+});
+
+test("une série Node absente est refusée avant npm", () => {
+  const { plan, findings } = planAssets({
+    assets: { npm: true, nodeRequirement: ">=26" },
+    specs: specs(["jsbundling-rails"]),
+    lockfiles: ["package-lock.json"],
+  });
+
+  assert.equal(plan.nodeSeries, "22");
+  const finding = findings.find((entry) => entry.code === "unsupported-node-version");
+  assert.equal(finding.severity, "blocking");
+  assert.ok(REMEDIES["unsupported-node-version"]);
+});
 
 test("npmInstallCommand exige un verrou npm pour une installation reproductible", () => {
   // Arrange / Act / Assert
