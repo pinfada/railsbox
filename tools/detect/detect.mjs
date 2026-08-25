@@ -9,7 +9,13 @@ import { DEFAULT_BASE, resolveBase } from "./bases.mjs";
 import { absolutePathFindings, scanAbsolutePaths } from "./chemins-absolus-js.mjs";
 import { etatFichierSeeds } from "./donnees-demo.mjs";
 import { SEVERITY, createFinding } from "./findings.mjs";
-import { collectNativeGems, detectServices, parseBundlerVersion, parseLockSpecs } from "./gems.mjs";
+import {
+  collectNativeGems,
+  detectServices,
+  parseBundlerVersion,
+  parseGemfileGroups,
+  parseLockSpecs,
+} from "./gems.mjs";
 import { deepFreeze } from "./manifest.mjs";
 import { dataMigrationFindings, scanDataMigrations } from "./migrations.mjs";
 import { extensionsManquantes, extensionsRequises } from "./extensions-pg.mjs";
@@ -54,6 +60,35 @@ const ERB_TAG = /<%[\s\S]*?%>/g;
 const GEMFILE_RUBY = /^[ \t]*ruby[ \t]+["']([^"']+)["']/m;
 const GEMFILE_RAILS = /^[ \t]*gem[ \t]+["']rails["']/m;
 const ADAPTER_LINE = /^[ \t]*adapter:[ \t]*(.+)$/gm;
+
+/**
+ * Repère une racine HTML qui ne rend rien et renvoie vers un frontend déployé
+ * séparément. RailsBox sait construire les assets présents dans le dépôt ; il
+ * ne peut pas inventer une seconde application absente.
+ * @param {string|null} routesSource
+ * @param {string|null} controllerSource
+ * @param {boolean} hasPublicIndex
+ * @returns {Finding[]}
+ */
+export function separateFrontendFindings(routesSource, controllerSource, hasPublicIndex) {
+  if (!routesSource || !controllerSource || hasPublicIndex) return [];
+  const root = /\broot\s+(?:to:\s*)?["']([a-z0-9_/]+)#[a-z0-9_]+["']/i.test(routesSource);
+  const redirect = /\bredirect_to\b/.test(controllerSource);
+  const frontendUrl =
+    /ENV(?:\.fetch\(\s*|\[\s*)["'][A-Z0-9_]*(?:FRONTEND|SPA)[A-Z0-9_]*URL["']/.test(
+      controllerSource,
+    );
+  if (!root || !redirect || !frontendUrl) return [];
+  return [
+    createFinding(
+      SEVERITY.BLOCKING,
+      "frontend-separe-absent",
+      "La route racine redirige vers un frontend séparé piloté par une variable d'environnement, " +
+        "mais ce frontend n'est pas livré dans public/index.html. Le dépôt Rails seul ne peut donc " +
+        "pas rendre une interface autonome dans la sandbox.",
+    ),
+  ];
+}
 
 /**
  * Lit un fichier texte en tolérant son absence.
@@ -495,7 +530,11 @@ function detectRails(gemfile, specs) {
  * @returns {string} adaptateur supposé
  */
 function fallbackDatabase(specs) {
-  return specs.has("pg") ? "postgresql" : "sqlite3";
+  if (specs.has("pg")) return "postgresql";
+  if (specs.has("sqlite3")) return "sqlite3";
+  if (specs.has("mysql2")) return "mysql2";
+  if (specs.has("trilogy")) return "trilogy";
+  return "sqlite3";
 }
 
 /**
@@ -508,13 +547,17 @@ function fallbackDatabase(specs) {
 function detectDatabase(databaseYml, specs) {
   if (databaseYml === null) {
     const database = fallbackDatabase(specs);
+    const unsupported = UNSUPPORTED_ADAPTERS.includes(database);
     return {
       database,
       findings: [
         createFinding(
-          SEVERITY.WARNING,
-          "missing-database-config",
-          `config/database.yml est absent : ${database} est supposé par défaut.`,
+          unsupported ? SEVERITY.BLOCKING : SEVERITY.WARNING,
+          unsupported ? "unsupported-database" : "missing-database-config",
+          unsupported
+            ? `Gem « ${database} » seule disponible : MySQL pas encore supporté par les images de base.`
+            : `config/database.yml est absent : ${database} est supposé par défaut.`,
+          unsupported ? { adapter: database } : {},
         ),
       ],
     };
@@ -652,6 +695,7 @@ export async function detectApp(appDir, options = {}) {
     seedsRb,
     sourcesAuth,
     nomsModeles,
+    routesRb,
   ] = await Promise.all([
     readOptionalFile(join(appDir, ".ruby-version")),
     readOptionalFile(join(appDir, "Gemfile")),
@@ -688,12 +732,21 @@ export async function detectApp(appDir, options = {}) {
     // ira chercher la session. Quand il ne le sait pas, il doit le dire.
     readAuthSources(appDir),
     readModelNames(appDir),
+    readOptionalFile(join(appDir, "config", "routes.rb")),
   ]);
 
   /** @type {Finding[]} */
   const findings = [];
   const specs = parseLockSpecs(lock);
   if (lock === null) {
+    // Sans lock, les versions et dépendances transitives restent inconnues,
+    // mais les gems DIRECTEMENT déclarées ne le sont pas. Les conserver évite
+    // de découvrir mysql2 ou une extension native seulement pendant Docker.
+    for (const nom of parseGemfileGroups(gemfile).keys()) {
+      // Rails dispose déjà d'un repli dédié sur le Gemfile, qui préserve
+      // correctement une version inconnue sous la forme null.
+      if (nom !== "rails") specs.set(nom, "inconnue");
+    }
     findings.push(
       createFinding(
         SEVERITY.WARNING,
@@ -737,6 +790,19 @@ export async function detectApp(appDir, options = {}) {
   findings.push(...sqliteDriverFindings({ state: sqlite, database: database.database, adapters }));
   findings.push(...externalServiceFindings(specs.keys()));
   findings.push(...absolutePathFindings(scanAbsolutePaths(javascriptFiles)));
+  const cibleRacine = routesRb?.match(
+    /\broot\s+(?:to:\s*)?["'](?<controleur>[a-z0-9_/]+)#[a-z0-9_]+["']/i,
+  )?.groups?.controleur;
+  const controleurRacine = cibleRacine
+    ? await readOptionalFile(join(appDir, "app", "controllers", `${cibleRacine}_controller.rb`))
+    : null;
+  findings.push(
+    ...separateFrontendFindings(
+      routesRb,
+      controleurRacine,
+      await pathExists(join(appDir, "public", "index.html")),
+    ),
+  );
   // `structure.sql` et `schema.rb` ne coexistent qu'au prix d'une
   // configuration explicite : `db:schema:load` suit `config.active_record
   // .schema_format`, et railsbox n'a pas à trancher à sa place. On retient
@@ -823,20 +889,6 @@ export async function detectApp(appDir, options = {}) {
   findings.push(...assetPlan.findings);
   const native = collectNativeGems(specs);
   findings.push(...native.findings);
-  // mysql2 dans le lock est aussi bloquant, mais inutile de le signaler deux
-  // fois quand database.yml a déjà déclenché le même code.
-  const alreadyBlocked = findings.some((finding) => finding.code === "unsupported-database");
-  if (specs.has("mysql2") && !alreadyBlocked) {
-    findings.push(
-      createFinding(
-        SEVERITY.BLOCKING,
-        "unsupported-database",
-        "Gem « mysql2 » présente : MySQL pas encore supporté par les images de base.",
-        { adapter: "mysql2" },
-      ),
-    );
-  }
-
   const bundler = parseBundlerVersion(lock);
   if (bundler) {
     findings.push(

@@ -15,6 +15,7 @@
 #   --base <image>      image Docker de base (défaut : railsbox-base-<X.Y>)
 #   --seed <cmd>        commande de seed ("" pour aucune)
 #   --seed-optional     un seed en échec n'arrête pas la construction
+#   --env NOM=VALEUR    variable requise par l'application (répétable)
 #   --no-cache          reconstruction complète de l'image Docker
 #   --mount-prefix <p>  racine PUBLIQUE de la sandbox (« /depot » sur un Pages
 #                       de projet) : l'application y est montée sur <p>/app
@@ -53,6 +54,7 @@ SEED_OVERRIDE_SET=0
 SEED_OPTIONAL=0
 NO_CACHE=""
 MOUNT_PREFIX=""
+APP_ENV_OVERRIDES=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,6 +62,19 @@ while [ $# -gt 0 ]; do
     --base) BASE_IMAGE="$2"; shift 2 ;;
     --seed) SEED_OVERRIDE="$2"; SEED_OVERRIDE_SET=1; shift 2 ;;
     --seed-optional) SEED_OPTIONAL=1; shift ;;
+    --env)
+      paire_env="$2"
+      nom_env="${paire_env%%=*}"
+      valeur_env="${paire_env#*=}"
+      [ "$nom_env" != "$paire_env" ] || { echo "--env attend NOM=VALEUR" >&2; exit 2; }
+      case "$nom_env" in
+        ''|[0-9]*|*[!A-Za-z0-9_]*) echo "Nom de variable invalide : $nom_env" >&2; exit 2 ;;
+      esac
+      valeur_env_echappee="$(printf '%s' "$valeur_env" | sed "s/'/'\"'\"'/g")"
+      APP_ENV_OVERRIDES="${APP_ENV_OVERRIDES}export ${nom_env}='${valeur_env_echappee}'
+"
+      shift 2
+      ;;
     --no-cache) NO_CACHE="--no-cache"; shift ;;
     --mount-prefix) MOUNT_PREFIX="$2"; shift 2 ;;
     -h|--help) sed -n '2,25p' "$0" >&2; exit 2 ;;
@@ -208,6 +223,10 @@ fi
 . "$ARGS_FILE"
 
 if [ "$SEED_OVERRIDE_SET" -eq 1 ]; then SEED_COMMAND="$SEED_OVERRIDE"; fi
+# Les valeurs explicites de l'opérateur ont le dernier mot sur railsbox.yml,
+# comme les autres options de cette commande. Elles sont déjà quotées sans
+# évaluation : une valeur contenant `$()` reste du texte dans le disque.
+APP_ENV_MANIFEST="${APP_ENV_MANIFEST:-}${APP_ENV_OVERRIDES}"
 
 SERIES="$(echo "$RUBY_VERSION" | cut -d. -f1,2)"
 [ -n "$BASE_IMAGE" ] || BASE_IMAGE="railsbox-base-$SERIES"
@@ -405,6 +424,7 @@ if [ "${ASSETS_STAGE:-aucun}" = "amd64" ]; then
     --build-arg "NODE_SERIES=${NODE_SERIES:-22}" \
     --build-arg "BUN_ASSETS=${BUN_ASSETS:-0}" \
     --build-arg "EXTRA_PACKAGES=$ASSET_EXTRA_PACKAGES" \
+    --build-arg "DATABASE=$DATABASE" \
     --build-arg "NPM_INSTALL_COMMAND=${NPM_INSTALL_COMMAND:-}" \
     --build-arg "PACKAGE_MANAGER=${PACKAGE_MANAGER:-npm}" \
     --build-arg "ASSET_PREPARE_COMMAND=${ASSET_PREPARE_COMMAND:-}" \
@@ -465,6 +485,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/base/app.Dockerfile"
   --build-arg "SQLITE_DATABASE_URL=${SQLITE_DATABASE_URL:-}" \
   --build-arg "DB_PREPARE_COMMAND=$DB_PREPARE_COMMAND" \
   --build-arg "SEED_COMMAND=$SEED_COMMAND" \
+  --build-arg "BUNDLE_WITHOUT=${BUNDLE_WITHOUT-development:test}" \
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "AUTO_LOGIN_INITIALIZER=$AUTO_LOGIN_INITIALIZER" \

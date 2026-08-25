@@ -116,9 +116,20 @@ RUN set -eu; \
     fi
 
 WORKDIR /app
-ENV BUNDLE_WITHOUT="development:test" BUNDLE_JOBS=4 BUNDLE_FROZEN=false
+ARG BUNDLE_WITHOUT="development:test"
+ARG DATABASE=sqlite3
+ENV BUNDLE_WITHOUT=${BUNDLE_WITHOUT} BUNDLE_JOBS=4 BUNDLE_FROZEN=false
 COPY Gemfile* ./
-RUN bundle install
+RUN --mount=type=bind,source=.,target=/rib-source,ro set -eu; \
+    if [ ! -f /rib-source/config/database.yml ]; then \
+      mkdir -p config; \
+      printf 'production:\n  adapter: %s\n' "$DATABASE" > config/database.yml; \
+    fi; \
+    if grep -Eq '(^|[^#[:alnum:]_])(gemspec|load_gemspec)\b' Gemfile; then \
+      for fichier in /rib-source/*.gemspec; do [ ! -f "$fichier" ] || cp "$fichier" ./; done; \
+      [ ! -d /rib-source/lib ] || cp -a /rib-source/lib ./; \
+    fi; \
+    bundle install
 
 COPY . .
 RUN set -eu; \
@@ -228,12 +239,23 @@ WORKDIR /app
 # (uname -m renvoie x86_64 dans le conteneur i386), Bundler installerait donc
 # les gems précompilées x86_64 (ELFCLASS64, inchargeables). On force la
 # compilation source de toutes les gems natives avec la toolchain i386.
-ENV BUNDLE_WITHOUT="development:test" BUNDLE_JOBS=4 BUNDLE_FROZEN=false \
+ARG BUNDLE_WITHOUT="development:test"
+ARG DATABASE=sqlite3
+ENV BUNDLE_WITHOUT=${BUNDLE_WITHOUT} BUNDLE_JOBS=4 BUNDLE_FROZEN=false \
     BUNDLE_FORCE_RUBY_PLATFORM=true
 COPY Gemfile* ./
 # Le lockfile ne connaît vraisemblablement que x86_64-linux : on ajoute la
 # plateforme i386 (x86-linux) + ruby pour que les gems natives compilent.
-RUN bundle lock --add-platform x86-linux ruby && bundle install
+RUN --mount=type=bind,source=.,target=/rib-source,ro set -eu; \
+    if [ ! -f /rib-source/config/database.yml ]; then \
+      mkdir -p config; \
+      printf 'production:\n  adapter: %s\n' "$DATABASE" > config/database.yml; \
+    fi; \
+    if grep -Eq '(^|[^#[:alnum:]_])(gemspec|load_gemspec)\b' Gemfile; then \
+      for fichier in /rib-source/*.gemspec; do [ ! -f "$fichier" ] || cp "$fichier" ./; done; \
+      [ ! -d /rib-source/lib ] || cp -a /rib-source/lib ./; \
+    fi; \
+    bundle lock --add-platform x86-linux ruby && bundle install
 
 # Résidus de compilation des gems natives. Le disque applicatif est figé à
 # 512 Mo (ADR 0002) et peuplé par un `docker export`, donc par TOUT ce qui vit
@@ -271,7 +293,14 @@ RUN if [ -n "${ACTIVE_STORAGE_INITIALIZER}" ]; then \
 # COPY . . vient de rétablir le Gemfile.lock du dépôt (plateformes x86_64
 # uniquement) : on ré-ajoute la plateforme i386, sinon bundle exec refuse le
 # bundle pourtant déjà installé (LoadError sur la première gem venue).
-RUN bundle lock --add-platform x86-linux ruby && bundle check
+RUN set -eu; \
+    if ! bundle exec puma --version >/dev/null 2>&1; then \
+      printf '\n# Ajout d exécution générique RailsBox (copie embarquée uniquement).\ngem "puma"\n' >> Gemfile; \
+      bundle install; \
+    fi; \
+    bundle lock --add-platform x86-linux ruby; \
+    bundle check; \
+    find "$(gem env home)" -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
 
 ########################################################################
 # Fichiers du pont série et de l'init (voir railsbox/public/vm)
@@ -680,7 +709,6 @@ RIB_INIT
 # Environnement d'exécution : services, clés jetables, variables de l'app
 ########################################################################
 ARG APP_NAME=app
-ARG DATABASE=sqlite3
 ARG WITH_POSTGRES=0
 ARG WITH_REDIS=0
 ARG MOUNT_PATH=/app

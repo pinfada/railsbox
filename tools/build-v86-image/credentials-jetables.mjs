@@ -41,7 +41,14 @@
 // La clé qu'on vient d'écrire serait donc écartée du build, en silence. Les
 // négations sont ajoutées à la COPIE du `.dockerignore` — jamais au dépôt.
 import { createCipheriv, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -144,10 +151,13 @@ export function chiffrerCredentials(texte, cleHex, iv = randomBytes(12)) {
 
 /**
  * Compose le YAML en clair des credentials jetables.
- * @param {{secretKeyBase: string, primaryKey: string, deterministicKey: string, keyDerivationSalt: string}} valeurs secrets tirés au hasard
+ * @param {{secretKeyBase: string, primaryKey: string, deterministicKey: string, keyDerivationSalt: string, credentialsMetier?: Record<string, string>}} valeurs secrets tirés au hasard
  * @returns {string} document YAML
  */
 export function contenuCredentials(valeurs) {
+  const metier = Object.entries(valeurs.credentialsMetier ?? {})
+    .map(([nom, valeur]) => `${nom}: ${valeur}`)
+    .join("\n");
   return `# Généré par railsbox — credentials JETABLES, propres à cette construction.
 #
 # L'application publie son fichier chiffré sans sa clé : c'est la règle, et
@@ -167,7 +177,39 @@ active_record_encryption:
   primary_key: ${valeurs.primaryKey}
   deterministic_key: ${valeurs.deterministicKey}
   key_derivation_salt: ${valeurs.keyDerivationSalt}
+${metier ? `\n# Valeurs jetables pour les credentials scalaires requis au démarrage.\n${metier}\n` : ""}
 `;
+}
+
+/**
+ * Détecte les credentials scalaires à forme secrète lus directement par le
+ * code. Une valeur aléatoire leur permet de démarrer sans inventer une
+ * configuration de service imbriquée. La règle reste volontairement étroite.
+ * @param {string} racine contexte de construction filtré
+ * @returns {string[]} noms de clés YAML simples
+ */
+export function detecterCredentialsScalaires(racine) {
+  const trouves = new Set();
+  const visiter = (dossier) => {
+    for (const entree of readdirSync(dossier, { withFileTypes: true })) {
+      if (entree.isSymbolicLink() || [".git", "node_modules", "vendor"].includes(entree.name))
+        continue;
+      const chemin = resolve(dossier, entree.name);
+      if (entree.isDirectory()) {
+        visiter(chemin);
+      } else if (entree.isFile() && entree.name.endsWith(".rb")) {
+        const source = readFileSync(chemin, "utf8");
+        const motif = /(?:Rails\.application\.)?credentials\.fetch\(\s*:(?<nom>[a-z][a-z0-9_]*)/g;
+        for (const correspondance of source.matchAll(motif)) {
+          const nom = correspondance.groups?.nom;
+          if (nom && /(?:_key|_salt|_secret|_token|_password)$/.test(nom)) trouves.add(nom);
+        }
+      }
+    }
+  };
+  visiter(racine);
+  trouves.delete("secret_key_base");
+  return [...trouves].sort();
 }
 
 /**
@@ -175,7 +217,7 @@ active_record_encryption:
  * @param {(taille: number) => Buffer} [alea] source d'aléa (injectable pour les tests)
  * @returns {{cle: string, contenu: string, clair: string}} clé hexadécimale, fichier chiffré, clair
  */
-export function genererPaire(alea = randomBytes) {
+export function genererPaire(alea = randomBytes, credentialsScalaires = []) {
   const hex = (taille) => Buffer.from(alea(taille)).toString("hex");
   // 16 octets : aes-128-gcm, et les 32 caractères hexadécimaux qu'exige le
   // contrôle de longueur de `EncryptedFile#check_key_length`.
@@ -185,6 +227,7 @@ export function genererPaire(alea = randomBytes) {
     primaryKey: hex(16),
     deterministicKey: hex(16),
     keyDerivationSalt: hex(16),
+    credentialsMetier: Object.fromEntries(credentialsScalaires.map((nom) => [nom, hex(32)])),
   });
   return { cle, contenu: chiffrerCredentials(clair, cle), clair };
 }
@@ -216,6 +259,7 @@ export function reintegrerDansDockerignore(racine, paire) {
  * @property {"fichier"|"environnement"|"desarme"|"aucune-cle"} raison ce qui a décidé
  * @property {Paire} paire paire concernée
  * @property {boolean} dockerignore vrai si le .dockerignore du contexte a été complété
+ * @property {string[]} [credentialsScalaires] valeurs métier jetables ajoutées
  */
 
 /**
@@ -233,7 +277,8 @@ export function substituerCredentials(racine, options = {}) {
   const source = sourceDeLaCle(racine, paire, envManifest);
   if (source) return { substituee: false, raison: source, paire, dockerignore: false };
 
-  const { cle, contenu } = genererPaire(alea);
+  const credentialsScalaires = detecterCredentialsScalaires(racine);
+  const { cle, contenu } = genererPaire(alea, credentialsScalaires);
   for (const [relatif, texte] of [
     [paire.cle, cle],
     [paire.contenu, contenu],
@@ -249,6 +294,7 @@ export function substituerCredentials(racine, options = {}) {
     raison: "aucune-cle",
     paire,
     dockerignore: reintegrerDansDockerignore(racine, paire),
+    credentialsScalaires,
   };
 }
 
@@ -273,8 +319,13 @@ export function formaterRapport(resultat) {
   }
   const lignes = [
     `  ${paire.cle} absent : paire JETABLE substituée pour cette construction.`,
-    "    Aucun secret réel n'entre dans la sandbox ; les credentials métier vaudront nil.",
+    "    Aucun secret réel n'entre dans la sandbox ; les credentials métier non générés vaudront nil.",
   ];
+  if (resultat.credentialsScalaires?.length) {
+    lignes.push(
+      `    Credentials scalaires jetables ajoutés : ${resultat.credentialsScalaires.join(", ")}.`,
+    );
+  }
   if (resultat.dockerignore) {
     lignes.push("    .dockerignore du contexte complété : la clé écrite n'en sera pas écartée.");
   }

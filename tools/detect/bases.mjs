@@ -22,6 +22,7 @@ export const BASE_RUBY_VERSIONS = Object.freeze({
   "3.3-r2": "3.3.12",
   "3.3-r3": "3.3.12",
   "4.0": "4.0.3",
+  "4.0.6": "4.0.6",
 });
 
 /**

@@ -54,6 +54,12 @@ CASA validated Rails 8.0.5.1 on Ruby 4.0.3, an npm/Tailwind toolchain on Node
 512 MB. After a 262 s cold boot, its delta restores and responds in Chromium in
 20.2 s; rendering, navigation and assets pass all four end-to-end checks.
 
+Redmine `849a116` was also a useful negative test: its PostgreSQL build succeeds
+(184 records, 230 MB application disk), but its server was still not listening
+after ten minutes in v86. It is therefore not counted as validated. The attempt
+did generalise `.txt` licence detection, multi-database Gemfiles, Ruby ranges,
+and RailsBox-provided Puma.
+
 This campaign demonstrates broad compatibility with conventional Rails
 monoliths; it is not statistical proof of “all” or “most” Rails applications.
 The guaranteed envelope still excludes MySQL/MariaDB, WebSockets, mandatory

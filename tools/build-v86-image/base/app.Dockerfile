@@ -28,12 +28,13 @@ SHELL ["linux32", "/bin/sh", "-c"]
 # a besoin : les URL d'assets figées dans le CSS et le JS doivent porter le
 # même préfixe que celles générées à l'exécution.
 ARG MOUNT_PREFIX=""
+ARG BUNDLE_WITHOUT="development:test"
 # Clés jetables : ce build ne sert qu'à peupler /app (bundle, assets, base). Les
 # vraies clés de session vivent dans l'env.sh figé de la base. BUNDLE_PATH pointe
 # dans l'arbre app pour que le bundle soit exporté avec lui.
 ENV RAILS_ENV=production \
     RACK_ENV=production \
-    BUNDLE_WITHOUT="development:test" \
+    BUNDLE_WITHOUT=${BUNDLE_WITHOUT} \
     BUNDLE_JOBS=4 \
     BUNDLE_FROZEN=false \
     BUNDLE_FORCE_RUBY_PLATFORM=true \
@@ -111,8 +112,18 @@ RIB_SYSTEME_INSTALL
 # Bundle d'abord (couche cachée tant que le Gemfile ne bouge pas). Le lockfile
 # du dépôt ne connaît souvent que x86_64-linux : on ajoute la plateforme i386
 # (x86-linux) + ruby pour que les gems natives compilent avec la toolchain base.
+ARG DATABASE=sqlite3
 COPY Gemfile* ./
-RUN bundle lock --add-platform x86-linux ruby && bundle install
+RUN --mount=type=bind,source=.,target=/rib-source,ro set -eu; \
+    if [ ! -f /rib-source/config/database.yml ]; then \
+      mkdir -p config; \
+      printf 'production:\n  adapter: %s\n' "$DATABASE" > config/database.yml; \
+    fi; \
+    if grep -Eq '(^|[^#[:alnum:]_])(gemspec|load_gemspec)\b' Gemfile; then \
+      for fichier in /rib-source/*.gemspec; do [ ! -f "$fichier" ] || cp "$fichier" ./; done; \
+      [ ! -d /rib-source/lib ] || cp -a /rib-source/lib ./; \
+    fi; \
+    bundle lock --add-platform x86-linux ruby && bundle install
 
 # Résidus de compilation des gems natives. Le disque applicatif est figé à
 # 512 Mo (ADR 0002) et peuplé par un `docker export`, donc par TOUT ce qui vit
@@ -142,7 +153,14 @@ RUN set -eu; \
     find . -type f -exec sh -c 'cr=$1; shift; for file do first="$(head -n 1 "$file" 2>/dev/null || true)"; case "$first" in "#!"*"$cr") sed -i "1s/\r$//" "$file" ;; esac; done' sh "$cr" {} +
 # COPY . . a rétabli le Gemfile.lock du dépôt : on ré-ajoute la plateforme i386,
 # sinon bundle exec refuse le bundle pourtant installé.
-RUN bundle lock --add-platform x86-linux ruby && bundle check
+RUN set -eu; \
+    if ! bundle exec puma --version >/dev/null 2>&1; then \
+      printf '\n# Ajout d exécution générique RailsBox (copie embarquée uniquement).\ngem "puma"\n' >> Gemfile; \
+      bundle install; \
+    fi; \
+    bundle lock --add-platform x86-linux ruby; \
+    bundle check; \
+    find ${BUNDLE_PATH} -type f \( -name '*.o' -o -name '*.a' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \) -delete 2>/dev/null || true
 
 # Certains replis de gems ont besoin d'un gestionnaire de paquets uniquement
 # pour leur installation. Le résultat utile vit ensuite dans vendor/bundle ;
@@ -505,7 +523,6 @@ RIB_DB
 # et ses URL d'assets à la racine du domaine, hors du site — et hors de la
 # portée du Service Worker, qui ne pourrait même pas les rattraper.
 ARG APP_ENV_MANIFEST=""
-ARG DATABASE=sqlite3
 RUN <<'RIB_APP_ENV'
 set -eu
 mkdir -p /app/.railsbox

@@ -57,6 +57,12 @@ données sur 512 Mo. Après un premier boot de 262 s, son delta se restaure et
 répond dans Chromium en 20,2 s ; rendu, navigation et assets passent les quatre
 contrôles de bout en bout.
 
+Redmine `849a116` a également servi de test négatif utile : son build PostgreSQL
+aboutit (184 enregistrements, disque de 230 Mo), mais son serveur n'écoutait
+toujours pas après dix minutes dans v86. Il n'est donc pas compté comme validé.
+Ce passage a néanmoins généralisé la détection des licences `.txt`, des Gemfile
+multi-base, des plages Ruby et la fourniture de Puma par RailsBox.
+
 Cette campagne prouve une compatibilité large avec les monolithes Rails
 conventionnels ; elle ne prouve pas statistiquement « toutes » ou « la plupart »
 des applications Rails. Restent hors de l'enveloppe garantie : MySQL/MariaDB,

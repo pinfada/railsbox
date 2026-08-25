@@ -97,6 +97,7 @@ test("build-app-disk confie la référence complète au détecteur", () => {
 test("baseRubyVersion ne répond que pour une base publiée", () => {
   assert.equal(baseRubyVersion("3.3-r2"), "3.3.12");
   assert.equal(baseRubyVersion("4.0"), "4.0.3");
+  assert.equal(baseRubyVersion("4.0.6"), "4.0.6");
   assert.equal(baseRubyVersion("4.0-r9"), null);
 });
 

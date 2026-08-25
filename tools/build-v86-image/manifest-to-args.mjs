@@ -9,6 +9,7 @@
 // d'analyse part sur la sortie d'erreur : il informe sans polluer les données.
 // Sort en 1 si un diagnostic bloquant existe, 2 en cas d'échec de l'analyse.
 import { join } from "node:path";
+import { readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { ASSET_STAGE, binaryAssetGems, planAssets } from "../detect/assets.mjs";
 import { mecanismeCouvert, messageMecanismeInconnu } from "../detect/authentification.mjs";
@@ -18,10 +19,11 @@ import { planExclusions } from "../detect/exclusions.mjs";
 import { createFinding, SEVERITY } from "../detect/findings.mjs";
 
 /** @typedef {import("../detect/findings.mjs").Finding} Finding */
-import { parseLockSpecs } from "../detect/gems.mjs";
+import { EXCLUDED_GROUPS, parseGemfileGroups, parseLockSpecs } from "../detect/gems.mjs";
 import { mergeManifest, parseRailsboxYml } from "../detect/manifest.mjs";
 import { KEEP_FORCE_SSL_VALUE, KEEP_FORCE_SSL_VARIABLE } from "../detect/ssl.mjs";
 import { validateSystemPackages } from "../detect/paquets-systeme.mjs";
+import { satisfiesRubyRequirement } from "../detect/ruby-requirement.mjs";
 import { randomUUID } from "node:crypto";
 
 import { buildAutoLoginInitializer } from "./auto-login.mjs";
@@ -46,6 +48,7 @@ const EXIT_USAGE = 2;
  * de cache.ruby-lang.org sont nommées par version complète.
  */
 export const RUBY_PATCH_LEVELS = Object.freeze({
+  4.0: "4.0.6",
   3.1: "3.1.7",
   3.2: "3.2.9",
   3.3: "3.3.12",
@@ -57,6 +60,58 @@ export const DEFAULT_RUBY_VERSION = "3.3.12";
 
 /** Version majeure de PostgreSQL de la base Debian bookworm i386. */
 export const DEFAULT_PG_VERSION = "15";
+
+/**
+ * Groupes à exclure pendant le build. Si les seeds utilisent une gem rangée
+ * dans un groupe normalement exclu, ce groupe doit être installé le temps de
+ * construire la base de démonstration.
+ * @param {string|null|undefined} gemfile source du Gemfile
+ * @param {string|null|undefined} seeds sources de db/seeds.rb et db/seeds/**
+ * @returns {string} liste Bundler séparée par des deux-points
+ */
+export function bundleWithoutForSeeds(gemfile, seeds) {
+  const source = typeof seeds === "string" ? seeds : "";
+  const requiredGroups = new Set();
+  for (const [gem, groups] of parseGemfileGroups(gemfile)) {
+    if (!groups.some((group) => EXCLUDED_GROUPS.includes(group))) continue;
+    const requireName = gem.replaceAll("-", "_");
+    const constant = gem
+      .split(/[-_]/)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join("");
+    const escaped = requireName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const used =
+      new RegExp(`\\brequire\\s*[('"]+${escaped}(?:[/"'])`).test(source) ||
+      new RegExp(`\\b${constant}\\b`).test(source);
+    if (used) groups.forEach((group) => requiredGroups.add(group));
+  }
+  return EXCLUDED_GROUPS.filter((group) => !requiredGroups.has(group)).join(":");
+}
+
+async function readSeedTree(appDir, mainSeed) {
+  const sources = [mainSeed ?? ""];
+  const pending = [join(appDir, "db", "seeds")];
+  let count = 0;
+  while (pending.length > 0 && count < 200) {
+    const dir = pending.pop();
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile() && entry.name.endsWith(".rb")) {
+        sources.push((await readOptionalFile(path)) ?? "");
+        count += 1;
+      }
+    }
+  }
+  return sources.join("\n");
+}
 
 /**
  * Répertoire de données du cluster PostgreSQL — SUR LE DISQUE APPLICATIF.
@@ -169,8 +224,10 @@ export function postgresNamedDatabaseEnv(appName, names) {
 
 /** Paquets Debian fournissant chaque bibliothèque système réclamée par une gem. */
 const SYSTEM_LIB_PACKAGES = Object.freeze({
+  "file-command": Object.freeze(["file"]),
   imagemagick: Object.freeze(["imagemagick"]),
   libcurl: Object.freeze(["libcurl4-openssl-dev"]),
+  libclang: Object.freeze(["libclang-dev"]),
   libffi: Object.freeze(["libffi-dev"]),
   libicu: Object.freeze(["libicu-dev"]),
   // libmagic-dev : 8 Mo pour ruby-filemagic, que Marcel (Ruby pur) a remplacée
@@ -213,6 +270,7 @@ const SYSTEM_LIB_PACKAGES = Object.freeze({
  * Ils sont installés avec la surcouche puis retirés avant sa relocalisation.
  */
 const SYSTEM_LIB_BUILD_ONLY_PACKAGES = Object.freeze({
+  libclang: Object.freeze(["libclang-dev"]),
   nodejs: Object.freeze(["npm"]),
 });
 
@@ -326,10 +384,10 @@ const DEFAULT_SEED = "bundle exec rails db:seed";
 // Certaines applications livrent un vrai jeu de démonstration, mais le
 // protègent explicitement contre une exécution en production. RailsBox construit
 // pourtant toujours la base avec la configuration de production : c'est celle
-// que le guest utilisera. Dans ce cas précis, on conserve donc l'application et
-// sa connexion en production, et on ne change que la valeur observée par
-// `Rails.env` pendant le chargement du fichier de seeds.
-function nonProductionSeedCommand(gemfileSource) {
+// que le guest utilisera. La connexion reste imposée par DATABASE_URL, mais le
+// processus de seed démarre réellement dans l'environnement attendu. Modifier
+// Rails.env après le boot arrive trop tard pour les initializers et l'eager load.
+function nonProductionSeedCommand(gemfileSource, extraGroups = []) {
   // `staging` est le meilleur environnement de seed quand l'application le
   // déclare : contrairement à development/test, ses gems restent installées
   // dans l'image. Rails ne les charge toutefois pas lors d'un boot production,
@@ -338,11 +396,13 @@ function nonProductionSeedCommand(gemfileSource) {
     typeof gemfileSource === "string" &&
     /\bgroup\s*(?:\([^)]*\bstaging\b[^)]*\)|[^\n]*\bstaging\b[^\n]*\bdo\b)/.test(gemfileSource);
   const environment = staging ? "staging" : "development";
-  const requireGroup = staging ? "Bundler.require(:staging); " : "";
+  const groups = [...new Set([...(staging ? ["staging"] : []), ...extraGroups])];
+  const requireGroup = groups.length
+    ? `Bundler.require(${groups.map((group) => `:${group}`).join(", ")}); `
+    : "";
   return (
-    `bundle exec rails runner '${requireGroup}Rails.application.load_tasks; ` +
-    `Rails.instance_variable_set(:@_env, ` +
-    `ActiveSupport::EnvironmentInquirer.new("${environment}")); Rails.application.load_seed'`
+    `RAILS_ENV=${environment} RACK_ENV=${environment} bundle exec rails runner '` +
+    `${requireGroup}Rails.application.load_tasks; Rails.application.load_seed'`
   );
 }
 
@@ -501,7 +561,7 @@ export function formatEnvFragment(env) {
 
 /**
  * Construit la table des arguments de construction Docker.
- * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, seedsSource?: string|null, gemfileSource?: string|null, appName: string, baseRevision?: string, mountPrefix?: string, buildIdentity?: string}} input contexte d'analyse
+ * @param {{manifest: Manifest, specs: Map<string, string>, hasSeeds: boolean, seedsSource?: string|null, gemfileSource?: string|null, appName: string, rubyVersion?: string|null, baseRevision?: string, mountPrefix?: string, buildIdentity?: string}} input contexte d'analyse
  * @returns {Record<string, string>} arguments prêts à passer en `--build-arg`
  * @throws {Error} si la version de Ruby ne peut pas être résolue
  */
@@ -512,17 +572,22 @@ export function buildArgs({
   seedsSource,
   gemfileSource,
   appName,
+  rubyVersion,
   baseRevision,
   mountPrefix = "",
   buildIdentity = "",
 }) {
-  const ruby = resolveRubyVersion(manifest.ruby);
+  const ruby = resolveRubyVersion(rubyVersion ?? manifest.ruby);
   const assets = assetsPlan(manifest, specs);
+  const bundleWithout = bundleWithoutForSeeds(gemfileSource, seedsSource);
+  const includedSeedGroups = EXCLUDED_GROUPS.filter(
+    (group) => !bundleWithout.split(":").includes(group),
+  );
   const seedCommand =
     manifest.seed?.command ??
     (hasSeeds
-      ? seedsRefuseProduction(seedsSource)
-        ? nonProductionSeedCommand(gemfileSource)
+      ? seedsRefuseProduction(seedsSource) || includedSeedGroups.length > 0
+        ? nonProductionSeedCommand(gemfileSource, includedSeedGroups)
         : DEFAULT_SEED
       : "");
   const withPostgres = manifest.database === "postgresql";
@@ -631,6 +696,7 @@ export function buildArgs({
     // préparation bien plus lente n'aurait aucune explication visible.
     DB_PREPARE_STRATEGY: dbPrepare.strategy,
     SEED_COMMAND: seedCommand,
+    BUNDLE_WITHOUT: bundleWithout,
     // Fragment inerte : valeurs RailsBox sûres, puis railsbox.yml tiers non
     // fiable. Il est ajouté verbatim et jamais évalué.
     // Les valeurs générées précèdent celles du manifeste : une déclaration
@@ -691,10 +757,12 @@ export async function analyzeApp(appDir, appName, options = {}) {
   const detected = await detectApp(appDir, { base: options.base });
   const findings = [...detected.findings];
   let manifest = detected.manifest;
+  let rubyDeclaredByRailsbox = false;
 
   const declaredText = await readOptionalFile(join(appDir, "railsbox.yml"));
   if (declaredText !== null) {
     const declared = parseRailsboxYml(declaredText);
+    rubyDeclaredByRailsbox = typeof declared.manifest.ruby === "string";
     findings.push(...declared.findings);
     const merged = mergeManifest(manifest, declared.manifest);
     manifest = merged.manifest;
@@ -706,6 +774,7 @@ export async function analyzeApp(appDir, appName, options = {}) {
     readOptionalFile(join(appDir, "Gemfile.lock")),
     readOptionalFile(join(appDir, "db", "seeds.rb")),
   ]);
+  const seedSources = await readSeedTree(appDir, seeds);
   const specs = parseLockSpecs(lock);
 
   // Le repli de préparation, quand aucun schéma versionné n'est disponible :
@@ -775,9 +844,21 @@ export async function analyzeApp(appDir, appName, options = {}) {
     manifest,
     specs,
     hasSeeds: seeds !== null && seeds.trim() !== "",
-    seedsSource: seeds,
+    seedsSource: seedSources,
     gemfileSource: gemfile,
     appName: appName ?? defaultAppName(appDir),
+    // Une borne minimale n'est pas une version exacte. Sans épingle explicite,
+    // réutiliser le Ruby de la base demandée — ou celui de la base par défaut —
+    // dès qu'il satisfait toute la plage évite de construire une base par
+    // borne basse (`>= 3.2` ne signifie pas « exige 3.2 »).
+    rubyVersion: rubyDeclaredByRailsbox
+      ? manifest.ruby
+      : satisfiesRubyRequirement(
+            manifest.baseRuby ?? DEFAULT_RUBY_VERSION,
+            manifest.rubyRequirement?.requirements,
+          ) === true
+        ? (manifest.baseRuby ?? DEFAULT_RUBY_VERSION)
+        : manifest.ruby,
     // La base épinglée décide de la frontière base / surcouche (ADR 0006) ;
     // c'est la même valeur qui fixe le Ruby du guest, d'où une seule option.
     baseRevision: options.base,

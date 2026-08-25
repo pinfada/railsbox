@@ -10,6 +10,7 @@ import {
   parseDatabaseConnectionNames,
   parseDatabaseNames,
   schemaDeBase,
+  separateFrontendFindings,
   readOptionalFile,
 } from "../tools/detect/detect.mjs";
 import { collectNativeGems, detectServices, parseLockSpecs } from "../tools/detect/gems.mjs";
@@ -99,6 +100,34 @@ test("normalizeRubyVersion accepte les formes ruby-, pessimiste et patch", () =>
   assert.equal(normalizeRubyVersion("   3.2.2\n"), "3.2.2");
   assert.equal(normalizeRubyVersion("jruby"), null);
   assert.equal(normalizeRubyVersion(null), null);
+});
+
+test("bloque une racine qui redirige vers un frontend absent du dépôt", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\n',
+    "Gemfile.lock": LOCK_MINIMAL,
+    "config/routes.rb": "Rails.application.routes.draw { root to: 'spa#index' }\n",
+    "app/controllers/spa_controller.rb": [
+      "class SpaController < ActionController::API",
+      "  def index",
+      "    redirect_to ENV.fetch('FRONTEND_URL'), allow_other_host: true",
+      "  end",
+      "end",
+    ].join("\n"),
+  });
+
+  const { findings } = await detectApp(dir);
+  assert.equal(findByCode(findings, "frontend-separe-absent")?.severity, "blocking");
+  assert.match(REMEDIES["frontend-separe-absent"], /public/);
+});
+
+test("ne bloque pas un frontend déjà livré dans public", () => {
+  const findings = separateFrontendFindings(
+    "root to: 'spa#index'",
+    "redirect_to ENV.fetch('FRONTEND_URL')",
+    true,
+  );
+  assert.deepEqual(findings, []);
 });
 
 test("la version de Ruby vient de .ruby-version quand il existe", async () => {
@@ -434,6 +463,18 @@ test("la gem mysql2 bloque même sans database.yml", async () => {
   assert.match(blocking.message, /Gem « mysql2 »/);
 });
 
+test("un Gemfile dynamique proposant PostgreSQL et MySQL retient PostgreSQL", async () => {
+  const dir = await createApp({
+    Gemfile:
+      'gem "rails"\ncase adapter\nwhen /mysql2/\n  gem "mysql2"\nwhen /postgresql/\n  gem "pg"\nwhen /sqlite3/\n  gem "sqlite3"\nend\n',
+  });
+
+  const { manifest, findings } = await detectApp(dir);
+
+  assert.equal(manifest.database, "postgresql");
+  assert.equal(findByCode(findings, "unsupported-database"), undefined);
+});
+
 // --- Assets ------------------------------------------------------------------
 
 test("package.json révèle les scripts de build et les outils front", async () => {
@@ -562,6 +603,12 @@ test("les gems natives connues portent leurs bibliothèques système", () => {
   assert.deepEqual([...byName.get("bcrypt")], []);
 });
 
+test("commonmarker déclare libclang pour sa compilation Rust i386", () => {
+  const { nativeGems } = collectNativeGems(new Map([["commonmarker", "2.9.0"]]));
+
+  assert.deepEqual(nativeGems, [{ name: "commonmarker", systemLibs: ["libclang"] }]);
+});
+
 test("la pile de traitement d'images d'image_processing est reconnue", async () => {
   // Arrange : ce que résout `gem "image_processing"` — la gem elle-même est en
   // Ruby pur, mais elle tire les DEUX processeurs de variantes de Rails. C'est
@@ -610,6 +657,13 @@ test("grpc déclenche l'avertissement de compilation très longue", async () => 
   assert.ok(manifest.nativeGems.some((gem) => gem.name === "grpc"));
 });
 
+test("libv8-node est refusé avant sa compilation i386 disproportionnée", () => {
+  const { nativeGems, findings } = collectNativeGems(new Map([["libv8-node", "24.12.0.1"]]));
+
+  assert.equal(nativeGems[0].name, "libv8-node");
+  assert.equal(findByCode(findings, "gem-i386-non-supportee")?.severity, "blocking");
+});
+
 test("sidekiq implique redis même sans la gem redis", () => {
   const services = detectServices(parseLockSpecs(lockWith(["sidekiq"])));
 
@@ -640,6 +694,16 @@ test("l'absence de Gemfile.lock est signalée explicitement", async () => {
   const { findings } = await detectApp(dir);
 
   assert.equal(findByCode(findings, "missing-gemfile-lock").severity, "warning");
+});
+
+test("sans lockfile, les gems directes restent visibles pour les blocages", async () => {
+  const dir = await createApp({
+    Gemfile: 'gem "rails"\ngem "mysql2"\n',
+  });
+
+  const { findings, manifest } = await detectApp(dir);
+  assert.equal(findByCode(findings, "unsupported-database")?.severity, "blocking");
+  assert.ok(manifest.nativeGems.some((gem) => gem.name === "mysql2"));
 });
 
 // --- railsbox.yml ------------------------------------------------------------

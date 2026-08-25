@@ -119,9 +119,15 @@ RUN set -eu; \
 WORKDIR /app
 
 # Bundle d'abord : couche cachée tant que le Gemfile ne bouge pas.
+ARG DATABASE=sqlite3
 ENV BUNDLE_WITHOUT="development:test" BUNDLE_JOBS=4 BUNDLE_FROZEN=false
 COPY Gemfile* ./
-RUN bundle install
+RUN --mount=type=bind,source=.,target=/rib-source,ro set -eu; \
+    if [ ! -f /rib-source/config/database.yml ]; then \
+      mkdir -p config; \
+      printf 'production:\n  adapter: %s\n' "$DATABASE" > config/database.yml; \
+    fi; \
+    bundle install
 
 COPY . .
 
@@ -235,6 +241,8 @@ set +f
 # diagnostic, pas un garde-fou — mais il est dit, et le rapport est remis à
 # vide : mieux vaut « je n'ai pas su regarder » qu'un rapport muet qui laisse
 # croire que tout est exporté.
+# Un fichier modifié à la racine ne désigne aucun répertoire exportable ;
+# le signaler comme « . » proposerait un chemin refusé par le validateur.
 if ! find . \( -path ./node_modules -o -path ./.git -o -path ./tmp -o -path ./log \
             -o -path ./vendor/bundle -o -path ./.bundle -o -path ./storage \
             -o -path ./coverage \) -prune -o \
@@ -244,9 +252,6 @@ if ! find . \( -path ./node_modules -o -path ./.git -o -path ./tmp -o -path ./lo
   | awk -v exportes="${ASSET_OUTPUT_DIRS}" '
       BEGIN { total = split(exportes, liste, " ") }
       {
-        # Un fichier modifié à la racine ne désigne aucun répertoire d'assets
-        # exportable. Le signaler comme « . » proposerait une configuration
-        # volontairement refusée par le validateur de chemins.
         if ($0 == ".") next
         for (i = 1; i <= total; i++)
           if ($0 == liste[i] || index($0, liste[i] "/") == 1) next

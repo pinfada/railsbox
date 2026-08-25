@@ -158,6 +158,7 @@ docker build --platform linux/386 $NO_CACHE -f "$SCRIPT_DIR/Dockerfile" -t "$IMA
   --build-arg "MOUNT_PATH=$MOUNT_PATH" \
   --build-arg "DB_PREPARE_COMMAND=$DB_PREPARE_COMMAND" \
   --build-arg "SEED_COMMAND=$SEED_COMMAND" \
+  --build-arg "BUNDLE_WITHOUT=${BUNDLE_WITHOUT-development:test}" \
   --build-arg "SEED_OPTIONAL=$SEED_OPTIONAL" \
   --build-arg "APP_ENV_MANIFEST=$APP_ENV_MANIFEST" \
   --build-arg "APP_ENV_TRUSTED=$APP_ENV_TRUSTED" \

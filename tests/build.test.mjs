@@ -16,6 +16,7 @@ import {
   buildArgs,
   defaultAppName,
   binaryAssetGems,
+  bundleWithoutForSeeds,
   extraPackages,
   buildOnlyPackages,
   formatAssignments,
@@ -25,7 +26,60 @@ import {
   splitPackages,
 } from "../tools/build-v86-image/manifest-to-args.mjs";
 
+test("les chemins i386 garantissent Puma sans inclure tout le groupe test", () => {
+  for (const chemin of [
+    "tools/build-v86-image/base/app.Dockerfile",
+    "tools/build-v86-image/Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(chemin, "utf8");
+    assert.match(dockerfile, /if ! bundle exec puma --version/);
+    assert.match(dockerfile, /gem "puma"/);
+  }
+});
+
 // --- Fixtures partagées ------------------------------------------------------
+
+test("les groupes Bundler des gems utilisées par les seeds sont inclus", () => {
+  const gemfile = `
+group :development, :test do
+  gem "database_cleaner"
+  gem "faker"
+end
+group :development do
+  gem "listen"
+end
+`;
+
+  assert.equal(bundleWithoutForSeeds(gemfile, "require 'database_cleaner'\nFaker::Name.name"), "");
+  assert.equal(bundleWithoutForSeeds(gemfile, "Listen.to('.')"), "test");
+  assert.equal(bundleWithoutForSeeds(gemfile, "User.create!"), "development:test");
+});
+
+test("les seeds dépendant de groupes exclus les chargent hors production", () => {
+  const args = buildArgs({
+    manifest: { ruby: "3.3.12", database: "sqlite3", assets: {}, services: {} },
+    specs: new Map(),
+    hasSeeds: true,
+    seedsSource: "require 'database_cleaner'\nFaker::Name.name",
+    gemfileSource: 'group :development, :test do\n  gem "database_cleaner"\n  gem "faker"\nend\n',
+    appName: "demo",
+  });
+
+  assert.equal(args.BUNDLE_WITHOUT, "");
+  assert.match(args.SEED_COMMAND, /^RAILS_ENV=development RACK_ENV=development /);
+  assert.match(args.SEED_COMMAND, /Bundler\.require\(:development, :test\)/);
+});
+
+test("les scripts transmettent une liste BUNDLE_WITHOUT volontairement vide", () => {
+  for (const path of [
+    "tools/build-v86-image/build.sh",
+    "tools/build-v86-image/build-app-disk.sh",
+  ]) {
+    const script = readFileSync(path, "utf8");
+    assert.match(script, /\$\{BUNDLE_WITHOUT-development:test\}/, path);
+    assert.doesNotMatch(script, /\$\{BUNDLE_WITHOUT:-development:test\}/, path);
+  }
+});
 
 const createdDirs = [];
 
@@ -96,6 +150,18 @@ test("resolveRubyVersion refuse une série inconnue plutôt que de deviner", () 
   assert.throws(() => resolveRubyVersion("2.7"), /railsbox\.yml/);
 });
 
+test("une plage Ruby compatible réutilise la base par défaut", async () => {
+  const dir = await createApp({
+    Gemfile:
+      'source "https://rubygems.org"\nruby ">= 3.2.0", "< 4.1.0"\ngem "rails"\ngem "sqlite3"\n',
+    "config/database.yml": "production:\n  adapter: sqlite3\n",
+  });
+
+  const analysis = await analyzeApp(dir, "demo");
+
+  assert.equal(analysis.args.RUBY_VERSION, DEFAULT_RUBY_VERSION);
+});
+
 // --- Paquets système ---------------------------------------------------------
 
 test("extraPackages joint les paquets de la base et ceux des gems natives", () => {
@@ -135,6 +201,16 @@ test("extraPackages n'installe ni PostgreSQL ni Redis pour une application sqlit
   assert.deepEqual(packages, ["libsqlite3-dev"]);
 });
 
+test("extraPackages fournit file à active_storage_validations", () => {
+  const packages = extraPackages({
+    database: "sqlite3",
+    nativeGems: [{ name: "active_storage_validations", systemLibs: ["file-command"] }],
+    services: { redis: false },
+  });
+
+  assert.deepEqual(packages, ["file", "libsqlite3-dev"]);
+});
+
 test("extraPackages fournit les en-têtes libwebp que webp-ffi compile", () => {
   // webp-ffi est une liaison FFI qui compile POURTANT une extension : sans
   // `libwebp-dev`, `bundle install` s'arrête sur « fatal error:
@@ -168,6 +244,16 @@ test("extraPackages fournit le repli Node de sass-embedded sur i386", () => {
   assert.deepEqual(extraPackages(manifest), ["libsqlite3-dev", "nodejs", "npm"]);
   assert.deepEqual(buildOnlyPackages(manifest), ["npm"]);
   assert.deepEqual(splitPackages(manifest, "3.3-r3").buildOnly, ["npm"]);
+});
+
+test("commonmarker reçoit libclang uniquement pendant sa compilation", () => {
+  const manifest = {
+    database: "sqlite3",
+    nativeGems: [{ name: "commonmarker", systemLibs: ["libclang"] }],
+  };
+
+  assert.deepEqual(extraPackages(manifest), ["libclang-dev", "libsqlite3-dev"]);
+  assert.deepEqual(buildOnlyPackages(manifest), ["libclang-dev"]);
 });
 
 test("un paquet transitoire déclaré reste disponible à l'exécution", () => {
@@ -598,7 +684,7 @@ test("buildArgs charge en environnement non-production des seeds qui refusent pr
   });
 
   assert.match(args.SEED_COMMAND, /rails runner/);
-  assert.match(args.SEED_COMMAND, /EnvironmentInquirer\.new\("development"\)/);
+  assert.match(args.SEED_COMMAND, /^RAILS_ENV=development RACK_ENV=development /);
   assert.match(args.SEED_COMMAND, /Rails\.application\.load_tasks/);
   assert.match(args.SEED_COMMAND, /Rails\.application\.load_seed/);
 });
@@ -632,7 +718,7 @@ test("les seeds protégés chargent le groupe staging quand le Gemfile le prévo
   });
 
   assert.match(args.SEED_COMMAND, /Bundler\.require\(:staging\)/);
-  assert.match(args.SEED_COMMAND, /EnvironmentInquirer\.new\("staging"\)/);
+  assert.match(args.SEED_COMMAND, /^RAILS_ENV=staging RACK_ENV=staging /);
 });
 
 // --- Analyse complète d'une application --------------------------------------
@@ -1014,6 +1100,40 @@ test("TOUT étage qui compile des gems accepte EXTRA_PACKAGES, et on le lui pass
   const appDockerfile = readFileSync("tools/build-v86-image/base/app.Dockerfile", "utf8");
   assert.match(appDockerfile, /ARG BUILD_ONLY_SYSTEM_PACKAGES=""/);
   assert.match(appDockerfile, /apt-get purge -y --auto-remove -- \$\{BUILD_ONLY_SYSTEM_PACKAGES\}/);
+});
+
+test("les bundles fondés sur un gemspec reçoivent leurs métadonnées avant l'installation", () => {
+  for (const path of [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(path, "utf8");
+    assert.match(dockerfile, /--mount=type=bind,source=\.,target=\/rib-source,ro/, path);
+    assert.match(dockerfile, /\/rib-source\/\*\.gemspec/, path);
+    assert.match(dockerfile, /cp -a \/rib-source\/lib/, path);
+  }
+});
+
+test("les étages de bundle créent un database.yml jetable quand le dépôt n'en fournit pas", () => {
+  for (const chemin of [
+    "tools/build-v86-image/Dockerfile",
+    "tools/build-v86-image/assets-amd64.Dockerfile",
+    "tools/build-v86-image/base/app.Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(chemin, "utf8");
+    assert.match(dockerfile, /! -f \/rib-source\/config\/database\.yml/, chemin);
+    assert.match(dockerfile, /adapter: %s/, chemin);
+  }
+  const script = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+  assert.match(script, /--build-arg "DATABASE=\$DATABASE"/);
+});
+
+test("la construction découplée accepte des variables explicites sans eval", () => {
+  const script = readFileSync("tools/build-v86-image/build-app-disk.sh", "utf8");
+  assert.match(script, /--env\)\s+paire_env=/);
+  assert.match(script, /--env attend NOM=VALEUR/);
+  assert.match(script, /APP_ENV_MANIFEST="\$\{APP_ENV_MANIFEST:-\}\$\{APP_ENV_OVERRIDES\}"/);
+  assert.doesNotMatch(script, /eval[^\n]*APP_ENV_OVERRIDES/);
 });
 
 test("les copies de build neutralisent les shebangs CRLF sans toucher au dépôt", () => {
