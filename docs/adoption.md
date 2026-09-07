@@ -1,6 +1,6 @@
 # Adoption
 
-*Mesuré le 31/08/2026. Cette page est régénérée chaque semaine ; l'historique vit
+*Mesuré le 07/09/2026. Cette page est régénérée chaque semaine ; l'historique vit
 dans les commits de ce fichier — l'API de trafic de GitHub, elle, n'expose que
 les quatorze derniers jours.*
 
@@ -11,7 +11,7 @@ les quatorze derniers jours.*
 | Vues du dépôt | — (— uniques) | 14 jours |
 | Clones | — (— uniques) | 14 jours |
 | Versions publiées de l'image de base | 6 | cumulé |
-| Dépôts publics détectés | 2 | instantané |
+| Dépôts publics détectés | 0 | instantané |
 | Dépôts privés | **non mesurable** | — |
 
 **Aucune ligne de ce tableau ne mesure l'usage privé, et il n'en existe pas.**
@@ -31,8 +31,7 @@ fichier à modifier : cette page-ci est régénérée chaque semaine.
 
 ## Sandboxes publiques détectées
 
-- [`pinfada/sharemybag`](https://github.com/pinfada/sharemybag)
-- [`pinfada/tchopmygrinds`](https://github.com/pinfada/tchopmygrinds)
+_Aucun dépôt public détecté à cette date._
 
 Détection automatique, par recherche du workflow réutilisable. **Seules des
 sandboxes publiques y figurent** : quand la source est privée, c'est sa vitrine
