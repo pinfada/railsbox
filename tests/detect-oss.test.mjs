@@ -27,7 +27,6 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { detectApp } from "../tools/detect/detect.mjs";
-import { hasBlocking } from "../tools/detect/report.mjs";
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIGURED = process.env.RAILSBOX_OSS_DIR ?? ".oss";
@@ -47,6 +46,7 @@ const APPLICATIONS = Object.freeze([
       stage: "amd64",
       npm: false,
       binaryGems: ["tailwindcss-rails", "tailwindcss-ruby"],
+      blockingCodes: ["ruby-version-incompatible"],
     },
   },
   {
@@ -57,6 +57,7 @@ const APPLICATIONS = Object.freeze([
       stage: "amd64",
       npm: true,
       binaryGems: [],
+      blockingCodes: [],
     },
   },
 ]);
@@ -77,9 +78,18 @@ for (const { dossier, depot, attendu } of APPLICATIONS) {
       assert.equal(manifest.assets.stage, attendu.stage);
       assert.equal(manifest.assets.npm, attendu.npm);
       assert.deepEqual([...manifest.assets.binaryGems], attendu.binaryGems);
-      // Un refus sur une application réelle et supportée serait une régression
-      // du classement, pas un verdict sur l'application.
-      assert.equal(hasBlocking(findings), false, "aucune de ces applications ne doit être refusée");
+      // Ces dépôts avancent sans nous. rubygems.org exige désormais Ruby 4,
+      // que les bases publiées ne fournissent pas encore : ce refus est attendu
+      // et ne doit pas masquer une régression du classement des assets.
+      const blockingCodes = findings
+        .filter(({ severity }) => severity === "blocking")
+        .map(({ code }) => code)
+        .sort();
+      assert.deepEqual(
+        blockingCodes,
+        [...attendu.blockingCodes].sort(),
+        "seuls les refus explicitement attendus pour ce dépôt sont permis",
+      );
       // Ces dépôts sont des applications Rails : le détecteur doit les
       // reconnaître comme telles, sans quoi tout le reste est un hasard.
       assert.ok(manifest.rails, "la version de Rails doit être résolue depuis le Gemfile.lock");
