@@ -1,6 +1,6 @@
 # Adoption
 
-*Mesuré le 21/09/2026. Cette page est régénérée chaque semaine ; l'historique vit
+*Mesuré le 28/09/2026. Cette page est régénérée chaque semaine ; l'historique vit
 dans les commits de ce fichier — l'API de trafic de GitHub, elle, n'expose que
 les quatorze derniers jours.*
 
