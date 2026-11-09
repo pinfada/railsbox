@@ -1,6 +1,6 @@
 # Adoption
 
-*Mesuré le 02/11/2026. Cette page est régénérée chaque semaine ; l'historique vit
+*Mesuré le 09/11/2026. Cette page est régénérée chaque semaine ; l'historique vit
 dans les commits de ce fichier — l'API de trafic de GitHub, elle, n'expose que
 les quatorze derniers jours.*
 
@@ -43,7 +43,7 @@ Cette liste est une observation, pas une liste de références.
 
 ## À lire avec les chiffres
 
-- **Les clones ne mesurent pas l'adoption.** Chaque construction de sandbox clone ce dépôt (`actions/checkout`) : 100 construction(s) sur la période y contribuent, sans compter la CI de railsbox elle-même. Les « uniques » sont des runners éphémères, pas des personnes.
+- **Les clones ne mesurent pas l'adoption** : chaque construction de sandbox clone ce dépôt, et les « uniques » sont des runners éphémères.
 - **Les dépôts privés sont invisibles.** Aucune recherche ne les voit, aucun compteur ne les distingue. C'est le modèle — pas de serveur, pas de compte, pas de télémétrie — et non un défaut d'outillage.
 - **La recherche de code dépend du jeton employé** : elle voit les dépôts publics, plus les dépôts privés auxquels ce jeton a accès. La liste ci-dessus peut donc contenir des dépôts privés du mainteneur.
 
