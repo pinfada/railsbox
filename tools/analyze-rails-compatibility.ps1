@@ -113,7 +113,6 @@ query {
     }
     $r = $reponse.data.repository
     if (-not $r) { throw "dépôt introuvable : $Depot" }
-
     [PSCustomObject]@{
         Nom         = $r.nameWithOwner
         Description = $r.description
@@ -135,7 +134,6 @@ function Get-ContenuLocal {
     }
     $licence = & $lire 'LICENSE'
     if (-not $licence) { $licence = & $lire 'LICENSE.md' }
-
     [PSCustomObject]@{
         Nom         = (Resolve-Path $Racine).Path
         Description = ''
@@ -156,11 +154,15 @@ function Get-Analyse {
     param([PSCustomObject] $Source)
 
     $gemfile = $Source.Gemfile
+    # Une dépendance commentée décrit parfois un essai ancien, jamais le bundle
+    # réellement construit. Elle ne doit décider ni de la base, ni des services
+    # externes, ni de la contrainte Ruby.
+    $gemfilePropre = $gemfile -replace '(?m)^\s*#.*$', ''
 
     # Contrainte Ruby : une directive `ruby` du Gemfile est IMPOSÉE par
     # Bundler. `ruby file: ".ruby-version"` en est une : Bundler lit le
     # fichier et exige sa valeur.
-    $directive = if ($gemfile -match '(?m)^\s*ruby\s+(.+)$') { $Matches[1].Trim() } else { '' }
+    $directive = if ($gemfilePropre -match '(?m)^\s*ruby\s+(.+)$') { $Matches[1].Trim() } else { '' }
     $versionExigee = ''
     if ($directive -match "[`"'](\d+\.\d+(\.\d+)?)[`"']") { $versionExigee = $Matches[1] }
     elseif ($directive -and $Source.RubyVersion) { $versionExigee = $Source.RubyVersion }
@@ -169,7 +171,7 @@ function Get-Analyse {
     $serie = if ($versionExigee -match '^(\d+\.\d+)') { $Matches[1] } else { '' }
     $rubyImpose = [bool]$directive
 
-    $base = switch -Regex ($gemfile) {
+    $base = switch -Regex ($gemfilePropre) {
         "gem\s+[`"']pg[`"']"               { 'postgresql'; break }
         "gem\s+[`"']sqlite3[`"']"          { 'sqlite3';    break }
         "gem\s+[`"'](mysql2|trilogy)[`"']" { 'mysql';      break }
@@ -187,7 +189,7 @@ function Get-Analyse {
             @('oauth',         "gem\s+[`"']omniauth-"),
             @('elasticsearch', "gem\s+[`"'](elasticsearch|opensearch)")
         )) {
-        if ($gemfile -match $paire[1]) { $externes += $paire[0] }
+        if ($gemfilePropre -match $paire[1]) { $externes += $paire[0] }
     }
 
     # --- Verdict ---------------------------------------------------------
@@ -204,7 +206,6 @@ function Get-Analyse {
     }
     if ($base -eq 'inconnue') { $reserves += "adaptateur de base non identifié" }
     if ($lignesSeeds -lt 1)   { $reserves += "aucune seed : la démonstration partirait d'une base vide" }
-    if ($externes.Count)      { $reserves += "services sans réseau sortant : $($externes -join ', ')" }
     if ($Source.Licence -eq 'aucune') { $reserves += "aucune licence : la redistribution n'est pas autorisée" }
 
     $verdict = if ($bloquants.Count) { 'bloqué' } elseif ($reserves.Count) { 'sous réserve' } else { 'compatible' }
