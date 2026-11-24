@@ -47,7 +47,13 @@ on:
 
 jobs:
   publier:
-    runs-on: ubuntu-latest
+    # ubuntu-24.04 et non ubuntu-latest : l'image ubuntu-26.04 embarque Docker
+    # Engine 29.4.2, dont le profil seccomp refuse socketcall(2) (mitigation
+    # CVE-2026-31431, annulée en 29.4.3 — moby/moby#52506). La glibc i386 y fait
+    # passer toutes ses sockets : `bundle install` du build linux/386 échoue
+    # alors sur « Could not reach host index.rubygems.org ». À relâcher quand
+    # ubuntu-latest fournira un moteur ≥ 29.4.3 (voir construire-sandbox.yml).
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       # Les artefacts partent vers un AUTRE dépôt, par clé de déploiement :

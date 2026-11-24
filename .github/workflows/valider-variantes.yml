@@ -86,7 +86,8 @@ jobs:
   sandbox:
     name: Sandbox ${{ matrix.variante.nom }}
     needs: detection
-    runs-on: ubuntu-latest
+    # Même épinglage que construire-sandbox.yml (Docker 29.4.2 et socketcall).
+    runs-on: ubuntu-24.04
     # Réassemblage du rootfs (~9 min) + bundle i386 + instantané + boot.
     timeout-minutes: 90
     strategy:
