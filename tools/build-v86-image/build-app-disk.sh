@@ -236,6 +236,25 @@ if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Docker Engine 29.4.2 refuse socketcall(2) dans son profil seccomp par défaut
+# (mitigation CVE-2026-31431, annulée en 29.4.3 — moby/moby#52506). Or la glibc
+# i386 fait passer TOUTES ses sockets par socketcall : sous ce moteur, le
+# `bundle install` du build échoue sur « Could not reach host
+# index.rubygems.org » alors que le réseau de la machine va très bien. BuildKit
+# embarque le même profil et n'offre aucun réglage : on tranche ici, avec le
+# remède, plutôt que de laisser accuser rubygems.
+SONDE_SOCKET="$(docker run --rm --platform linux/386 "$BASE_IMAGE"   ruby -rsocket -e 'UDPSocket.new.close' 2>&1 || true)"
+case "$SONDE_SOCKET" in
+  *ENOSYS* | *"Function not implemented"*)
+    echo "✗ Ce moteur Docker refuse les sockets aux processus i386 (socketcall bloqué" >&2
+    echo "  par seccomp) : aucune gem ne pourrait être téléchargée pendant le build." >&2
+    echo "  Moteur : $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo inconnu)." >&2
+    echo "  Docker Engine 29.4.2 est concerné ; passez à 29.4.3 ou plus récent, ou" >&2
+    echo "  construisez sur un runner ubuntu-24.04 (runs-on: ubuntu-24.04)." >&2
+    exit 1
+    ;;
+esac
+
 # PostgreSQL n'existe dans la base qu'à partir de la révision 3.3-r2. Une base
 # antérieure produirait un disque applicatif dont l'initdb échoue au milieu du
 # build, plusieurs minutes après le début — on tranche ici, avec le remède.
